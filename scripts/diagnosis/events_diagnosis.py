@@ -1,9 +1,10 @@
 from pathlib import Path
+import numpy as np
 
 import astropy.units as u
 from astropy.time import Time
 
-from spacetimecorr import EventSample, RNGManager
+from spacetimecorr import EventSample, RNGManager, SkyWindow
 import spacetimecorr.plotting as stcp
 
 
@@ -12,7 +13,7 @@ if __name__ == "__main__":
     # ------------------
     # Configuration
     # ------------------
-    n_events = int(1e4)
+    n_events = int(1e5)
 
     t0 = Time("2026-01-01T00:00:00", scale="utc")
     tf = t0 + 1 * u.week
@@ -45,5 +46,23 @@ if __name__ == "__main__":
     stcp.plot_plain(sample, outdir/ "plain_projection.png")
     stcp.plot_hammer(sample, outdir / "hammer_projection.png")
     stcp.plot_hammer_heatmap(sample, outdir / "hammer_heatmap.png")
+
+    #We make now a window selection
+
+    #Define a window
+    centre=np.array([30, 0])
+    window = SkyWindow(centre=centre, radius=2)
+
+    window_subsample, expected_counts = window.select(sample)
+
+    print(expected_counts)
+
+    print(window_subsample.RA)
+
+    if not window_subsample.is_populated():
+        raise RuntimeError(
+            "Some error ocurred throughout the selection of the window")
+
+    stcp.plot_plain(window_subsample, outdir / "window_sample_hammer_projection.png")
 
     print(f"Saved diagnostic plots to: {outdir}")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from .event_sample import EventSample
 
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple
 
 
@@ -31,9 +31,9 @@ class SkyWindow:
     radius: float       # degrees
 
     # Cached private attributes (set in __post_init__)
-    _center_vec: np.ndarray  # shape (3,)
-    _cos_radius: float
-    _sky_fraction: float
+    _center_vec: np.ndarray = field(init=False, repr=False, compare=False)
+    _cos_radius: float      = field(init=False, repr=False, compare=False)
+    _sky_fraction: float    = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # --- coerce + validate centre ---
@@ -113,6 +113,14 @@ class SkyWindow:
         dots = np.clip(dots, -1.0, 1.0)  # numeric safety
 
         # Angular cut
+        print("RA min/max:", ra.min(), ra.max())
+        print("Dec min/max:", dec.min(), dec.max())
+        print("centre:", self.centre, "radius:", self.radius)
+        print("_cos_radius:", self._cos_radius)
+        print("center_vec norm:", np.linalg.norm(self._center_vec))
+        print("dots min/max:", dots.min(), dots.max())
+        print("any inside?:", np.any(dots >= self._cos_radius), "count:", np.count_nonzero(dots >= self._cos_radius))
+
         return dots >= self._cos_radius
 
     def uniform_expected_count(self, sample: EventSample) -> float:
@@ -122,4 +130,6 @@ class SkyWindow:
     def select(self, sample: EventSample) -> Tuple[EventSample, float]:
         """Convenience: return (subset_sample, uniform_expected_count)."""
         mask = self.contains(sample)
+        if not np.any(mask):
+            print("WARNING: No events found inside the sky window.")
         return sample.subset(mask), self.uniform_expected_count(sample)

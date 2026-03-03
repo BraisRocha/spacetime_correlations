@@ -97,6 +97,7 @@ def plot_hammer(
 def plot_hammer_heatmap(sample: "EventSample", save_path: str | Path) -> None:
     """
     Plot sky positions from a sample as a heatmap on a Hammer projection.
+    Plot sky positions from a sample as a binned RA-Dec heatmap.
 
     Parameters
     ----------
@@ -106,10 +107,14 @@ def plot_hammer_heatmap(sample: "EventSample", save_path: str | Path) -> None:
     save_path : str or Path
         Output file path.
     """
+    if not sample.is_populated():
+        raise RuntimeError("Sample has no coordinates in it.")
+
     ra = np.asarray(sample.RA)
     dec = np.asarray(sample.Dec)
 
     # 1° bins
+    # 1° bins in RA and Dec
     ra_edges = np.linspace(0, 360, 361)
     dec_edges = np.linspace(-90, 90, 181)
 
@@ -117,6 +122,7 @@ def plot_hammer_heatmap(sample: "EventSample", save_path: str | Path) -> None:
     H_plot = np.log10(H + 1)
 
     proj = ccrs.Hammer(central_longitude=0)
+    fig, ax = plt.subplots(figsize=(12, 6))
 
     fig = plt.figure(figsize=(12, 6))
     ax = plt.axes(projection=proj)
@@ -129,9 +135,18 @@ def plot_hammer_heatmap(sample: "EventSample", save_path: str | Path) -> None:
         transform=ccrs.PlateCarree(),
         shading="auto",
     )
+    # NOTE: do not pass Cartopy transforms here (e.g. transform=ccrs.PlateCarree())
+    # because this is a regular Matplotlib Axes, not a GeoAxes.
+    pcolormesh_kwargs = {
+        "shading": "auto",
+        "cmap": "viridis",
+    }
+    mesh = ax.pcolormesh(ra_edges, dec_edges, H_plot, **pcolormesh_kwargs)
 
     # Astronomy convention: RA increases to the left
     ax.invert_xaxis()
+    ax.set_xlim(360, 0)
+    ax.set_ylim(-90, 90)
 
     # Gridlines (also handles "ticks" for non-rectangular projections)
     gl = ax.gridlines(
@@ -144,19 +159,29 @@ def plot_hammer_heatmap(sample: "EventSample", save_path: str | Path) -> None:
         xlocs=np.arange(0, 361, 60),
         ylocs=np.arange(-60, 61, 30),
     )
+    ax.set_xlabel("Right Ascension [degrees]")
+    ax.set_ylabel("Declination [degrees]")
+
+    ax.set_xticks(np.arange(0, 361, 60))
+    ax.set_yticks(np.arange(-90, 91, 30))
 
     # Cartopy draws lon/lat labels; we only want bottom labels typically
     gl.top_labels = False
     gl.right_labels = False
     gl.left_labels = False  # hide Dec labels on the side if you prefer
     gl.bottom_labels = True
+    # White grid so it is visible over dark/blue colormap regions
+    ax.grid(True, color="white", linestyle="--", linewidth=0.7, alpha=0.7)
 
     # Colorbar + title
     cbar = fig.colorbar(mesh, ax=ax, pad=0.05, shrink=0.85)
     cbar.set_label(r"$\log_{10}(\mathrm{count}+1)$")
     ax.set_title("Hammer Projection Sky Map (RA 0–360)")
+    ax.set_title("RA-Dec Heatmap (RA axis inverted)")
 
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
     fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
     plt.close(fig)
