@@ -9,5 +9,7 @@ from .exposure_plots import (
 __all__ = [
     "plot_hammer",
     "plot_hammer_heatmap",
-    "plot_plain"
+    "plot_plain",
+    "plot_events_vs_exposure",
+    "plot_exponential_exposure_diffs",
 ]

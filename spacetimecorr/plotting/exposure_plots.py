@@ -3,8 +3,6 @@ from typing import TYPE_CHECKING
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import scipy.stats as scp
 
 if TYPE_CHECKING:
     from ..event_sample import EventSample
@@ -84,10 +82,9 @@ def plot_exponential_exposure_diffs(
 
     fig.tight_layout()
 
-    Path(save_path)
+    save_path = Path(save_path)
     fig.savefig(save_path, dpi=300)
     plt.close(fig)
-
 
 
 

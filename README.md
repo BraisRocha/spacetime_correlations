@@ -51,12 +51,12 @@ spacetime_correlations/
 │   ├── analysis.py
 │   ├── flare.py
 │   └── plotting/
-|       ├── __init__.py
+│       ├── __init__.py
 │       ├── events_plots.py
 │       └── exposure_plots.py
 ├── scripts/
 │   └── diagnostics/
-|       ├── exposure_diagnostic.py
+│       ├── exposure_diagnostic.py
 │       └── sampling_diagnostic.py
 ├── pyproject.toml
 └── README.md
@@ -147,11 +147,12 @@ print("Has exposure:", subsample.has_exposure)
 
 ## Running diagnostics
 
-The repository includes a diagnostic script:
+The repository includes diagnostic scripts:
 
 ```bash
-mkdir -p output/diagnostics/events
-PYTHONPATH=. python scripts/diagnosis/events_diagnosis.py
+mkdir -p output/diagnostics
+PYTHONPATH=. python scripts/diagnostics/exposure_diagnostic.py
+PYTHONPATH=. python scripts/diagnostics/sampling_diagnostic.py
 ```
 
 ---
