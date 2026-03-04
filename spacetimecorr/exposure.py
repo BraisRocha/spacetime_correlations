@@ -128,13 +128,6 @@ class ExposureModel:
         Return epsilon(tf), interpreted as maximum cumulative exposure over [t0, tf].
         """
         return float(self.to_directional_exposure(self.tf, centre))
-    
-    @property
-    def min_directional_exposure(self, centre: np.ndarray) -> float:
-        """
-        Return epsilon(t0), interpreted as the minimum cumulative exposure over [t0, tf].
-        """
-        return float(self.to_directional_exposure(self.t0, centre))
 
     def sample_directional_exposure(
         self,

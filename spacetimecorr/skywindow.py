@@ -86,7 +86,7 @@ class SkyWindow:
         mask : np.ndarray of bool, shape (n_events,)
             True for events within angular radius of the centre.
         """
-        if not sample.is_populated():
+        if not sample.is_populated:
             raise ValueError("RA/Dec are not set in the sample. Call sample_equatorial_coordinates() first.")
 
         ra = np.asarray(sample.RA, dtype=float)
@@ -123,13 +123,12 @@ class SkyWindow:
 
         return dots >= self._cos_radius
 
-    def uniform_expected_count(self, sample: EventSample) -> float:
+    def expected_counts_in_window(self, sample: EventSample) -> float:
         """Expected number of events in the window under uniform full-sky exposure."""
         return sample.n_events * self.sky_fraction
 
-    def select(self, sample: EventSample) -> Tuple[EventSample, float]:
-        """Convenience: return (subset_sample, uniform_expected_count)."""
+    def select(self, sample: EventSample) -> EventSample:
         mask = self.contains(sample)
         if not np.any(mask):
-            print("WARNING: No events found inside the sky window.")
-        return sample.subset(mask), self.uniform_expected_count(sample)
+            raise RuntimeWarning("No events found inside the sky window.")
+        return sample.subset(mask)

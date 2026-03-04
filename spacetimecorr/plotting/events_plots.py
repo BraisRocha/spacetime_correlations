@@ -23,7 +23,7 @@ def plot_plain(
         Output file path.
     """
 
-    if not sample.is_populated():
+    if not sample.is_populated:
         raise RuntimeError("Sample has no coordinates in it.")
 
     # Ensure numpy arrays
@@ -56,7 +56,7 @@ def plot_hammer(
     save_path: str | Path
 ) -> None:
 
-    if not sample.is_populated():
+    if not sample.is_populated:
         raise RuntimeError("Sample has no coordinates in it.")
 
     # Convert to radians for Hammer
@@ -107,7 +107,7 @@ def plot_hammer_heatmap(sample: "EventSample", save_path: str | Path) -> None:
     save_path : str or Path
         Output file path.
     """
-    if not sample.is_populated():
+    if not sample.is_populated:
         raise RuntimeError("Sample has no coordinates in it.")
 
     ra = np.asarray(sample.RA)

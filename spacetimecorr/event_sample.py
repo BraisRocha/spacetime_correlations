@@ -71,7 +71,8 @@ class EventSample:
     def exp_rate_time(self) -> float:
         """Expected rate of events per unit of time."""
         return float(self.n_events/self.T_obs.to(u.s).value) 
-
+    
+    @property
     def is_populated(self) -> bool:
         """Return True if RA/Dec have been generated/assigned."""
         return self.RA is not None and self.Dec is not None
@@ -117,7 +118,7 @@ class EventSample:
 
     def subset(self, mask: np.ndarray) -> "EventSample":
         """Return a new EventSample containing only events where mask is True."""
-        if not self.is_populated():
+        if not self.is_populated:
             raise ValueError("RA/Dec are not set. Call sample_equatorial_coordinates() first.")
 
         mask = np.asarray(mask, dtype=bool)
@@ -134,10 +135,10 @@ class EventSample:
         )
 
     def add_directional_exposure_for_window(
-        self: "EventSample",
-        exposure_model: "ExposureModel",
+        self,
+        parent_sample: "EventSample",
         window: "SkyWindow",
-        parent_sample: "EventSample"
+        exposure_model: "ExposureModel"
     ) -> None:
         """
         Attach sampled cumulative directional exposure values to this EventSample,
@@ -201,6 +202,7 @@ class EventSample:
         self.dir_exposure = eps
         self.dir_exposure_method = str(method)
 
+    @property
     def has_exposure(self) -> bool:
         """Return True if directional exposure has been generated/assigned."""
         return getattr(self, "dir_exposure", None) is not None
