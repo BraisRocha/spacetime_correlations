@@ -51,12 +51,13 @@ spacetime_correlations/
 │   ├── analysis.py
 │   ├── flare.py
 │   └── plotting/
+|       ├── __init__.py
 │       ├── events_plots.py
-│       ├── sampling_plots.py
-│       └── analysis_plots.py
+│       └── exposure_plots.py
 ├── scripts/
-│   └── diagnosis/
-│       └── events_diagnosis.py
+│   └── diagnostics/
+|       ├── exposure_diagnostic.py
+│       └── sampling_diagnostic.py
 ├── pyproject.toml
 └── README.md
 ```
@@ -153,23 +154,8 @@ mkdir -p output/diagnostics/events
 PYTHONPATH=. python scripts/diagnosis/events_diagnosis.py
 ```
 
-This script:
-- generates an isotropic sample,
-- applies a sky-window cut,
-- computes directional exposure for the selected sample,
-- writes plots to `output/diagnostics/events`.
-
----
-
-## Notes
-
-- The `scripts/diagnosis/` folder is intended for **manual diagnostic workflows**, not automated test suites.
-- If sidereal-time calculations trigger IERS download warnings in restricted environments, Astropy will typically fall back to bundled tables.
-
 ---
 
 ## Development status
 
 This project is actively evolving. APIs may change as analysis workflows and statistical modules are refined.
-
-Contributions are welcome.

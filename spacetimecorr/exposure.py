@@ -6,6 +6,7 @@ import numpy as np
 import math
 from astropy.time import Time
 from typing import Tuple
+import scipy.stats as scp
 
 class ExposureModel:
     """
@@ -199,3 +200,38 @@ class ExposureModel:
         sample = np.sort(self.rng.uniform(0.0, exposure_expanded, size=mu_expanded))
 
         return sample[:n_events], "free_maximum_exposure_method"
+    
+    def _exponential_exposure_diffs_method(
+        self,
+        n_events: int,
+        exp_rate_exposure: float
+    ) -> np.ndarray:
+        """
+        Diagnostic method to generate exposure differences between consecutive events.
+
+        The exposure differences are sampled from an exponential distribution.
+        This is intended for comparison with the default exposure sampling method.
+
+        Parameters
+        ----------
+        n_events : int
+            Number of events.
+        exp_rate_exposure : float
+            Rate parameter of the exponential distribution.
+
+        Returns
+        -------
+        delta_exp : np.ndarray
+            Exposure differences between consecutive events.
+        """
+
+        if n_events < 2:
+            raise ValueError("n_events must be >= 2.")
+
+        delta_exp = scp.expon.rvs(
+            scale=1 / exp_rate_exposure,
+            size=n_events - 1,
+            random_state=self.rng
+        )
+
+        return delta_exp
