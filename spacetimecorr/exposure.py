@@ -104,13 +104,11 @@ class ExposureModel:
         sinDec = float(np.sin(dec_c_rad))
 
         # Local sidereal time at t and at t0
-        t_loc = t_arr.copy()
-        t_loc.location = self.observatory.location
+        t_loc = Time(t_arr, location=self.observatory.location)
         lst = t_loc.sidereal_time("mean").rad
         h = lst - ra_c_rad
 
-        t0_loc = self.t0.copy()
-        t0_loc.location = self.observatory.location
+        t0_loc = Time(self.t0, location=self.observatory.location)
         h0 = float(t0_loc.sidereal_time("mean").rad - ra_c_rad)
 
         # Ensure continuity for array inputs (important when crossing 2pi)
@@ -122,7 +120,6 @@ class ExposureModel:
 
         return float(dir_exposure[0]) if scalar_input else dir_exposure
     
-    @property
     def max_directional_exposure(self, centre: np.ndarray) -> float:
         """
         Return epsilon(tf), interpreted as maximum cumulative exposure over [t0, tf].

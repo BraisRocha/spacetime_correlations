@@ -61,6 +61,8 @@ class EventSample:
         # Assigned later
         self.RA: np.ndarray | None = None
         self.Dec: np.ndarray | None = None
+        self.dir_exposure: np.darray | None = None
+        self.dir_exposure_method: str | None = None
 
     @property
     def T_obs(self) -> Quantity:
@@ -84,8 +86,8 @@ class EventSample:
         Dec is distributed such that sin(Dec) is uniform in [-1, 1] (isotropic on the sphere).
         """
         RA = self.rng.uniform(0.0, 360.0, size=self.n_events)
-        uu = self.rng.uniform(-1.0, 1.0, size=self.n_events)  # uu = sin(Dec)
-        Dec = np.degrees(np.arcsin(uu))
+        u = self.rng.uniform(-1.0, 1.0, size=self.n_events)  # u = sin(Dec)
+        Dec = np.degrees(np.arcsin(u))
 
         self.RA = np.asarray(RA, dtype=float)
         self.Dec = np.asarray(Dec, dtype=float)

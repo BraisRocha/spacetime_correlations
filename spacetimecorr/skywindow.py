@@ -112,15 +112,6 @@ class SkyWindow:
         dots = event_vecs @ self._center_vec
         dots = np.clip(dots, -1.0, 1.0)  # numeric safety
 
-        # Angular cut
-        print("RA min/max:", ra.min(), ra.max())
-        print("Dec min/max:", dec.min(), dec.max())
-        print("centre:", self.centre, "radius:", self.radius)
-        print("_cos_radius:", self._cos_radius)
-        print("center_vec norm:", np.linalg.norm(self._center_vec))
-        print("dots min/max:", dots.min(), dots.max())
-        print("any inside?:", np.any(dots >= self._cos_radius), "count:", np.count_nonzero(dots >= self._cos_radius))
-
         return dots >= self._cos_radius
 
     def expected_counts_in_window(self, sample: EventSample) -> float:
