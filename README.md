@@ -2,29 +2,24 @@
 
 `spacetimecorr` is a Python package for simulating and analyzing **spatiotemporal correlations** in ultra-high-energy cosmic ray (UHECR) arrival directions.
 
-## spacetimecorr/
-At a high level, the project helps you:
-- simulate isotropic event samples on the sphere,
-- define circular sky windows (spherical caps),
-- model directional exposure from a ground observatory over an observation interval,
-- sample event exposure values and produce diagnostic plots.
-
----
+It currently focuses on:
+- isotropic event simulation in equatorial coordinates,
+- circular sky-window event selection,
+- observatory-dependent directional exposure modeling,
+- basic statistical tooling and diagnostic plotting.
 
 ## Installation
 
 ### Requirements
-- Python `>=3.10`.
-- Core dependencies (declared in `pyproject.toml`):
+- Python `>=3.10`
+- Dependencies declared in `pyproject.toml`:
   - `numpy`
   - `astropy`
   - `scipy`
   - `matplotlib`
   - `cartopy`
 
-### Install in editable mode
-
-From the repository root:
+### Install (editable)
 
 ```bash
 python -m venv .venv
@@ -33,68 +28,65 @@ pip install -U pip
 pip install -e .
 ```
 
-> If you do not install the package, you can still run scripts by setting `PYTHONPATH=.`.
-
----
-
-## Repository layout
+## Current repository layout
 
 ```text
 spacetime_correlations/
-├── spacetimecorr/
-│   ├── __init__.py
-│   ├── rng.py
-│   ├── event_sample.py
-│   ├── skywindow.py
-│   ├── observatory.py
-│   ├── exposure.py
-│   ├── analysis.py
-│   ├── flare.py
-│   └── plotting/
-│       ├── __init__.py
-│       ├── events_plots.py
-│       └── exposure_plots.py
+├── main.py
+├── pyproject.toml
+├── README.md
 ├── scripts/
 │   └── diagnostics/
-│       ├── exposure_diagnostic.py
-│       └── sampling_diagnostic.py
-├── pyproject.toml
-└── README.md
+│       ├── sampling_diagnostic.py
+│       └── exposure_diagnostic.py
+└── spacetimecorr/
+    ├── __init__.py
+    ├── analysis.py
+    ├── event_sample.py
+    ├── exposure.py
+    ├── flare.py
+    ├── observatory.py
+    ├── rng.py
+    ├── skywindow.py
+    ├── statistics.py
+    └── plotting/
+        ├── __init__.py
+        ├── events_plots.py
+        └── exposure_plots.py
 ```
 
----
-
-## Core concepts
+## Main components
 
 ### `RNGManager`
-Creates deterministic named random-number streams so different parts of the pipeline can remain reproducible and independent.
+Creates deterministic named random-number generators. Different modules can request independent streams by name while keeping reproducibility from one master seed.
 
 ### `EventSample`
-Represents a set of events observed between `t0` and `tf`.
-- `sample_equatorial_coordinates()` draws isotropic RA/Dec.
-- `subset(mask)` creates a selected subsample.
-- `add_directional_exposure_for_window(...)` attaches sampled cumulative directional exposure to a selected sample.
+Represents a collection of events over an observation interval `[t0, tf]`.
+
+Key behavior:
+- isotropic RA/Dec sampling (`sample_equatorial_coordinates`),
+- derived properties such as observation duration (`T_obs`) and expected event rate,
+- windowed subsample creation,
+- directional exposure attachment for selected samples.
 
 ### `SkyWindow`
-Defines a spherical-cap selection via:
+Defines a spherical-cap sky selection with:
 - `centre = [RA_deg, Dec_deg]`
-- `radius` (degrees)
+- `radius` in degrees.
 
-Main methods:
-- `contains(sample)` → boolean mask,
-- `select(sample)` → selected `EventSample`,
-- `expected_counts_in_window(sample)` under uniform full-sky assumption.
+Provides containment masks, selected subsamples, and uniform full-sky expected-count estimates.
 
 ### `Observatory`
-Stores observatory latitude/longitude/altitude and an `astropy` `EarthLocation`.
+Dataclass wrapper around observatory coordinates (`latitude`, `longitude`, `altitude`) with validation and cached `astropy.coordinates.EarthLocation`.
 
 ### `ExposureModel`
-Maps times to cumulative directional exposure and samples exposure-space event values.
-- `to_directional_exposure(t, centre)`
-- `max_directional_exposure(centre)`
-- `sample_directional_exposure(...)`
+Maps times and directions to cumulative directional exposure and samples exposure-space values for selected events.
 
----
+### Plotting utilities (`spacetimecorr.plotting`)
+Includes helpers to generate:
+- plain RA/Dec scatter plots,
+- hammer projections and density maps,
+- exposure diagnostic plots.
 
 ## Quick start
 
@@ -123,7 +115,6 @@ rng_exposure = rngm.get("exposure")
 
 # Simulated full sample
 sample = EventSample(n_events=n_events, t0=t0, tf=tf, rng=rng_events)
-sample.sample_equatorial_coordinates()
 
 # Sky window selection
 window = SkyWindow(centre=np.array([30.0, 0.0]), radius=2.0)
@@ -143,20 +134,20 @@ print("Selected events:", subsample.n_events)
 print("Has exposure:", subsample.has_exposure)
 ```
 
----
+## Diagnostics
 
-## Running diagnostics
-
-The repository includes diagnostic scripts:
+Run the current sampling diagnostic script:
 
 ```bash
-mkdir -p output/diagnostics
-PYTHONPATH=. python scripts/diagnostics/exposure_diagnostic.py
-PYTHONPATH=. python scripts/diagnostics/sampling_diagnostic.py
+python scripts/diagnostics/sampling_diagnostic.py
 ```
 
----
+Outputs are written to `output/diagnostics/events/`.
 
-## Development status
+> Note: `scripts/diagnostics/exposure_diagnostic.py` currently exists as a placeholder file.
 
-This project is actively evolving. APIs may change as analysis workflows and statistical modules are refined.
+## Development notes
+
+- `main.py` runs repeated simulation loops for a baseline pipeline.
+- `analysis.py`, `statistics.py`, and `flare.py` are present but still evolving.
+- APIs are still under active development and may change.
