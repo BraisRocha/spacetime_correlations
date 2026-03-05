@@ -15,20 +15,19 @@ class EventSample:
     Parameters
     ----------
     n_events : int
-        Number of events to generate (non-negative).
+        Number of events to generate (must be non-negative).
     t0 : astropy.time.Time
         Observation start time.
     tf : astropy.time.Time
-        Observation end time (must be > t0).
+        Observation end time (must be later than ``t0``).
     rng : numpy.random.Generator
-        Reproducible random generator stream (e.g., from RNGManager.get(name)).
+        Random generator used for reproducible sampling
+        (e.g. obtained from ``RNGManager.get(name)``).
 
     Notes
     -----
-    - Coordinates are not generated until you call `sample_equatorial_coordinates()`.
-    - Use `subset(mask)` to build a new EventSample containing only selected events.
-    - Use `add_directional_exposure_for_window()` after building a subsample to 
-    add directional exposure to the selected events.
+    - Default coordinates are generated using
+      :meth:`sample_equatorial_coordinates`.
     """
 
     def __init__(
@@ -38,40 +37,58 @@ class EventSample:
         tf: Time,
         rng: np.random.Generator,
     ):
+        # ---- Input validation ------------------------------------------------
         if not isinstance(n_events, int) or isinstance(n_events, bool) or n_events < 0:
             raise TypeError("n_events must be a non-negative integer.")
+
         if not isinstance(t0, Time) or not isinstance(tf, Time):
             raise TypeError("t0 and tf must be astropy.time.Time objects.")
+
         if tf <= t0:
             raise ValueError("tf must be strictly later than t0.")
+
         if not isinstance(rng, np.random.Generator):
             raise TypeError(
                 "rng must be a numpy.random.Generator. "
                 "Obtain one from RNGManager.get(name) and pass it here."
             )
 
+        # ---- Core configuration ----------------------------------------------
         self.rng = rng
-
         self.n_events = int(n_events)
         self.t0 = t0
         self.tf = tf
 
+        # ---- Event properties ------------------------------------------------
         self.spatial_type: str | None = None
 
-        # Assigned later
+        # Event coordinates (assigned after sampling)
         self.RA: np.ndarray | None = None
         self.Dec: np.ndarray | None = None
-        self.dir_exposure: np.darray | None = None
+        self.sample_equatorial_coordinates()
+
+        # ---- Attributes populated after window selection ---------------------
+        self.expected_counts: float | None = None
+
+        # ---- Attributes populated after exposure model selection -------------
+        self.exp_rate_exposure: float | None = None
+        self.dir_exposure: np.ndarray | None = None
         self.dir_exposure_method: str | None = None
 
     @property
     def T_obs(self) -> Quantity:
-        """Observation duration as an astropy Quantity."""
+        """
+        Observation duration as an astropy Quantity.
+        """
+
         return (self.tf - self.t0).to(u.s)
     
     @property 
     def exp_rate_time(self) -> float:
-        """Expected rate of events per unit of time."""
+        """
+        Expected rate of events per unit of time.
+        """
+
         return float(self.n_events/self.T_obs.to(u.s).value) 
     
     @property
@@ -80,7 +97,8 @@ class EventSample:
         return self.RA is not None and self.Dec is not None
 
     def sample_equatorial_coordinates(self) -> None:
-        """Simulate an isotropic distribution on the sphere in equatorial coordinates.
+        """
+        Simulate an isotropic distribution on the sphere in equatorial coordinates.
 
         RA is uniform in [0, 360).
         Dec is distributed such that sin(Dec) is uniform in [-1, 1] (isotropic on the sphere).
@@ -94,7 +112,7 @@ class EventSample:
         self.spatial_type = "equatorial"
 
     @classmethod
-    def from_arrays(
+    def _from_arrays(
         cls,
         RA: np.ndarray,
         Dec: np.ndarray,
@@ -103,7 +121,10 @@ class EventSample:
         rng: np.random.Generator,
         spatial_type: str | None = "equatorial",
     ) -> "EventSample":
-        """Create an EventSample from existing RA/Dec arrays (no new random draws)."""
+        """
+        Create an EventSample from existing RA/Dec arrays (no new random draws).
+        """
+
         RA = np.asarray(RA, dtype=float)
         Dec = np.asarray(Dec, dtype=float)
 
@@ -116,18 +137,19 @@ class EventSample:
         obj.RA = RA
         obj.Dec = Dec
         obj.spatial_type = spatial_type
+
         return obj
 
-    def subset(self, mask: np.ndarray) -> "EventSample":
-        """Return a new EventSample containing only events where mask is True."""
-        if not self.is_populated:
-            raise ValueError("RA/Dec are not set. Call sample_equatorial_coordinates() first.")
+    def _subset(self, mask: np.ndarray) -> "EventSample":
+        """
+        Return a new EventSample containing only events where mask is True.
+        """
 
         mask = np.asarray(mask, dtype=bool)
         if mask.shape != self.RA.shape:
             raise ValueError(f"Mask must have shape {self.RA.shape}, got {mask.shape}.")
 
-        return EventSample.from_arrays(
+        return EventSample._from_arrays(
             RA=self.RA[mask],
             Dec=self.Dec[mask],
             t0=self.t0,
@@ -173,7 +195,8 @@ class EventSample:
             direction used to compute max exposure, and is stored for provenance.
         parent_sample : EventSample
             The full (pre-window) dataset used to compute the expected rate as
-            `exp_rate_exposure = parent_sample.n_events / max_dir_exposure`.
+            `expected_counts = window.expected_counts_in_window(sample=parent_sample)`
+            `exp_rate_exposure = expected_counts / max_dir_exposure`.
 
         Returns
         -------
@@ -189,12 +212,12 @@ class EventSample:
         max_dir_exposure = exposure_model.max_directional_exposure(window.centre)
 
         # exposure-space event rate normalization from the parent sample
-        exp_rate_exposure = parent_sample.n_events / max_dir_exposure
+        self.exp_rate_exposure = self.expected_counts / max_dir_exposure
 
         # sample exposure values for this subsample's number of events
         eps, method = exposure_model.sample_directional_exposure(
             n_events=self.n_events,
-            exp_rate_exposure=exp_rate_exposure,
+            exp_rate_exposure=self.exp_rate_exposure,
             max_dir_exposure=max_dir_exposure,
         )
 
@@ -206,5 +229,8 @@ class EventSample:
 
     @property
     def has_exposure(self) -> bool:
-        """Return True if directional exposure has been generated/assigned."""
+        """
+        Return True if directional exposure has been generated/assigned.
+        """
+        
         return getattr(self, "dir_exposure", None) is not None

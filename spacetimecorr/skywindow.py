@@ -4,8 +4,6 @@ from .event_sample import EventSample
 
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Tuple
-
 
 @dataclass(frozen=True, slots=True)
 class SkyWindow:
@@ -75,7 +73,9 @@ class SkyWindow:
 
     @property
     def sky_fraction(self) -> float:
-        """Fraction of the full sky covered by this window (spherical cap)."""
+        """
+        Fraction of the full sky covered by this window (spherical cap).
+        """
         return self._sky_fraction
 
     def contains(self, sample: EventSample) -> np.ndarray:
@@ -115,11 +115,26 @@ class SkyWindow:
         return dots >= self._cos_radius
 
     def expected_counts_in_window(self, sample: EventSample) -> float:
-        """Expected number of events in the window under uniform full-sky exposure."""
+        """
+        Expected number of events in the window under uniform full-sky exposure.
+        """
+
         return sample.n_events * self.sky_fraction
 
     def select(self, sample: EventSample) -> EventSample:
+        """
+        Return a new ``EventSample`` containing only the events within the window.
+
+        The returned sample includes an additional attribute, ``expected_counts``,
+        representing the expected number of events inside the window.
+        """
+
         mask = self.contains(sample)
+
         if not np.any(mask):
             raise RuntimeWarning("No events found inside the sky window.")
-        return sample.subset(mask)
+
+        subsample = sample._subset(mask)
+        subsample.expected_counts = self.expected_counts_in_window(sample)
+
+        return subsample

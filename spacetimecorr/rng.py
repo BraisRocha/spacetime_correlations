@@ -17,14 +17,17 @@ class RNGManager:
             raise TypeError("Seed must be an integer.")
         self._seed = seed
         self._rngs: dict[str, np.random.Generator] = {}
-
+    
     def get(self, name: str) -> np.random.Generator:
-        # Turn the name into a stable uint32 using a hash
-        digest = hashlib.blake2b(name.encode("utf-8"), digest_size=4).digest()
-        key = int.from_bytes(digest, "little")  # 0..2**32-1
+        if name not in self._rngs:
+            # Turn the name into a stable uint32 using a hash
+            digest = hashlib.blake2b(name.encode("utf-8"), digest_size=4).digest()
+            key = int.from_bytes(digest, "little")
 
-        child_ss = np.random.SeedSequence(self._seed, spawn_key=(key,))
-        return np.random.default_rng(child_ss)
+            child_ss = np.random.SeedSequence(self._seed, spawn_key=(key,))
+            self._rngs[name] = np.random.default_rng(child_ss)
+
+        return self._rngs[name]
 
     def names(self):
         return tuple(self._rngs.keys())
