@@ -5,6 +5,10 @@ from .events_plots import (
 from .exposure_plots import (
     plot_events_vs_exposure, 
     plot_exponential_exposure_diffs)
+from .statistics_plots import(
+    plot_lambda_estimator,
+    plot_p_value
+)
 
 __all__ = [
     "plot_hammer",

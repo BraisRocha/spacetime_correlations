@@ -3,7 +3,10 @@ from .skywindow import SkyWindow
 from .exposure import ExposureModel
 from .event_sample import EventSample
 #from .flare import FlareCatalog
-#from .analysis import WindowAnalysis
+from .statistics import (
+    lambda_estimator,
+    theoretical_lambda_estimator,
+)
 from .rng import RNGManager
 
 __all__ = [
@@ -13,7 +16,8 @@ __all__ = [
     "EventSample",
     "FlareCatalog",
     "WindowAnalysis",
-    "RNGManager"
+    "RNGManager",
+    "lambda_estimator"
 ]
 
 """If classes inside spacetimecorr package are called I think

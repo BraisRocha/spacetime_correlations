@@ -174,6 +174,7 @@ class ExposureModel:
         method_name : str
             Identifier string describing the sampling strategy.
         """
+        
         if not isinstance(n_events, int) or isinstance(n_events, bool) or n_events < 0:
             raise TypeError("n_events must be a non-negative integer.")
         if not isinstance(factor, int) or isinstance(factor, bool) or factor <= 0:

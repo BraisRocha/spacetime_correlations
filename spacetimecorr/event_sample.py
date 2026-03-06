@@ -160,7 +160,6 @@ class EventSample:
 
     def add_directional_exposure_for_window(
         self,
-        parent_sample: "EventSample",
         window: "SkyWindow",
         exposure_model: "ExposureModel"
     ) -> None:
@@ -193,10 +192,6 @@ class EventSample:
         window : SkyWindow
             The sky region that defined this subsample. Its `centre` sets the reference
             direction used to compute max exposure, and is stored for provenance.
-        parent_sample : EventSample
-            The full (pre-window) dataset used to compute the expected rate as
-            `expected_counts = window.expected_counts_in_window(sample=parent_sample)`
-            `exp_rate_exposure = expected_counts / max_dir_exposure`.
 
         Returns
         -------
@@ -232,5 +227,5 @@ class EventSample:
         """
         Return True if directional exposure has been generated/assigned.
         """
-        
+
         return getattr(self, "dir_exposure", None) is not None

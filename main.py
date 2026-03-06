@@ -7,6 +7,12 @@ import numpy as np
 from astropy.time import Time
 
 import spacetimecorr as stc
+import spacetimecorr.plotting as stcp
+
+from tqdm import tqdm
+import time
+
+import matplotlib.pyplot as plt
 
 
 def main(seed:int) -> None:
@@ -16,7 +22,7 @@ def main(seed:int) -> None:
 
     # Simulation parameters
     n_events = int(1e5)
-    n_simulations = int(1e3)
+    n_simulations = int(1e4)
 
     # Observation interval
     t0 = Time("2026-01-01T00:00:00", scale="utc")
@@ -48,12 +54,17 @@ def main(seed:int) -> None:
         rng=rng_exposure,
     )
 
-    output_dir = Path("outputs")
-    output_dir.mkdir(exist_ok=True)
+    project_root = Path(__file__).resolve().parent
+    outdir = project_root / "output" / "main"
+    outdir.mkdir(parents=True, exist_ok=True)
 
-    for _ in range(n_simulations):
-        if _ % 100 == 0:
-            print(_+1)
+    lambda_stats_mc = []
+    p_values_mc = []
+
+    lambda_theory = []
+    p_values_theory = []
+
+    for _ in tqdm(range(n_simulations), desc="Simulations"):
 
         parent_sample = stc.EventSample(
             n_events=n_events,
@@ -65,13 +76,51 @@ def main(seed:int) -> None:
 
         subsample = window.select(sample=parent_sample)
         subsample.add_directional_exposure_for_window(
-            parent_sample=parent_sample,
             window=window,
             exposure_model=exposure_model,
         )
 
-    # TODO: apply statistical methods to compute Lambda and p-value.
+        # Apply the statistical method
+        lambda_stat, p_val = stc.lambda_estimator(sample=subsample)
 
+        lambda_stats_mc.append(lambda_stat)
+        p_values_mc.append(p_val)
+
+        lambda_stat, p_val = stc.theoretical_lambda_estimator(
+            sample=subsample, n_simulations=n_simulations,
+        )
+        lambda_theory.append(lambda_stat)
+        p_values_theory.append(p_val)
+
+
+    # Convert to arrays
+    lambda_stats_mc = np.array(lambda_stats_mc)
+    p_values_mc = np.array(p_values_mc)
+
+    lambda_theory = np.array(lambda_theory)
+    p_values_theory = np.array(p_values_theory)
+
+
+    # Theoretical distributions
+    
+    
+    # Plot Lambda distributions
+    stcp.plot_lambda_estimator(
+        {
+            "Monte Carlo": lambda_stats_mc,
+            "Theoretical": lambda_theory,
+        },
+        outdir / "lambda.png",
+    )
+
+    # Plot p-value distributions
+    stcp.plot_p_value(
+        {
+            "Monte Carlo": p_values_mc,
+            "Theoretical": p_values_theory,
+        },
+        outdir / "p_values.png",
+    )
 
 if __name__ == "__main__":
     seed = 42
