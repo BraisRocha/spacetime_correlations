@@ -24,7 +24,7 @@ class EventSample:
     rng : numpy.random.Generator
         Random generator used for reproducible sampling
         (e.g. obtained from ``RNGManager.get(name)``).
-    auto_sample_coordinates : bool, optional
+    auto_sample : bool, optional
         If True (default), coordinates are sampled at construction time.
         Set to False when constructing from pre-existing arrays to avoid
         unnecessary random draws.
@@ -146,7 +146,7 @@ class EventSample:
             t0=t0,
             tf=tf,
             rng=rng,
-            auto_sample_coordinates=False,
+            auto_sample=False,
         )
         obj.RA = RA
         obj.Dec = Dec
@@ -186,7 +186,7 @@ class EventSample:
         mask = window.contains(self.RA, self.Dec)
 
         if not np.any(mask):
-            raise RuntimeWarning("No events found inside the sky window.")
+            raise ValueError("No events found inside the sky window.")
 
         subsample = self._subset(mask)
         subsample.expected_counts = window.expected_counts_in_window(self)
@@ -277,6 +277,10 @@ class EventSample:
         flare : Flare
             Flare object containing RA, Dec, and directional exposure arrays.
         """
+        from .flare import Flare
+
+        if not isinstance(flare, Flare):
+            raise TypeError("flare must be an instance of Flare.")
 
         if self.has_flare:
             raise RuntimeError("This sample already contains an injected flare.")
@@ -291,9 +295,6 @@ class EventSample:
             raise ValueError(
                 "Cannot inject flare: flare has more events than the sample."
             )
-
-        if not isinstance(flare, Flare):
-            raise TypeError("flare must be an instance of Flare.")
 
         # Random indices to replace
         idx = self.rng.choice(self.n_events, size=flare.n_events, replace=False)
@@ -313,6 +314,5 @@ class EventSample:
         Return True if a flare has been already introduced
         into the sample.
         """
-        
-        return getattr(self, "flare_type", None) is not None
 
+        return getattr(self, "flare_type", None) is not None

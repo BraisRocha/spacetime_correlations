@@ -90,7 +90,7 @@ class Flare:
         self._T_obs_sec = (tf - t0).to_value(u.s)
         duration_sec = duration.to_value(u.s)
 
-        if duration_sec > self.T_obs_sec:
+        if duration_sec > self._T_obs_sec:
             raise ValueError("flare duration cannot exceed the observation interval.")
 
         self.rng = rng
@@ -309,4 +309,3 @@ class Flare:
             return "undefined_flare"
 
         return f"{self.spatial_profile}-{self.time_profile}"
-

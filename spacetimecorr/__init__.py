@@ -2,7 +2,7 @@ from .observatory import Observatory
 from .skywindow import SkyWindow
 from .exposure import ExposureModel
 from .event_sample import EventSample
-#from .flare import FlareCatalog
+from .flare import Flare
 from .statistics import (
     lambda_estimator,
     theoretical_lambda_estimator,
@@ -14,12 +14,15 @@ __all__ = [
     "SkyWindow",
     "ExposureModel",
     "EventSample",
-    "FlareCatalog",
+    "Flare",
     "WindowAnalysis",
     "RNGManager",
     "lambda_estimator"
+    "theoretical_lambda_estimator",
 ]
 
-"""If classes inside spacetimecorr package are called I think
-a good name could be 'import spacetimecorr as stc'
+"""
+Recommended
+-----------
+    Import spacetimecorr package as `stc` in your script.
 """
