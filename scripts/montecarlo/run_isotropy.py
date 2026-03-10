@@ -54,7 +54,7 @@ def main(seed:int) -> None:
         rng=rng_exposure,
     )
 
-    project_root = Path(__file__).resolve().parent
+    project_root = Path(__file__).resolve().parents[2]
     outdir = project_root / "output" / "main"
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -74,8 +74,8 @@ def main(seed:int) -> None:
         )
         parent_sample.sample_equatorial_coordinates()
 
-        subsample = window.select(sample=parent_sample)
-        subsample.add_directional_exposure_for_window(
+        subsample = parent_sample.select_subsample(window=window)
+        subsample.add_directional_exposure(
             window=window,
             exposure_model=exposure_model,
         )
@@ -87,8 +87,7 @@ def main(seed:int) -> None:
         p_values_mc.append(p_val)
 
         lambda_stat, p_val = stc.theoretical_lambda_estimator(
-            sample=subsample, n_simulations=n_simulations,
-        )
+            sample=subsample)
         lambda_theory.append(lambda_stat)
         p_values_theory.append(p_val)
 

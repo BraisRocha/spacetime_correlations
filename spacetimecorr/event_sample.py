@@ -8,6 +8,7 @@ from astropy.units import Quantity
 if TYPE_CHECKING:
     from .skywindow import SkyWindow
     from .exposure import ExposureModel
+    from .flare import Flare
 
 class EventSample:
     """Generate and store samples of events in equatorial coordinates.
@@ -23,6 +24,10 @@ class EventSample:
     rng : numpy.random.Generator
         Random generator used for reproducible sampling
         (e.g. obtained from ``RNGManager.get(name)``).
+    auto_sample_coordinates : bool, optional
+        If True (default), coordinates are sampled at construction time.
+        Set to False when constructing from pre-existing arrays to avoid
+        unnecessary random draws.
 
     Notes
     -----
@@ -36,6 +41,8 @@ class EventSample:
         t0: Time,
         tf: Time,
         rng: np.random.Generator,
+        *,
+        auto_sample: bool = True,
     ):
         # ---- Input validation ------------------------------------------------
         if not isinstance(n_events, int) or isinstance(n_events, bool) or n_events < 0:
@@ -65,7 +72,8 @@ class EventSample:
         # Event coordinates (assigned after sampling)
         self.RA: np.ndarray | None = None
         self.Dec: np.ndarray | None = None
-        self.sample_equatorial_coordinates()
+        if auto_sample:
+            self.sample_equatorial_coordinates()
 
         # ---- Attributes populated after window selection ---------------------
         self.expected_counts: float | None = None
@@ -133,7 +141,13 @@ class EventSample:
         if RA.ndim != 1:
             raise ValueError(f"RA and Dec must be 1D arrays, got ndim={RA.ndim}.")
 
-        obj = cls(n_events=int(RA.size), t0=t0, tf=tf, rng=rng)
+        obj = cls(
+            n_events=int(RA.size),
+            t0=t0,
+            tf=tf,
+            rng=rng,
+            auto_sample_coordinates=False,
+        )
         obj.RA = RA
         obj.Dec = Dec
         obj.spatial_type = spatial_type
@@ -157,8 +171,29 @@ class EventSample:
             rng=self.rng,
             spatial_type=self.spatial_type,
         )
+    
+    def select_subsample(
+        self,
+        window: SkyWindow
+    ) -> EventSample:
+        """
+        Return a new ``EventSample`` containing only the events within the window.
 
-    def add_directional_exposure_for_window(
+        The returned sample includes an additional attribute, ``expected_counts``,
+        representing the expected number of events inside the window.
+        """
+
+        mask = window.contains(self.RA, self.Dec)
+
+        if not np.any(mask):
+            raise RuntimeWarning("No events found inside the sky window.")
+
+        subsample = self._subset(mask)
+        subsample.expected_counts = window.expected_counts_in_window(self)
+
+        return subsample
+
+    def add_directional_exposure(
         self,
         window: "SkyWindow",
         exposure_model: "ExposureModel"
@@ -229,3 +264,55 @@ class EventSample:
         """
 
         return getattr(self, "dir_exposure", None) is not None
+    
+    def inject_flare(self, flare: "Flare") -> None:
+        """
+        Inject a flare into the current sample by replacing random events.
+
+        The injection replaces ``flare.n_events`` randomly selected events in
+        the sample with the flare events.
+
+        Parameters
+        ----------
+        flare : Flare
+            Flare object containing RA, Dec, and directional exposure arrays.
+        """
+
+        if self.has_flare:
+            raise RuntimeError("This sample already contains an injected flare.")
+
+        if flare.RA is None or flare.Dec is None or flare.dir_exposure is None:
+            raise ValueError(
+                "Flare is not fully generated. "
+                "Coordinates and exposure must be computed before injection."
+            )
+
+        if flare.n_events > self.n_events:
+            raise ValueError(
+                "Cannot inject flare: flare has more events than the sample."
+            )
+
+        if not isinstance(flare, Flare):
+            raise TypeError("flare must be an instance of Flare.")
+
+        # Random indices to replace
+        idx = self.rng.choice(self.n_events, size=flare.n_events, replace=False)
+
+        # Replace events
+        self.RA[idx] = flare.RA
+        self.Dec[idx] = flare.Dec
+        self.dir_exposure[idx] = flare.dir_exposure
+
+        # Store metadata
+        self.flare_type = flare.flare_type
+        self.flare_indices = idx
+    
+    @property
+    def has_flare(self) -> bool:
+        """
+        Return True if a flare has been already introduced
+        into the sample.
+        """
+        
+        return getattr(self, "flare_type", None) is not None
+

@@ -78,22 +78,28 @@ class SkyWindow:
         """
         return self._sky_fraction
 
-    def contains(self, sample: EventSample) -> np.ndarray:
-        """Return boolean mask selecting events inside the window.
+    def contains(self, ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
+        """Return boolean mask selecting coordinates inside the window.
+
+        Parameters
+        ----------
+        ra : np.ndarray
+            Right ascension values in degrees.
+        dec : np.ndarray
+            Declination values in degrees.
 
         Returns
         -------
-        mask : np.ndarray of bool, shape (n_events,)
-            True for events within angular radius of the centre.
+        np.ndarray of bool
+            True for coordinates within the angular radius of the window centre.
         """
-        if not sample.is_populated:
-            raise ValueError("RA/Dec are not set in the sample. Call sample_equatorial_coordinates() first.")
-
-        ra = np.asarray(sample.RA, dtype=float)
-        dec = np.asarray(sample.Dec, dtype=float)
+        ra = np.asarray(ra, dtype=float)
+        dec = np.asarray(dec, dtype=float)
 
         if ra.shape != dec.shape:
-            raise ValueError(f"sample.RA and sample.Dec must have the same shape, got {ra.shape} vs {dec.shape}.")
+            raise ValueError(
+                f"ra and dec must have the same shape, got {ra.shape} vs {dec.shape}."
+            )
 
         # Convert to radians
         ra_rad = np.deg2rad(ra)
@@ -108,9 +114,9 @@ class SkyWindow:
             )
         )
 
-        # Dot products with cached center vector
+        # Dot products with cached centre vector
         dots = event_vecs @ self._center_vec
-        dots = np.clip(dots, -1.0, 1.0)  # numeric safety
+        dots = np.clip(dots, -1.0, 1.0)
 
         return dots >= self._cos_radius
 
@@ -120,21 +126,3 @@ class SkyWindow:
         """
 
         return sample.n_events * self.sky_fraction
-
-    def select(self, sample: EventSample) -> EventSample:
-        """
-        Return a new ``EventSample`` containing only the events within the window.
-
-        The returned sample includes an additional attribute, ``expected_counts``,
-        representing the expected number of events inside the window.
-        """
-
-        mask = self.contains(sample)
-
-        if not np.any(mask):
-            raise RuntimeWarning("No events found inside the sky window.")
-
-        subsample = sample._subset(mask)
-        subsample.expected_counts = self.expected_counts_in_window(sample)
-
-        return subsample

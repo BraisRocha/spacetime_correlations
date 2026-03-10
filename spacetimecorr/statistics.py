@@ -46,8 +46,7 @@ def lambda_estimator(sample: EventSample) -> Tuple[float, float]:
     return lambda_stat, p_value
 
 def theoretical_lambda_estimator(
-    sample: EventSample,
-    n_simulations: int,
+    sample: EventSample
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Generate theoretical Lambda statistics and corresponding p-values.
