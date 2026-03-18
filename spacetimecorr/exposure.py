@@ -1,52 +1,40 @@
 from __future__ import annotations
 
-from .observatory import Observatory
+import math
+from typing import Tuple
 
 import numpy as np
-import math
 from astropy.time import Time
-from typing import Tuple
-import scipy.stats as scp
+
+from .observatory import Observatory
+
 
 class ExposureModel:
     """
-    Model the cumulative directional exposure of an observatory.
+    Directional exposure model for a fixed source direction.
 
-    This class provides the mapping between observation time and
-    cumulative directional exposure epsilon(t) for a given sky direction,
-    assuming continuous operation and purely geometric acceptance.
-
-    Parameters
-    ----------
-    observatory : Observatory
-        Observatory location defining latitude, longitude and altitude.
-    t0 : astropy.time.Time
-        Start time of the observation window.
-    tf : astropy.time.Time
-        End time of the observation window (must be strictly later than t0).
-    rng : numpy.random.Generator
-        Random generator used for exposure-space sampling.
+    This class provides:
+      - instantaneous acceptance a(t) in [0, 1]
+      - cumulative directional exposure epsilon(t)
+      - Bernoulli thinning of sampled event times
 
     Notes
     -----
-    - The directional exposure epsilon(t) is computed from the standard
-      hour-angle formulation for a fixed equatorial direction
-      (RA, Dec) at a ground-based observatory.
-    - epsilon(t) is defined relative to t0, such that epsilon(t0) = 0.
-    - The implementation assumes uniform detector efficiency and
-      full duty cycle (no downtime or weather effects).
-    - The exposure sampling method operates in cumulative exposure
-      space and can be used to simulate event times under a Poisson
-      process with constant rate per unit exposure.
+    In the current geometric model:
+        a(t) = max(0, cos theta(t))
+    so it can be used directly as a detection probability.
     """
+
+    SIDEREAL_DAY_SEC = 86164.0905
 
     def __init__(
         self,
-        observatory: Observatory,
+        observatory: "Observatory",
         t0: Time,
         tf: Time,
         rng: np.random.Generator,
     ):
+
         if not isinstance(observatory, Observatory):
             raise TypeError("observatory must be an instance of Observatory.")
         if not isinstance(t0, Time) or not isinstance(tf, Time):
@@ -64,69 +52,272 @@ class ExposureModel:
         self.tf = tf
         self.rng = rng
 
-    def to_directional_exposure(
-        self,
-        t: Time,                 # scalar or array Time
-        centre: np.ndarray,      # [RA_deg, Dec_deg]
-    ) -> np.ndarray | float:
-        """
-        Convert times into cumulative directional exposure epsilon(t).
+    # -------------------------------------------------------------------------
+    # Private input / geometry helpers
+    # -------------------------------------------------------------------------
 
-        Parameters
-        ----------
-        t : astropy.time.Time
-            Scalar or array time(s).
-        centre : np.ndarray, shape (2,)
-            [RA_deg, Dec_deg] of the window centre.
 
-        Returns
-        -------
-        np.ndarray or float
-            Directional exposure values; scalar if input is scalar.
-        """
+    def _as_time_array(self, t: Time) -> tuple[Time, bool]:
         if not isinstance(t, Time):
-            raise TypeError("t must be an astropy.time.Time (scalar or array).")
+            raise TypeError("Input must be an astropy.time.Time object.")
+        scalar_input = bool(getattr(t, "isscalar", np.isscalar(t)))
+        t_arr = t if not scalar_input else Time([t])
+        return t_arr, scalar_input
 
+    def _validate_centre(self, centre: np.ndarray) -> tuple[float, float]:
         c = np.asarray(centre, dtype=float)
         if c.size != 2:
             raise TypeError("centre must be array-like with 2 elements: [RA_deg, Dec_deg].")
-        ra_c, dec_c = c.reshape(2,)
-        ra_c_rad = np.deg2rad(float(ra_c))
-        dec_c_rad = np.deg2rad(float(dec_c))
-
-        scalar_input = bool(getattr(t, "isscalar", np.isscalar(t)))
-        t_arr = t if not scalar_input else Time([t])
-
-        lat_rad = np.deg2rad(self.observatory.latitude)
-        cosl0 = float(np.cos(lat_rad))
-        sinl0 = float(np.sin(lat_rad))
-
-        cosDec = float(np.cos(dec_c_rad))
-        sinDec = float(np.sin(dec_c_rad))
-
-        # Local sidereal time at t and at t0
-        t_loc = Time(t_arr, location=self.observatory.location)
-        lst = t_loc.sidereal_time("mean").rad
-        h = lst - ra_c_rad
+        ra_deg, dec_deg = c.reshape(2,)
+        return float(ra_deg), float(dec_deg)
+    
+    def _continuous_hour_angle(self, t: Time, ra_deg: float) -> np.ndarray:
+        """
+        Continuous hour angle in radians, referenced to t0.
+        """
+        ra_rad = np.deg2rad(ra_deg)
 
         t0_loc = Time(self.t0, location=self.observatory.location)
-        h0 = float(t0_loc.sidereal_time("mean").rad - ra_c_rad)
+        h0 = float(t0_loc.sidereal_time("mean").rad - ra_rad)
 
-        # Ensure continuity for array inputs (important when crossing 2pi)
-        if h.size > 1:
-            h = np.unwrap(h)
-
-        # Cumulative-style expression relative to t0 via h0
-        dir_exposure = cosl0 * cosDec * (np.sin(h) - np.sin(h0)) + (h - h0) * sinl0 * sinDec
-
-        return float(dir_exposure[0]) if scalar_input else dir_exposure
+        dt_sec = (t - self.t0).to_value("sec")
+        return h0 + 2.0 * np.pi * dt_sec / self.SIDEREAL_DAY_SEC
     
+    # -------------------------------------------------------------------------
+    # Instantaneous acceptance and thinning
+    # -------------------------------------------------------------------------
+
+    def instantaneous_acceptance(self, t: Time, centre: np.ndarray) -> np.ndarray | float:
+        """
+        Instantaneous geometric acceptance a(t) in [0, 1].
+
+        In the current model:
+            a(t) = max(0, cos z(t))
+        """
+        t_arr, scalar_input = self._as_time_array(t)
+
+        if np.any(t_arr < self.t0) or np.any(t_arr > self.tf):
+            raise ValueError("All times must satisfy t0 <= t <= tf.")
+
+        ra_deg, dec_deg = self._validate_centre(centre)
+
+        dec_rad = np.deg2rad(dec_deg)
+        lat_rad = np.deg2rad(self.observatory.latitude)
+
+        h = self._continuous_hour_angle(t_arr, ra_deg)
+
+        sin_lat = np.sin(lat_rad)
+        cos_lat = np.cos(lat_rad)
+        sin_dec = np.sin(dec_rad)
+        cos_dec = np.cos(dec_rad)
+
+        cos_theta = sin_lat * sin_dec + cos_lat * cos_dec * np.cos(h)
+        cos_theta = np.clip(cos_theta, -1.0, 1.0)
+        out = np.maximum(0.0, cos_theta)
+
+        return float(out[0]) if scalar_input else out
+    
+    def detection_probability(
+        self,
+        t: Time,
+        centre: np.ndarray,
+        efficiency=None,
+    ) -> np.ndarray | float:
+        """
+        Detection probability p_det(t).
+
+        Parameters
+        ----------
+        t : Time
+            Candidate event times.
+        centre : array-like
+            [RA_deg, Dec_deg].
+        efficiency : callable or None
+            Optional multiplicative factor. Must return values in [0, 1]
+            with the same shape as t.
+            Final probability is:
+                p_det(t) = a(t) * efficiency(t)
+
+        Returns
+        -------
+        array or float
+            Detection probability in [0, 1].
+        """
+        a = np.asarray(self.instantaneous_acceptance(t, centre), dtype=float)
+
+        if efficiency is None:
+            p = a
+        else:
+            eff = np.asarray(efficiency(t), dtype=float)
+            if eff.shape != a.shape:
+                raise ValueError("efficiency(t) must return an array with the same shape as t.")
+            if np.any(eff < 0.0) or np.any(eff > 1.0):
+                raise ValueError("efficiency(t) must lie in [0, 1].")
+            p = a * eff
+
+        p = np.clip(p, 0.0, 1.0)
+
+        if np.isscalar(p) or p.shape == ():
+            return float(p)
+        return p
+    
+    def acceptance_mask(
+        self,
+        t: Time,
+        centre: np.ndarray,
+        efficiency=None,
+    ) -> np.ndarray | bool:
+        """
+        Bernoulli thinning mask for candidate event times.
+        """
+        t_arr, scalar_input = self._as_time_array(t)
+        p = np.asarray(self.detection_probability(t_arr, centre, efficiency=efficiency), dtype=float)
+        mask = self.rng.random(size=p.shape) < p
+        return bool(mask[0]) if scalar_input else mask
+    
+    def detect_times(
+        self,
+        t: Time,
+        centre: np.ndarray,
+        efficiency=None,
+        return_mask: bool = False,
+        return_prob: bool = False,
+        return_exposure: bool = False,
+    ):
+        """
+        Apply detector thinning to candidate times.
+
+        Parameters
+        ----------
+        t : Time
+            Candidate event times.
+        centre : array-like
+            [RA_deg, Dec_deg].
+        efficiency : callable or None
+            Optional extra time-dependent efficiency in [0, 1].
+        return_mask, return_prob, return_exposure : bool
+            Control extra outputs.
+
+        Returns
+        -------
+        Time or tuple
+            Accepted times, optionally with mask / probabilities / exposures.
+        """
+
+        t_arr, scalar_input = self._as_time_array(t)
+
+        mask = self.acceptance_mask(t_arr, centre, efficiency=efficiency)
+        t_acc = t_arr[mask]
+
+        outputs = [t_acc]
+
+        if return_mask:
+            outputs.append(mask)
+
+        if return_prob:
+            p = np.asarray(
+                self.detection_probability(t_arr, centre, efficiency=efficiency),
+                dtype=float,
+            )
+            outputs.append(p)
+
+        if return_exposure:
+            exp_acc = (
+                np.array([], dtype=float)
+                if len(t_acc) == 0
+                else self.cumulative_directional_exposure(t_acc, centre=centre)
+            )
+            outputs.append(exp_acc)
+
+        if len(outputs) == 1:
+            if scalar_input:
+                return t_acc[0] if mask[0] else None
+            return t_acc
+
+        return tuple(outputs)
+    
+    # -------------------------------------------------------------------------
+    # Cumulative directional exposure
+    # -------------------------------------------------------------------------
+    
+    def cumulative_directional_exposure(
+        self,
+        t: Time,
+        centre: np.ndarray,
+    ) -> np.ndarray | float:
+        """
+        Exact cumulative directional exposure relative to self.t0:
+
+            epsilon(t) = ∫_{t0}^{t} max(0, cos(theta(u))) du
+
+        using the analytic periodic primitive.
+        """
+        t_arr, scalar_input = self._as_time_array(t)
+
+        if np.any(t_arr < self.t0) or np.any(t_arr > self.tf):
+            raise ValueError("All times must satisfy t0 <= t <= tf.")
+        
+        ra_deg, dec_deg = self._validate_centre(centre)
+
+        lat_rad = np.deg2rad(self.observatory.latitude)
+        dec_rad = np.deg2rad(dec_deg)
+
+        A = np.sin(lat_rad) * np.sin(dec_rad)
+        B = np.cos(lat_rad) * np.cos(dec_rad)
+
+        omega = 2.0 * np.pi / self.SIDEREAL_DAY_SEC
+        two_pi = 2.0 * np.pi
+
+        h = np.asarray(self._continuous_hour_angle(t_arr, ra_deg), dtype=float)
+        h0 = float(self._continuous_hour_angle(Time([self.t0]), ra_deg)[0])
+
+        # Case 1: always invisible
+        if A + B <= 0.0:
+            out = np.zeros_like(h, dtype=float)
+
+        # Case 2: always visible
+        elif A - B >= 0.0:
+            out = (A * (h - h0) + B * (np.sin(h) - np.sin(h0))) / omega
+
+        # Case 3: partial visibility
+        else:
+            h_star = np.arccos(-A / B)
+            cycle_h = 2.0 * (A * h_star + B * np.sin(h_star))   # integral over one full cycle in h-space
+            plateau = A * h_star + B * np.sin(h_star)
+
+            def H(x: np.ndarray) -> np.ndarray:
+                n = np.floor(x / two_pi)
+                eta = x - two_pi * n   # eta in [0, 2π)
+
+                out_h = n * cycle_h
+
+                m1 = eta < h_star
+                m2 = (eta >= h_star) & (eta < two_pi - h_star)
+                m3 = eta >= two_pi - h_star
+
+                out_h = out_h.astype(float)
+
+                out_h[m1] += A * eta[m1] + B * np.sin(eta[m1])
+                out_h[m2] += plateau
+                out_h[m3] += cycle_h + A * (eta[m3] - two_pi) + B * np.sin(eta[m3])
+
+                return out_h
+
+            out = (H(h) - H(np.array([h0]))[0]) / omega
+
+        return float(out[0]) if scalar_input else out
+
     def max_directional_exposure(self, centre: np.ndarray) -> float:
         """
-        Return epsilon(tf), interpreted as maximum cumulative exposure over [t0, tf].
+        Return epsilon(tf), interpreted as the maximum cumulative directional
+        exposure over [t0, tf].
         """
-        return float(self.to_directional_exposure(self.tf, centre))
-
+        return float(self.cumulative_directional_exposure(self.tf, centre))
+    
+    # -------------------------------------------------------------------------
+    # Exposure-space sampling
+    # -------------------------------------------------------------------------
+    
     def sample_directional_exposure(
         self,
         n_events: int,
@@ -201,38 +392,3 @@ class ExposureModel:
         sample = np.sort(self.rng.uniform(0.0, exposure_expanded, size=mu_expanded))
 
         return sample[:n_events], "free_maximum_exposure_method"
-    
-    def _exponential_exposure_diffs_method(
-        self,
-        n_events: int,
-        exp_rate_exposure: float
-    ) -> np.ndarray:
-        """
-        Diagnostic method to generate exposure differences between consecutive events.
-
-        The exposure differences are sampled from an exponential distribution.
-        This is intended for comparison with the default exposure sampling method.
-
-        Parameters
-        ----------
-        n_events : int
-            Number of events.
-        exp_rate_exposure : float
-            Rate parameter of the exponential distribution.
-
-        Returns
-        -------
-        delta_exp : np.ndarray
-            Exposure differences between consecutive events.
-        """
-
-        if n_events < 2:
-            raise ValueError("n_events must be >= 2.")
-
-        delta_exp = scp.expon.rvs(
-            scale=1 / exp_rate_exposure,
-            size=n_events - 1,
-            random_state=self.rng
-        )
-
-        return delta_exp

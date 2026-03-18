@@ -15,7 +15,6 @@ __all__ = [
     "ExposureModel",
     "EventSample",
     "Flare",
-    "WindowAnalysis",
     "RNGManager",
     "lambda_estimator"
     "theoretical_lambda_estimator",

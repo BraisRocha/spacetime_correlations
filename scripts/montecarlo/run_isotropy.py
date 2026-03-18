@@ -51,7 +51,7 @@ def main(seed:int) -> None:
     )
 
     project_root = Path(__file__).resolve().parents[2]
-    outdir = project_root / "output" / "isotropy"
+    outdir = project_root / "output" / "scripts" / "isotropy"
     outdir.mkdir(parents=True, exist_ok=True)
 
     lambda_stats_mc = []

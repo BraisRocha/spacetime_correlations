@@ -33,7 +33,7 @@ def plot_lambda_estimator(
 
         ax.hist(
             values,
-            bins="fd",
+            bins=100,
             density=True,
             histtype="step",
             linewidth=1.5,
@@ -79,7 +79,7 @@ def plot_p_value(
 
         ax.hist(
             values,
-            bins="fd",
+            bins=100,
             density=True,
             histtype="step",
             linewidth=1.5,
@@ -94,4 +94,58 @@ def plot_p_value(
     fig.tight_layout()
     fig.savefig(save_path, dpi=300, bbox_inches="tight")
 
+    plt.close(fig)
+
+def plot_delta_exposure(
+    delta_exposures: Mapping[str, np.ndarray],
+    save_path: str | Path,
+) -> None:
+    """
+    Plot and save one or more Delta-exposure distributions.
+
+    Parameters
+    ----------
+    delta_exposures
+        Mapping from label to array of Delta-exposure values.
+    save_path
+        Path where the figure will be saved.
+    """
+
+    if len(delta_exposures) == 0:
+        raise ValueError("At least one Delta-exposure array must be provided.")
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for label, delta_exp in delta_exposures.items():
+        values = np.asarray(delta_exp, dtype=float)
+
+        if values.ndim != 1:
+            raise ValueError(f"{label!r} must be a 1D array.")
+        if len(values) == 0:
+            raise ValueError(f"{label!r} is empty.")
+        if np.any(~np.isfinite(values)):
+            raise ValueError(f"{label!r} contains non-finite values.")
+        if np.any(values < 0):
+            raise ValueError(f"{label!r} contains negative Delta-exposure values.")
+
+        ax.hist(
+            values,
+            bins=100,
+            density=False,
+            histtype="step",
+            linewidth=1.5,
+            label=label,
+        )
+
+    ax.set_xlabel(r"$\Delta$ exposure")
+    ax.set_ylabel("Density")
+    ax.set_title(r"Histogram of $\Delta$ exposure")
+    ax.set_yscale("log")
+    ax.legend()
+
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close(fig)

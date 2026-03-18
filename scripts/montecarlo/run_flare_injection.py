@@ -27,7 +27,7 @@ def main(seed:int) -> None:
 
     # Observation interval
     t0 = Time("2026-01-01T00:00:00", scale="utc")
-    tf = t0 + 3 * u.week
+    tf = t0 + 1 * u.week
 
     # Sky window parameters (RA [deg], Dec [deg], radius [deg])
     centre = np.array([30.0, 0.0])
@@ -62,7 +62,7 @@ def main(seed:int) -> None:
     )
 
     project_root = Path(__file__).resolve().parents[2]
-    outdir = project_root / "output" / "flare_injection"
+    outdir = project_root / "output" / "scripts" / "flare_injection"
     outdir.mkdir(parents=True, exist_ok=True)
 
     lambda_stats_bkg = []
@@ -79,7 +79,6 @@ def main(seed:int) -> None:
             tf=tf,
             rng=rng_events,
         )
-        parent_sample.sample_equatorial_coordinates()
 
         subsample = parent_sample.select_subsample(window=window)
         subsample.add_directional_exposure(
@@ -87,7 +86,6 @@ def main(seed:int) -> None:
             exposure_model=exposure_model,
         )
 
-        print(subsample.n_events)
         # Apply the statistical method
         lambda_stat, p_val = stc.lambda_estimator(sample=subsample)
 
@@ -95,14 +93,14 @@ def main(seed:int) -> None:
         p_values_bkg.append(p_val)
 
         #Inject flare into the sample
-        n_flare = int(scp.poisson.rvs(0.2 * subsample.expected_counts))
+        n_flare = int(scp.poisson.rvs(0.5 * subsample.expected_counts))
 
         flare = stc.Flare(
             n_events=n_flare,
             duration=flare_duration,
             t0=t0,
             tf=tf,
-            centre=window.centre, 
+            centre=window.centre,
             exposure=exposure_model,
             rng=rng_flare
         )
@@ -114,13 +112,10 @@ def main(seed:int) -> None:
 
         subsample.inject_flare(flare=flare)
 
-        print(subsample.n_events)
-
         lambda_stat, p_val = stc.lambda_estimator(
             sample=subsample)
         lambda_flare.append(lambda_stat)
         p_values_flare.append(p_val)
-
 
     # Convert to arrays
     lambda_stats_bkg = np.array(lambda_stats_bkg)
