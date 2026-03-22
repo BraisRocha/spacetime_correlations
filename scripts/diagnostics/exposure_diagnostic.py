@@ -332,6 +332,7 @@ def save_exposure_acceptance_plots(
         plt.xlabel("Cumulative directional exposure")
         plt.ylabel("Counts")
         plt.title("Accepted events directional exposure")
+        plt.ticklabel_format(axis="x", style="sci", scilimits=(3, 3))
         plt.tight_layout()
         p = outdir / f"dir_exposure_hist.png"
         plt.savefig(p, dpi=150, bbox_inches="tight")
