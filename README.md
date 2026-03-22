@@ -2,17 +2,18 @@
 
 `spacetimecorr` is a Python package for simulating and analyzing **spatiotemporal correlations** in ultra-high-energy cosmic ray (UHECR) arrival directions.
 
-It currently focuses on:
+Current functionality includes:
 - isotropic event simulation in equatorial coordinates,
 - circular sky-window event selection,
-- observatory-dependent directional exposure modeling,
-- basic statistical tooling and diagnostic plotting.
+- observatory-based directional exposure modeling,
+- Monte Carlo scripts for isotropy and flare-injection studies,
+- diagnostic plotting helpers.
 
 ## Installation
 
 ### Requirements
 - Python `>=3.10`
-- Dependencies declared in `pyproject.toml`:
+- Dependencies in `pyproject.toml`:
   - `numpy`
   - `astropy`
   - `scipy`
@@ -28,20 +29,22 @@ pip install -U pip
 pip install -e .
 ```
 
-## Current repository layout
+## Repository layout
 
 ```text
 spacetime_correlations/
-├── main.py
 ├── pyproject.toml
 ├── README.md
 ├── scripts/
-│   └── diagnostics/
-│       ├── sampling_diagnostic.py
-│       └── exposure_diagnostic.py
+│   ├── diagnostics/
+│   │   ├── exposure_diagnostic.py
+│   │   ├── flare_diagnostic.py
+│   │   └── sampling_diagnostic.py
+│   └── montecarlo/
+│       ├── run_flare_injection.py
+│       └── run_isotropy.py
 └── spacetimecorr/
     ├── __init__.py
-    ├── analysis.py
     ├── event_sample.py
     ├── exposure.py
     ├── flare.py
@@ -49,44 +52,14 @@ spacetime_correlations/
     ├── rng.py
     ├── skywindow.py
     ├── statistics.py
+    ├── io/
+    │   ├── logs.py
+    │   └── output.py
     └── plotting/
-        ├── __init__.py
         ├── events_plots.py
-        └── exposure_plots.py
+        ├── exposure_plots.py
+        └── statistics_plots.py
 ```
-
-## Main components
-
-### `RNGManager`
-Creates deterministic named random-number generators. Different modules can request independent streams by name while keeping reproducibility from one master seed.
-
-### `EventSample`
-Represents a collection of events over an observation interval `[t0, tf]`.
-
-Key behavior:
-- isotropic RA/Dec sampling (`sample_equatorial_coordinates`),
-- derived properties such as observation duration (`T_obs`) and expected event rate,
-- windowed subsample creation,
-- directional exposure attachment for selected samples.
-
-### `SkyWindow`
-Defines a spherical-cap sky selection with:
-- `centre = [RA_deg, Dec_deg]`
-- `radius` in degrees.
-
-Provides containment masks, selected subsamples, and uniform full-sky expected-count estimates.
-
-### `Observatory`
-Dataclass wrapper around observatory coordinates (`latitude`, `longitude`, `altitude`) with validation and cached `astropy.coordinates.EarthLocation`.
-
-### `ExposureModel`
-Maps times and directions to cumulative directional exposure and samples exposure-space values for selected events.
-
-### Plotting utilities (`spacetimecorr.plotting`)
-Includes helpers to generate:
-- plain RA/Dec scatter plots,
-- hammer projections and density maps,
-- exposure diagnostic plots.
 
 ## Quick start
 
@@ -116,16 +89,15 @@ rng_exposure = rngm.get("exposure")
 # Simulated full sample
 sample = EventSample(n_events=n_events, t0=t0, tf=tf, rng=rng_events)
 
-# Sky window selection
+# Sky-window selection
 window = SkyWindow(centre=np.array([30.0, 0.0]), radius=2.0)
-subsample = window.select(sample)
+subsample = sample.select_subsample(window)
 
 # Directional exposure model
 obs = Observatory(latitude=-35.15, longitude=-69.2, altitude=1425)
 exposure = ExposureModel(observatory=obs, t0=t0, tf=tf, rng=rng_exposure)
 
-subsample.add_directional_exposure_for_window(
-    parent_sample=sample,
+subsample.add_directional_exposure(
     window=window,
     exposure_model=exposure,
 )
@@ -134,20 +106,21 @@ print("Selected events:", subsample.n_events)
 print("Has exposure:", subsample.has_exposure)
 ```
 
-## Diagnostics
+## Diagnostics and Monte Carlo scripts
 
-Run the current sampling diagnostic script:
+Examples:
 
 ```bash
 python scripts/diagnostics/sampling_diagnostic.py
+python scripts/diagnostics/exposure_diagnostic.py
+python scripts/diagnostics/flare_diagnostic.py
+python scripts/montecarlo/run_isotropy.py
+python scripts/montecarlo/run_flare_injection.py
 ```
 
-Outputs are written to `output/diagnostics/events/`.
+Outputs are written under `output/` (created by helper utilities/scripts).
 
-> Note: `scripts/diagnostics/exposure_diagnostic.py` currently exists as a placeholder file.
+## Notes
 
-## Development notes
-
-- `main.py` runs repeated simulation loops for a baseline pipeline.
-- `analysis.py`, `statistics.py`, and `flare.py` are present but still evolving.
-- APIs are still under active development and may change.
+- APIs are still evolving and may change between versions.
+- `cartopy` can be the hardest dependency to install on some systems; if needed, install system geospatial libraries first or use conda/mamba environments.

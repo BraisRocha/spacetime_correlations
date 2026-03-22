@@ -16,7 +16,7 @@ __all__ = [
     "EventSample",
     "Flare",
     "RNGManager",
-    "lambda_estimator"
+    "lambda_estimator",
     "theoretical_lambda_estimator",
 ]
 
