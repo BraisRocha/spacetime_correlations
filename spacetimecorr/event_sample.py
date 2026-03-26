@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+import importlib
 from typing import TYPE_CHECKING
 
 import numpy as np
-import healpy as hp
-import matplotlib.pyplot as plt
 
 import astropy.units as u
 from astropy.units import Quantity
@@ -45,6 +44,14 @@ class EventSample:
     # -------------------------------------------------------------------------
     # Construction and basic initialization
     # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _healpy():
+        return importlib.import_module("healpy")
+
+    @staticmethod
+    def _pyplot():
+        return importlib.import_module("matplotlib.pyplot")
 
     def __init__(
         self,
@@ -388,6 +395,8 @@ class EventSample:
                 "Sample coordinates before building the skymap."
             )
 
+        hp = self._healpy()
+
         if not hp.isnsideok(nside):
             raise ValueError("nside must be a valid HEALPix NSIDE value.")
 
@@ -449,6 +458,7 @@ class EventSample:
             location=location,
             zenith_max=zenith_max,
         )
+        plt = self._pyplot()
 
         lon_edges, lat_edges, image = self._healpix_to_lonlat_image(
             skymap=skymap,
@@ -550,6 +560,7 @@ class EventSample:
         Mask HEALPix pixels outside the observatory declination band.
         """
         dec_min, dec_max = cls._visible_declination_band(location, zenith_max)
+        hp = cls._healpy()
 
         masked = np.array(skymap, copy=True)
         npix = hp.nside2npix(nside)
@@ -592,6 +603,7 @@ class EventSample:
         lon_edges, lat_edges, image : tuple of numpy.ndarray
             Grid edges in radians and the gridded image.
         """
+        hp = EventSample._healpy()
         lon_edges = np.linspace(-np.pi, np.pi, nx)
         lat_edges = np.linspace(-0.5 * np.pi, 0.5 * np.pi, ny)
 

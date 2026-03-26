@@ -16,5 +16,10 @@ dependencies = [
   "cartopy>=0.22",
 ]
 
+[project.optional-dependencies]
+skymap = [
+  "healpy>=1.18",
+]
+
 [tool.setuptools.packages.find]
 include = ["spacetimecorr*"]

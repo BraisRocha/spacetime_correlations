@@ -19,6 +19,8 @@ Current functionality includes:
   - `scipy`
   - `matplotlib`
   - `cartopy`
+- Optional extras:
+  - `healpy` (required only for HEALPix sky-map generation/plotting APIs)
 
 ### Install (editable)
 
@@ -27,6 +29,21 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e .
+```
+
+### Install with sky-map support
+
+```bash
+pip install -e ".[skymap]"
+```
+
+### Keeping dependencies updated (checked on 2026-03-26)
+
+Use this command regularly to validate that your environment is using the newest
+available package releases:
+
+```bash
+pip list --outdated
 ```
 
 ## Repository layout
@@ -52,13 +69,9 @@ spacetime_correlations/
     ├── rng.py
     ├── skywindow.py
     ├── statistics.py
-    ├── io/
-    │   ├── logs.py
-    │   └── output.py
-    └── plotting/
-        ├── events_plots.py
-        ├── exposure_plots.py
-        └── statistics_plots.py
+    └── io/
+        ├── logs.py
+        └── output.py
 ```
 
 ## Quick start
@@ -124,3 +137,4 @@ Outputs are written under `output/` (created by helper utilities/scripts).
 
 - APIs are still evolving and may change between versions.
 - `cartopy` can be the hardest dependency to install on some systems; if needed, install system geospatial libraries first or use conda/mamba environments.
+- `spacetimecorr` can now be imported without `healpy`; `healpy` is loaded only when calling HEALPix map/plot methods.
