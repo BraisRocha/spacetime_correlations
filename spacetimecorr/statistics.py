@@ -45,6 +45,35 @@ def lambda_estimator(sample: EventSample) -> Tuple[float, float]:
 
     return lambda_stat, p_value
 
+def tau_method(sample: EventSample):
+    """
+    Compute doublets' time differences, or in this case dir exposure,
+    and procude a cumulative binning to see the number of doublets with diff<tau
+    where tau is given by the bin edges.
+
+    The histogram showing the n differences for each bin have a Poisson prob
+    given by sample.expected_counts*(1-e**(-sample.exp_rate_exposure*tau))
+
+    Maybe a type of likelihood method where the probability obtained for each bin
+    (instead of the probability could be used the survival probability I think it makes 
+    sense) and obtain an estimator from there
+    """
+
+def spatial_estimator(sample: EventSample) -> float:
+    """
+    Compute a purely spatial correlation estimator.
+
+    The estimator is defined as the Poisson tail probability
+
+        P(N >= n_obs | mu),
+
+    where
+        n_obs = sample.n_events
+        mu = sample.expected_counts
+    """
+
+    return scp.poisson.sf(sample.n_events - 1, sample.expected_counts)
+
 def theoretical_lambda_estimator(
     sample: EventSample
 ) -> Tuple[np.ndarray, np.ndarray]:

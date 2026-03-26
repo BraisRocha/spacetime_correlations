@@ -6,6 +6,8 @@ from .flare import Flare
 from .statistics import (
     lambda_estimator,
     theoretical_lambda_estimator,
+    spatial_estimator,
+    tau_method,
 )
 from .rng import RNGManager
 
@@ -18,6 +20,8 @@ __all__ = [
     "RNGManager",
     "lambda_estimator",
     "theoretical_lambda_estimator",
+    "spatial_estimator",
+    "tau_method",
 ]
 
 """
