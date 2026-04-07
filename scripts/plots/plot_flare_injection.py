@@ -38,6 +38,12 @@ def main(results_dir: str | Path) -> None:
 
     spatial_p_values = data["spatial_p_values"]
 
+    tau_lnL_bkg = data["tau_lnL_bkg"]
+    tau_p_val_bkg = data["tau_p_val_bkg"]
+
+    tau_lnL_flare = data["tau_lnL_flare"]
+    tau_p_val_flare = data["tau_p_val_flare"]
+
     # data from `metadata.json`
     mu_window = metadata["mu_window"]
     n_sim = metadata["n_simulations_requested"]
@@ -92,18 +98,39 @@ def main(results_dir: str | Path) -> None:
     plt.close(fig)
 
     # ------------------------------------------------------------------
+    # tau log-likelihood estimator plot
+    # ------------------------------------------------------------------
+
+    plt.figure(figsize=(7, 4.5))
+
+    plt.hist(tau_lnL_bkg, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Isotropy")
+    plt.hist(tau_lnL_flare, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Flare")
+
+    plt.xlabel(r"$\ln L_\tau$")
+    plt.ylabel("Density")
+    plt.title(r"Histogram of $\ln L_\tau$")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(results_dir / "tau_lnL_hist.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    # ------------------------------------------------------------------
     # p-value plot
     # ------------------------------------------------------------------
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(p_values_bkg, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Isotropy")
+    #ax.hist(p_values_bkg, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Isotropy")
     ax.hist(p_values_flare, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Flare")
-    ax.hist(spatial_p_values, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Spatial")
+    #ax.hist(spatial_p_values, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Spatial")
+    ax.hist(tau_p_val_bkg, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="tau Isotropy")
+    ax.hist(tau_p_val_flare, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="tau Flare")
+
 
     ax.set_xlabel("p-value")
     ax.set_ylabel("Density")
     ax.set_title("Histogram of p-values")
     ax.set_yscale("log")
+    #ax.set_xscale("log")
     ax.legend()
 
     fig.tight_layout()
@@ -183,5 +210,5 @@ def main(results_dir: str | Path) -> None:
 if __name__ == "__main__":
     # Change this path to the run you want to plot
     run_dir = Path("/home/brais_rocha/Work/dev/stc_project/output/scripts/flare_injection")
-    sim_id = "20260325_175932_seed42"
+    sim_id = "20260327_112312_seed42"
     main(run_dir/sim_id)

@@ -7,7 +7,8 @@ from .statistics import (
     lambda_estimator,
     theoretical_lambda_estimator,
     spatial_estimator,
-    tau_method,
+    tau_log_likelihood,
+    empirical_p_values,
 )
 from .rng import RNGManager
 
@@ -21,7 +22,8 @@ __all__ = [
     "lambda_estimator",
     "theoretical_lambda_estimator",
     "spatial_estimator",
-    "tau_method",
+    "tau_log_likelihood",
+    "empirical_p_values",
 ]
 
 """

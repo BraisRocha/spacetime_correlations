@@ -112,6 +112,9 @@ def main(seed: int) -> None:
 
     spatial_p_values = []
 
+    tau_lnL_bkg = []
+    tau_lnL_flare = []
+
     n_success = 0
     n_failures = 0
     attempt = 0
@@ -143,8 +146,10 @@ def main(seed: int) -> None:
             lambda_stat_bkg, p_val_bkg = stc.lambda_estimator(sample=subsample)
 
             # Spatial-only estimator
-
             spatial_p_val = stc.spatial_estimator(subsample)
+
+            # tau log-likelihood estimator
+            tau_lnL_bkg_val = stc.tau_log_likelihood(subsample, n_bins=8)
 
             # Draw flare multiplicity
             mu_flare = 0.5 * subsample.expected_counts
@@ -187,6 +192,11 @@ def main(seed: int) -> None:
             delta_exposure_flare_val = np.diff(np.sort(subsample.dir_exposure))
             lambda_stat_flare, p_val_flare = stc.lambda_estimator(sample=subsample)
 
+            # No spatial p-value is obtained now as n_events didn't change
+
+            # tau log-likelihood method for the flare
+            tau_lnL_flare_val = stc.tau_log_likelihood(subsample, n_bins=8)
+
             # Only store results after the full background+flare chain succeeds
             lambda_bkg.append(lambda_stat_bkg)
             p_values_bkg.append(p_val_bkg)
@@ -197,6 +207,9 @@ def main(seed: int) -> None:
             delta_exposure_flare.append(delta_exposure_flare_val)
 
             spatial_p_values.append(spatial_p_val)
+
+            tau_lnL_bkg.append(tau_lnL_bkg_val)
+            tau_lnL_flare.append(tau_lnL_flare_val)
 
             n_success += 1
             pbar.update(1)
@@ -261,6 +274,13 @@ def main(seed: int) -> None:
 
     spatial_p_values = np.array(spatial_p_values)
 
+    tau_lnL_bkg = np.array(tau_lnL_bkg)
+    tau_lnL_flare = np.array(tau_lnL_flare)
+
+    # We need all the simulations to end to be able to compute the estiameted p_values for the tau-method
+    tau_p_val_bkg = stc.empirical_p_values(tau_lnL_bkg, tau_lnL_bkg)
+    tau_p_val_flare = stc.empirical_p_values(tau_lnL_bkg, tau_lnL_flare)
+
     # ------------------------------------------------------------------
     # Save outputs and metadata
     # ------------------------------------------------------------------
@@ -274,6 +294,10 @@ def main(seed: int) -> None:
         delta_exposure_flare=delta_exposure_flare,
         exp_rate_exposure=subsample.exp_rate_exposure,
         spatial_p_values=spatial_p_values,
+        tau_lnL_bkg=tau_lnL_bkg,
+        tau_lnL_flare=tau_lnL_flare,
+        tau_p_val_bkg=tau_p_val_bkg,
+        tau_p_val_flare=tau_p_val_flare,
     )
 
     write_metadata(
