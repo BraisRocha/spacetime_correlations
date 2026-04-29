@@ -321,7 +321,7 @@ class ExposureModel:
     def sample_directional_exposure(
         self,
         n_events: int,
-        exp_rate_exposure: float,
+        expected_exposure_rate: float,
         max_dir_exposure: float,
         factor: int = 30,
     ) -> Tuple[np.ndarray, str]:
@@ -329,7 +329,7 @@ class ExposureModel:
         Generate sampled cumulative directional exposure values.
 
         This method assumes that events follow a Poisson process in
-        *exposure space* with constant rate `exp_rate_exposure`. 
+        *exposure space* with constant rate `expected_exposure_rate`. 
         Under this assumption, event exposure values are uniformly 
         distributed in [0, max_dir_exposure].
 
@@ -344,7 +344,7 @@ class ExposureModel:
             Number of exposure values to return (i.e., number of events
             in the target sample).
 
-        exp_rate_exposure : float
+        expected_exposure_rate : float
             Event rate per unit cumulative exposure. Typically defined as
             parent_sample.n_events / max_dir_exposure.
 
@@ -370,23 +370,23 @@ class ExposureModel:
             raise TypeError("n_events must be a non-negative integer.")
         if not isinstance(factor, int) or isinstance(factor, bool) or factor <= 0:
             raise TypeError("factor must be a positive integer.")
-        if not isinstance(exp_rate_exposure, (int, float)) or isinstance(exp_rate_exposure, bool):
+        if not isinstance(expected_exposure_rate, (int, float)) or isinstance(expected_exposure_rate, bool):
             raise TypeError("exp_rate_exposure must be numeric.")
-        if exp_rate_exposure <= 0:
-            raise ValueError("exp_rate_exposure must be > 0.")
+        if expected_exposure_rate <= 0:
+            raise ValueError("expected_exposure_rate must be > 0.")
         if not isinstance(max_dir_exposure, (int, float)) or isinstance(max_dir_exposure, bool):
             raise TypeError("max_dir_exposure must be numeric.")
         if max_dir_exposure <= 0:
             return np.empty(0, dtype=float), "free_maximum_exposure_method"
 
-        mu = float(factor) * float(exp_rate_exposure) * float(max_dir_exposure)
+        mu = float(factor) * float(expected_exposure_rate) * float(max_dir_exposure)
         mu_expanded = int(math.floor(mu))
 
         if mu_expanded<= 0 or n_events == 0:
             return np.empty(0, dtype=float), "free_maximum_exposure_method"
 
         # Exposure interval length used for uniform sampling
-        exposure_expanded = mu_expanded / float(exp_rate_exposure)
+        exposure_expanded = mu_expanded / float(expected_exposure_rate)
 
         # Draw uniform exposure values and return the first n_events in "time" order
         sample = np.sort(self.rng.uniform(0.0, exposure_expanded, size=mu_expanded))

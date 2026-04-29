@@ -37,7 +37,7 @@ def make_run_dir(
     outdir = base_dir / run_code / run_name
     outdir.mkdir(parents=True, exist_ok=False)
 
-    return outdir
+    return outdir, run_name
 
 
 def write_metadata(outdir: Path, metadata: dict) -> None:

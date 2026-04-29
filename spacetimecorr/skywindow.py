@@ -120,9 +120,8 @@ class SkyWindow:
 
         return dots >= self._cos_radius
 
-    def expected_counts_in_window(self, sample: EventSample) -> float:
+    def expected_n_in_window(self, n_events: int | float) -> float:
         """
         Expected number of events in the window under uniform full-sky exposure.
         """
-
-        return sample.n_events * self.sky_fraction
+        return float(n_events) * self.sky_fraction
