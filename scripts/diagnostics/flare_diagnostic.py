@@ -40,7 +40,7 @@ def flare_summary_text(flare: Flare, window: SkyWindow, max_rows: int = 10) -> s
         "RA": None if flare.RA is None else len(flare.RA),
         "Dec": None if flare.Dec is None else len(flare.Dec),
         "time": None if flare.time is None else len(flare.time),
-        "dir_exposure": None if flare.dir_exposure is None else len(flare.dir_exposure),
+        "exposure": None if flare.exposure is None else len(flare.exposure),
     }
 
     lines.append("")
@@ -71,21 +71,21 @@ def flare_summary_text(flare: Flare, window: SkyWindow, max_rows: int = 10) -> s
     lines.append(f"  flare duration [s]     : {flare.duration:.3f}")
     lines.append(f"  inside [t0, tf]?       : {in_obs}")
 
-    if flare.dir_exposure is not None and len(flare.dir_exposure) > 0:
+    if flare.exposure is not None and len(flare.exposure) > 0:
         lines.append("")
         lines.append("Directional exposure diagnostics:")
-        lines.append(f"  min                    : {np.min(flare.dir_exposure):.6g}")
-        lines.append(f"  max                    : {np.max(flare.dir_exposure):.6g}")
-        lines.append(f"  mean                   : {np.mean(flare.dir_exposure):.6g}")
+        lines.append(f"  min                    : {np.min(flare.exposure):.6g}")
+        lines.append(f"  max                    : {np.max(flare.exposure):.6g}")
+        lines.append(f"  mean                   : {np.mean(flare.exposure):.6g}")
 
     nshow = min(max_rows, len(flare.RA))
     lines.append("")
     lines.append(f"First {nshow} events:")
-    lines.append(" idx |      RA [deg] |     Dec [deg] | time | dir_exposure")
+    lines.append(" idx |      RA [deg] |     Dec [deg] | time | exposure")
     lines.append("-" * 90)
 
     for i in range(nshow):
-        exp_i = None if flare.dir_exposure is None else flare.dir_exposure[i]
+        exp_i = None if flare.exposure is None else flare.exposure[i]
         exp_txt = "None" if exp_i is None else f"{exp_i:.6g}"
         lines.append(
             f"{i:4d} | "
@@ -108,7 +108,7 @@ def save_flare_arrays(flare: Flare, outdir: Path, stem: str = "flare") -> Path:
         Dec=np.array([]) if flare.Dec is None else flare.Dec,
         time_isot=np.array([]) if flare.time is None else np.array(flare.time.isot),
         time_jd=np.array([]) if flare.time is None else flare.time.jd,
-        dir_exposure=np.array([]) if flare.dir_exposure is None else flare.dir_exposure,
+        exposure=np.array([]) if flare.exposure is None else flare.exposure,
         centre=flare.centre,
         n_events=flare.n_events,
         duration_sec=flare.duration,
@@ -173,14 +173,14 @@ def save_flare_plots(flare: Flare, window: SkyWindow, outdir: Path, stem: str = 
     saved.append(p)
 
     # Exposure histogram
-    if flare.dir_exposure is not None and len(flare.dir_exposure) > 0:
+    if flare.exposure is not None and len(flare.exposure) > 0:
         plt.figure(figsize=(6, 4))
-        plt.hist(flare.dir_exposure, bins="fd", alpha=0.8, edgecolor="black", linewidth=0.8)
+        plt.hist(flare.exposure, bins="fd", alpha=0.8, edgecolor="black", linewidth=0.8)
         plt.xlabel("Directional exposure")
         plt.ylabel("Counts")
         plt.title("Accepted event exposure")
         plt.tight_layout()
-        p = outdir / f"dir_exposure_hist.png"
+        p = outdir / f"exposure_hist.png"
         plt.savefig(p, dpi=150, bbox_inches="tight")
         plt.close()
         saved.append(p)
@@ -188,7 +188,7 @@ def save_flare_plots(flare: Flare, window: SkyWindow, outdir: Path, stem: str = 
         # Exposure vs time
         plt.figure(figsize=(6, 4))
         x = np.asarray(offsets)
-        y = np.asarray(flare.dir_exposure)
+        y = np.asarray(flare.exposure)
         xy = np.vstack([x, y])
         z = gaussian_kde(xy)(xy)
         idx = np.argsort(z)
@@ -289,7 +289,7 @@ if __name__ == "__main__":
         t0=t0,
         tf=tf,
         centre=centre,
-        exposure=exposure_model,
+        exposure_model=exposure_model,
         rng=rng_flare,
     )
 

@@ -7,6 +7,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+import spacetimecorr as stc
+
+import scipy.stats as scp
+
 def main(results_dir: str | Path) -> None:
     """
     Load a saved Monte Carlo run and create the plots.
@@ -28,33 +32,27 @@ def main(results_dir: str | Path) -> None:
 
     # data from `results.npz`
     lambda_bkg = data["lambda_bkg"]
-    p_values_bkg = data["p_values_bkg"]
-
     lambda_flare = data["lambda_flare"]
-    p_values_flare = data["p_values_flare"]
+
+    pvalues_bkg = data["pvalues_bkg"]
+    pvalues_flare = data["pvalues_flare"]
 
     delta_exposure_bkg = data["delta_exposure_bkg"]
     delta_exposure_flare = data["delta_exposure_flare"]
 
-    spatial_p_values = data["spatial_p_values"]
-
-    tau_lnL_bkg = data["tau_lnL_bkg"]
-    tau_p_val_bkg = data["tau_p_val_bkg"]
-
-    tau_lnL_flare = data["tau_lnL_flare"]
-    tau_p_val_flare = data["tau_p_val_flare"]
+    n_events_bkg = data["n_events_bkg"]
+    n_events_flare = data["n_events_flare"]
 
     # data from `metadata.json`
     mu_window = metadata["mu_window"]
     n_sim = metadata["n_simulations_requested"]
-    exp_rate_exposure = metadata["exp_rate_exposure"]
+    expected_exposure_rate = metadata["expected_exposure_rate"]
     T_obs_days = metadata["T_obs_days"]
     flare_duration_days = metadata["flare_duration_days"]
     mu_flare = metadata["mu_flare"]
 
-    # ------------------------------------------------------------------
-    # Lambda estimator plot
-    # ------------------------------------------------------------------
+
+    # Scientific notation for the plots
     def sci_label(n: int) -> str:
         exponent = int(np.floor(np.log10(n)))
         mantissa = n / 10**exponent
@@ -63,16 +61,94 @@ def main(results_dir: str | Path) -> None:
             return rf"10^{{{exponent}}}"
         return rf"{mantissa:.1f}\times10^{{{exponent}}}"
 
+    # ------------------------------------------------------------------
+    # Lambda estimator plot
+    # ------------------------------------------------------------------
+    stc.plot_lambda_joint_heatmap(int(mu_window), results_dir)
+
+    # Quantiles of the distribution
+    quantiles = [0.1, 0.5]
+    q_flare = np.quantile(lambda_flare, quantiles)
+    qp_flare = stc.lambda_marginal_sf(q_flare, mu_window)
+    qsigma_flare = stc.pvalue_to_sigma(qp_flare)
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(lambda_bkg, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Isotropy")
-    ax.hist(lambda_flare, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Flare")
 
-    ax.set_xlabel("Lambda estimator")
-    ax.set_ylabel("Density")
-    ax.set_title("Histogram of Lambda estimator")
+    # Plot histograms and grab the color of the flare one
+    ax.hist(lambda_bkg, bins="sqrt", density=True,
+            histtype="step", linewidth=1.5, label="Isotropy")
+
+    _, _, flare_patches = ax.hist(
+        lambda_flare, bins="sqrt", density=True,
+        histtype="step", linewidth=1.5, label="Isotropy+Flare"
+    )
+
+    flare_color = flare_patches[0].get_edgecolor()
+
+    # Add vertical lines and annotations
+    for q, si, qlvl in zip(q_flare, qsigma_flare, quantiles):
+        ax.axvline(q, linestyle="--", linewidth=1.5, color=flare_color)
+
+        ax.text(
+            q,
+            ax.get_ylim()[1] * 0.6,
+            fr"$q_{{{int(qlvl*100)}}}$" + "\n" + fr"$\sigma={si:.2f}$",
+            rotation=90,
+            va="center",
+            ha="right",
+            color="black"
+        )
+
+
+    ax.set_xlabel(r"$\Lambda$", fontsize=13)
+    ax.set_ylabel("Density", fontsize=13)
+    #ax.set_title("Histogram of Lambda estimator")
     ax.set_yscale("log")
-    ax.legend()
+    ax.legend(loc="center right", bbox_to_anchor=(1,0.7))
+
+    info_text = (
+        rf"$N_{{\rm sim}} = {sci_label(n_sim)}$" "\n"
+        rf"$\mu_{{\rm window}} = {mu_window:.2f}$" "\n"
+        rf"$\mu_{{\rm flare}} = {mu_flare:.2f}$" "\n"
+        rf"$T_{{\rm obs}} = {int(T_obs_days/365)}\,\mathrm{{years}}$" "\n"
+        rf"$\Delta t_{{\rm flare}} = {int(flare_duration_days/30)}\,\mathrm{{month}}$"
+        
+    )
+
+    ax.text(
+        0.98,
+        0.98,
+        info_text,
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
+    )
+
+    fig.tight_layout()
+    fig.savefig(results_dir/ "lambda.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+    # ------------------------------------------------------------------
+    # number of events inside window plot
+    # ------------------------------------------------------------------
+
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(n_events_bkg, 
+            bins=np.arange(min(n_events_bkg) - 0.5, max(n_events_bkg) + 1.5, 1), # Create bins of width 1 centered on integers
+            density=False, histtype="step", linewidth=1.5, label="Isotropy")
+    ax.hist(n_events_flare, 
+            bins=np.arange(min(n_events_flare) - 0.5, max(n_events_flare) + 1.5, 1),
+            density=False, histtype="step", linewidth=1.5, label="Flare")
+    ax.axvline(mu_window, color="black", linestyle="--", linewidth=1.5, label="Expected n")
+
+    ax.set_xlabel("Number of events")
+    ax.set_ylabel("Counts")
+    ax.set_title("Number of events inside window")
+    #ax.set_yscale("log")
+    ax.legend(loc='center left')
 
     info_text = (
         rf"$N_{{\rm sim}} = {sci_label(n_sim)}$" "\n"
@@ -94,37 +170,16 @@ def main(results_dir: str | Path) -> None:
     )
 
     fig.tight_layout()
-    fig.savefig(results_dir/ "lambda.png", dpi=300, bbox_inches="tight")
+    fig.savefig(results_dir/ "n_events.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
-
-    # ------------------------------------------------------------------
-    # tau log-likelihood estimator plot
-    # ------------------------------------------------------------------
-
-    plt.figure(figsize=(7, 4.5))
-
-    plt.hist(tau_lnL_bkg, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Isotropy")
-    plt.hist(tau_lnL_flare, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Flare")
-
-    plt.xlabel(r"$\ln L_\tau$")
-    plt.ylabel("Density")
-    plt.title(r"Histogram of $\ln L_\tau$")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(results_dir / "tau_lnL_hist.png", dpi=300, bbox_inches="tight")
-    plt.close()
 
     # ------------------------------------------------------------------
     # p-value plot
     # ------------------------------------------------------------------
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    #ax.hist(p_values_bkg, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Isotropy")
-    ax.hist(p_values_flare, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Flare")
-    #ax.hist(spatial_p_values, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Spatial")
-    ax.hist(tau_p_val_bkg, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="tau Isotropy")
-    ax.hist(tau_p_val_flare, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="tau Flare")
-
+    ax.hist(pvalues_bkg, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Isotropy")
+    ax.hist(pvalues_flare, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Flare")
 
     ax.set_xlabel("p-value")
     ax.set_ylabel("Density")
@@ -142,11 +197,12 @@ def main(results_dir: str | Path) -> None:
     # ------------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(delta_exposure_bkg, bins="fd", density=False, histtype="step", linewidth=1.5, label="Isotropy")
-    ax.hist(delta_exposure_flare, bins="fd", density=False, histtype="step", linewidth=1.5, label="Flare")
+    ax.hist(delta_exposure_flare, bins="fd", density=False, histtype="step", linewidth=1.5, label="Isotropy+Flare")
 
-    ax.set_xlabel(r"$\Delta$ exposure")
-    ax.set_ylabel("Count")
-    ax.set_title(r"Histogram of $\Delta$ exposure")
+    ax.set_xlabel(r"$\Delta\varepsilon$")
+    ax.set_ylabel("Counts")
+    #ax.set_title(r"Histogram of $\Delta$ exposure")
+    ax.set_xlim(-250,20000)
     ax.legend()
 
     fig.tight_layout()
@@ -170,45 +226,8 @@ def main(results_dir: str | Path) -> None:
     fig.savefig(results_dir/ "log_delta_exp.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-    # ------------------------------------------------------------------
-    # Delta-exposure*Expected-rate plot
-    # ------------------------------------------------------------------
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(delta_exposure_bkg*exp_rate_exposure, bins="fd", density=False, histtype="step", linewidth=1.5, label="Isotropy")
-    ax.hist(delta_exposure_flare*exp_rate_exposure, bins="fd", density=False, histtype="step", linewidth=1.5, label="Flare")
-
-    ax.set_xlabel(r"$\Delta$ exposure $\times$ $\Gamma$")
-    ax.set_ylabel("Count")
-    ax.set_title(r"Histogram of $\Delta$ exposure $\times$ $\Gamma$")
-    ax.legend()
-
-    fig.tight_layout()
-    fig.savefig(results_dir/ "norm_delta_exp.png", dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
-    # ------------------------------------------------------------------
-    # log(Delta-exposure*Expected-rate) plot
-    # ------------------------------------------------------------------
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(delta_exposure_bkg*exp_rate_exposure, bins="fd", density=False, histtype="step", linewidth=1.5, label="Isotropy")
-    ax.hist(delta_exposure_flare*exp_rate_exposure, bins="fd", density=False, histtype="step", linewidth=1.5, label="Flare")
-
-    ax.set_xlabel(r"$\Delta$ exposure $\times$ $\Gamma$")
-    ax.set_ylabel("Count")
-    ax.set_title(r"Histogram of $\Delta$ exposure $\times$ $\Gamma$")
-    ax.set_yscale("log")
-    ax.legend()
-
-    fig.tight_layout()
-    fig.savefig(results_dir/ "log_norm_delta_exp.png", dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
-
-    print(f"Saved plots to {results_dir}")
-
-
 if __name__ == "__main__":
     # Change this path to the run you want to plot
     run_dir = Path("/home/brais_rocha/Work/dev/stc_project/output/scripts/flare_injection")
-    sim_id = "20260327_112312_seed42"
+    sim_id = "20260428_131744_seed42"
     main(run_dir/sim_id)

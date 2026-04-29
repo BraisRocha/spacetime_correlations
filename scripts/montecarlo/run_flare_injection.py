@@ -11,6 +11,7 @@ import scipy.stats as scp
 
 from astropy.time import Time
 from tqdm import tqdm
+import time
 
 import spacetimecorr as stc
 from spacetimecorr.io import setup_logger, make_run_dir, write_metadata
@@ -26,6 +27,8 @@ def main(seed: int) -> None:
     max_attempts is reached.
     """
 
+    start_time = time.time()
+
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
@@ -34,13 +37,13 @@ def main(seed: int) -> None:
     max_attempts = int(3 * n_simulations)
 
     # Observation interval
-    T_obs = 1 * u.week
-    t0 = Time("2026-01-01T00:00:00", scale="utc")
+    T_obs = 10 * u.year
+    t0 = Time("2013-01-01T00:00:00", scale="utc")
     tf = t0 + T_obs
 
     # Sky window parameters (RA [deg], Dec [deg], radius [deg])
     centre = np.array([30.0, 0.0])
-    radius = 3.0
+    radius = 1.5
 
     # Pierre Auger Observatory coordinates
     latitude_pa = -35.15
@@ -48,8 +51,9 @@ def main(seed: int) -> None:
     altitude_pa = 1425
 
     # Flare parameters
-    flare_duration = 0.1 * u.day
+    flare_duration = 30 * u.day
     flare_sigma = 1.0  # deg
+    flare_intensity = 0.2 # events of the flare/events expected from isotropy within the window
 
     # ------------------------------------------------------------------
     # Output directory
@@ -57,7 +61,7 @@ def main(seed: int) -> None:
     project_root = Path(__file__).resolve().parents[2]
     base_dir = project_root / "output" / "scripts"
 
-    outdir = make_run_dir(
+    outdir, sim_ID = make_run_dir(
         base_dir=base_dir,
         run_code="flare_injection",
         seed=seed,
@@ -72,6 +76,7 @@ def main(seed: int) -> None:
     )
 
     logger.info("Starting flare injection run")
+    logger.info("Simulation ID: %s", sim_ID)
     logger.info("Output directory: %s", outdir)
     logger.info("Seed: %d", seed)
 
@@ -102,22 +107,23 @@ def main(seed: int) -> None:
     # Storage
     # ------------------------------------------------------------------
     lambda_bkg = []
-    p_values_bkg = []
+    pvalues_bkg = []
 
     lambda_flare = []
-    p_values_flare = []
+    pvalues_flare = []
 
     delta_exposure_bkg = []
     delta_exposure_flare = []
 
-    spatial_p_values = []
+    expected_n = window.expected_n_in_window(n_events)
 
-    tau_lnL_bkg = []
-    tau_lnL_flare = []
+    n_events_bkg = []
+    n_events_flare = []
 
     n_success = 0
     n_failures = 0
     attempt = 0
+    n_zero_flare = 0
 
     # Progress bar tracks successful simulations, not attempts
     pbar = tqdm(total=n_simulations, desc="Successful simulations")
@@ -125,6 +131,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Main simulation loop
     # ------------------------------------------------------------------
+    
     while n_success < n_simulations and attempt < max_attempts:
         attempt += 1
 
@@ -137,22 +144,18 @@ def main(seed: int) -> None:
                 rng=rng_events,
             )
             subsample = parent_sample.select_subsample(window=window)
-            subsample.add_directional_exposure(
+            subsample.assign_directional_exposure(
                 window=window,
                 exposure_model=exposure_model,
             )
             
-            delta_exposure_bkg_val = np.diff(np.sort(subsample.dir_exposure))
-            lambda_stat_bkg, p_val_bkg = stc.lambda_estimator(sample=subsample)
+            delta_exposure_bkg_val = np.diff(np.sort(subsample.exposure))
+            lambda_stat_bkg = stc.lambda_estimator(sample=subsample)
 
-            # Spatial-only estimator
-            spatial_p_val = stc.spatial_estimator(subsample)
-
-            # tau log-likelihood estimator
-            tau_lnL_bkg_val = stc.tau_log_likelihood(subsample, n_bins=8)
+            n_bkg = subsample.n_events
 
             # Draw flare multiplicity
-            mu_flare = 0.5 * subsample.expected_counts
+            mu_flare = flare_intensity * subsample.expected_n
             n_flare = int(
                 scp.poisson.rvs(
                     mu_flare,
@@ -160,7 +163,6 @@ def main(seed: int) -> None:
                 )
             )
 
-            n_zero_flare = 0
             if n_flare == 0:
                 logger.info(
                     "Simulation %d: drawn flare multiplicity is zero (mu=%.3f). "
@@ -178,7 +180,7 @@ def main(seed: int) -> None:
                     t0=t0,
                     tf=tf,
                     centre=window.centre,
-                    exposure=exposure_model,
+                    exposure_model=exposure_model,
                     rng=rng_flare,
                 )
                 flare.generate_in_window(
@@ -186,30 +188,30 @@ def main(seed: int) -> None:
                     sigma=flare_sigma,
                 )
 
-                subsample.inject_flare(flare=flare)
+                # We inject the flare in the parent sample and redo the window cut
+                parent_sample.inject_flare(flare=flare)
+                subsample = parent_sample.select_subsample(window=window)
+                subsample.assign_directional_exposure(
+                    window=window,
+                    exposure_model=exposure_model,
+                )
 
             # Although n_flare may be 0 parameters are still obtained
-            delta_exposure_flare_val = np.diff(np.sort(subsample.dir_exposure))
-            lambda_stat_flare, p_val_flare = stc.lambda_estimator(sample=subsample)
+            delta_exposure_flare_val = np.diff(np.sort(subsample.exposure))
+            lambda_stat_flare = stc.lambda_estimator(sample=subsample)
+            #p_val_flare = float(scp.gamma.sf(lambda_stat_flare, a=n_events_bkg - 1, scale=1.0))
 
-            # No spatial p-value is obtained now as n_events didn't change
-
-            # tau log-likelihood method for the flare
-            tau_lnL_flare_val = stc.tau_log_likelihood(subsample, n_bins=8)
+            n_flare = subsample.n_events
 
             # Only store results after the full background+flare chain succeeds
             lambda_bkg.append(lambda_stat_bkg)
-            p_values_bkg.append(p_val_bkg)
             lambda_flare.append(lambda_stat_flare)
-            p_values_flare.append(p_val_flare)
 
             delta_exposure_bkg.append(delta_exposure_bkg_val)
             delta_exposure_flare.append(delta_exposure_flare_val)
 
-            spatial_p_values.append(spatial_p_val)
-
-            tau_lnL_bkg.append(tau_lnL_bkg_val)
-            tau_lnL_flare.append(tau_lnL_flare_val)
+            n_events_bkg.append(n_bkg)
+            n_events_flare.append(n_flare)
 
             n_success += 1
             pbar.update(1)
@@ -263,23 +265,17 @@ def main(seed: int) -> None:
     # Convert to arrays
     # ------------------------------------------------------------------
     lambda_bkg = np.array(lambda_bkg)
-    p_values_bkg = np.array(p_values_bkg)
-
     lambda_flare = np.array(lambda_flare)
-    p_values_flare = np.array(p_values_flare)
 
     # Flatten delta-exposure lists
     delta_exposure_bkg = np.concatenate(delta_exposure_bkg)
     delta_exposure_flare = np.concatenate(delta_exposure_flare)
 
-    spatial_p_values = np.array(spatial_p_values)
+    n_events_bkg = np.array(n_events_bkg)
+    n_events_flare = np.array(n_events_flare)
 
-    tau_lnL_bkg = np.array(tau_lnL_bkg)
-    tau_lnL_flare = np.array(tau_lnL_flare)
-
-    # We need all the simulations to end to be able to compute the estiameted p_values for the tau-method
-    tau_p_val_bkg = stc.empirical_p_values(tau_lnL_bkg, tau_lnL_bkg)
-    tau_p_val_flare = stc.empirical_p_values(tau_lnL_bkg, tau_lnL_flare)
+    pvalues_bkg = stc.lambda_marginal_sf(lambda_bkg, expected_n)
+    pvalues_flare = stc.lambda_marginal_sf(lambda_flare, expected_n)
 
     # ------------------------------------------------------------------
     # Save outputs and metadata
@@ -287,17 +283,14 @@ def main(seed: int) -> None:
     np.savez_compressed(
         outdir / "results.npz",
         lambda_bkg=lambda_bkg,
-        p_values_bkg=p_values_bkg,
         lambda_flare=lambda_flare,
-        p_values_flare=p_values_flare,
+        pvalues_bkg=pvalues_bkg,
+        pvalues_flare=pvalues_flare,
         delta_exposure_bkg=delta_exposure_bkg,
         delta_exposure_flare=delta_exposure_flare,
-        exp_rate_exposure=subsample.exp_rate_exposure,
-        spatial_p_values=spatial_p_values,
-        tau_lnL_bkg=tau_lnL_bkg,
-        tau_lnL_flare=tau_lnL_flare,
-        tau_p_val_bkg=tau_p_val_bkg,
-        tau_p_val_flare=tau_p_val_flare,
+        expected_exposure_rate=subsample.expected_exposure_rate,
+        n_events_bkg=n_events_bkg,
+        n_events_flare=n_events_flare,
     )
 
     write_metadata(
@@ -307,7 +300,7 @@ def main(seed: int) -> None:
             "run_code": "flare_injection",
             "seed": seed,
             "n_events": n_events,
-            "mu_window": subsample.expected_counts,
+            "mu_window": expected_n,
             "n_simulations_requested": n_simulations,
             "max_attempts": max_attempts,
             "t0": t0.isot,
@@ -320,12 +313,16 @@ def main(seed: int) -> None:
             "altitude_pa_m": altitude_pa,
             "flare_duration_days": flare_duration.to_value(u.day),
             "flare_sigma_deg": flare_sigma,
-            "exp_rate_exposure": subsample.exp_rate_exposure,
+            "expected_exposure_rate": subsample.expected_exposure_rate,
             "mu_flare": mu_flare,
         },
     )
 
     logger.info("Saved results to %s", outdir / "results.npz")
+
+    end_time = time.time()
+    elapsed = end_time - start_time
+    logger.info(f"Simulation finished in {elapsed:.2f} seconds")
 
 if __name__ == "__main__":
     seed = 42

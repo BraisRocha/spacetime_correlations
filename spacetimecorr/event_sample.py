@@ -81,25 +81,29 @@ class EventSample:
         # ---- Core configuration ----------------------------------------------
         self.rng = rng
         self.n_events = int(n_events)
+        self.expected_n = float(n_events)
         self.t0 = t0
         self.tf = tf
 
-        # ---- Event properties ------------------------------------------------
+        # ---- Sample metadata / state labels ----------------------------------
         self.spatial_type: str | None = None
+        self.exposure_type: str | None = None
+        self.flare_type: str | None = None
 
-        # Event coordinates (stored in degrees)
+        # ---- Event coordinates (stored in degrees) ---------------------------
         self.RA: np.ndarray | None = None
         self.Dec: np.ndarray | None = None
+
+        # ---- Exposure-related attributes -------------------------------------
+        self.expected_exposure_rate: float | None = None
+        self.exposure: np.ndarray | None = None
+
+        # ---- Flare bookkeeping -----------------------------------------------
+        self.flare_mask: np.ndarray | None = None
+
+        # ---- Optional automatic coordinate generation ------------------------
         if auto_sample:
-            self.sample_equatorial_coordinates()
-
-        # ---- Attributes populated after window selection ---------------------
-        self.expected_counts: float | None = None
-
-        # ---- Attributes populated after exposure model selection -------------
-        self.exp_rate_exposure: float | None = None
-        self.dir_exposure: np.ndarray | None = None
-        self.dir_exposure_method: str | None = None
+            self.assign_equatorial_coordinates()
 
     @classmethod
     def _from_arrays(
@@ -109,10 +113,20 @@ class EventSample:
         t0: Time,
         tf: Time,
         rng: np.random.Generator,
-        spatial_type: str | None = "equatorial",
+        *,
+        spatial_type: str | None = None,
+        expected_n: float | None = None,
+        exposure: np.ndarray | None = None,
+        exposure_type: str | None = None,
+        expected_exposure_rate: float | None = None,
+        flare_mask: np.ndarray | None = None,
+        flare_type: str | None = None,
     ) -> "EventSample":
         """
-        Create an EventSample from existing RA/Dec arrays (no new random draws).
+        Create an EventSample from existing arrays without drawing new coordinates.
+
+        Optional metadata and event-level attributes can also be attached, such as
+        exposure values and flare bookkeeping.
         """
 
         RA = np.asarray(RA, dtype=float)
@@ -124,6 +138,22 @@ class EventSample:
             )
         if RA.ndim != 1:
             raise ValueError(f"RA and Dec must be 1D arrays, got ndim={RA.ndim}.")
+        
+        if exposure is not None:
+            exposure = np.asarray(exposure, dtype=float)
+            if exposure.shape != RA.shape:
+                raise ValueError(
+                    f"exposure must have the same shape as RA/Dec, "
+                    f"got {exposure.shape} vs {RA.shape}."
+                )
+            
+        if flare_mask is not None:
+            flare_mask = np.asarray(flare_mask, dtype=bool)
+            if flare_mask.shape != RA.shape:
+                raise ValueError(
+                    f"flare_mask must have same shape as RA/Dec, "
+                    f"got {flare_mask.shape} vs {RA.shape}."
+                )
 
         obj = cls(
             n_events=int(RA.size),
@@ -132,9 +162,24 @@ class EventSample:
             rng=rng,
             auto_sample=False,
         )
+
+        # Coordinates
         obj.RA = RA
         obj.Dec = Dec
         obj.spatial_type = spatial_type
+
+        # Expected counts
+        if expected_n is not None:
+            obj.expected_n = float(expected_n)
+
+        # Exposure-related attributes
+        obj.exposure = exposure
+        obj.exposure_type = exposure_type
+        obj.expected_exposure_rate = expected_exposure_rate
+
+        # Flare bookkeeping
+        obj.flare_mask = flare_mask
+        obj.flare_type = flare_type
 
         return obj
 
@@ -144,43 +189,34 @@ class EventSample:
 
     @property
     def T_obs(self) -> Quantity:
-        """
-        Observation duration as an astropy Quantity.
-        """
+        """Observation duration as an astropy Quantity."""
         return (self.tf - self.t0).to(u.s)
 
     @property
-    def exp_rate_time(self) -> float:
-        """
-        Expected rate of events per unit of time.
-        """
+    def expected_temporal_rate(self) -> float:
+        """Expected rate of events per unit of time."""
         return float(self.n_events / self.T_obs.to(u.s).value)
 
     @property
-    def is_populated(self) -> bool:
-        """Return True if RA/Dec have been generated/assigned."""
+    def has_coordinates(self) -> bool:
+        """Return True if coordinates have been assigned."""
         return self.RA is not None and self.Dec is not None
 
     @property
     def has_exposure(self) -> bool:
-        """
-        Return True if directional exposure has been generated/assigned.
-        """
-        return getattr(self, "dir_exposure", None) is not None
+        """Return True if exposure values have been assigned."""
+        return self.exposure is not None
 
     @property
     def has_flare(self) -> bool:
-        """
-        Return True if a flare has been already introduced
-        into the sample.
-        """
-        return getattr(self, "flare_type", None) is not None
+        """Return True if flare events have been identified in the sample."""
+        return self.flare_mask is not None and np.any(self.flare_mask)
 
     # -------------------------------------------------------------------------
     # Core sampling and low-level data manipulation
     # -------------------------------------------------------------------------
 
-    def sample_equatorial_coordinates(self) -> None:
+    def generate_equatorial_coordinates(self) -> None:
         """
         Simulate an isotropic distribution on the sphere in equatorial coordinates.
 
@@ -196,8 +232,12 @@ class EventSample:
         u_rand = self.rng.uniform(-1.0, 1.0, size=self.n_events)
         Dec = np.degrees(np.arcsin(u_rand))
 
-        self.RA = np.asarray(RA, dtype=float)
-        self.Dec = np.asarray(Dec, dtype=float)
+        return np.asarray(RA, dtype=float), np.asarray(Dec, dtype=float)
+    
+    def assign_equatorial_coordinates(self) -> None:
+        RA, Dec = self.generate_equatorial_coordinates()
+        self.RA = RA
+        self.Dec = Dec
         self.spatial_type = "equatorial"
 
     def _subset(self, mask: np.ndarray) -> "EventSample":
@@ -211,6 +251,14 @@ class EventSample:
         mask = np.asarray(mask, dtype=bool)
         if mask.shape != self.RA.shape:
             raise ValueError(f"Mask must have shape {self.RA.shape}, got {mask.shape}.")
+        
+        exposure = None
+        if self.exposure is not None:
+            exposure = self.exposure[mask]
+
+        flare_mask = None
+        if self.flare_mask is not None:
+            flare_mask = self.flare_mask[mask]
 
         return EventSample._from_arrays(
             RA=self.RA[mask],
@@ -219,6 +267,12 @@ class EventSample:
             tf=self.tf,
             rng=self.rng,
             spatial_type=self.spatial_type,
+            expected_n=self.expected_n,
+            exposure=exposure,
+            exposure_type=self.exposure_type,
+            expected_exposure_rate=self.expected_exposure_rate,
+            flare_mask=flare_mask,
+            flare_type=self.flare_type,
         )
 
     # -------------------------------------------------------------------------
@@ -232,10 +286,10 @@ class EventSample:
         """
         Return a new ``EventSample`` containing only the events within the window.
 
-        The returned sample includes an additional attribute, ``expected_counts``,
+        The returned sample modifies the attribute, ``expected_n``,
         representing the expected number of events inside the window.
         """
-        if self.RA is None or self.Dec is None:
+        if not self.has_coordinates:
             raise ValueError("RA and Dec are not available.")
 
         mask = window.contains(self.RA, self.Dec)
@@ -244,17 +298,17 @@ class EventSample:
             raise ValueError("No events found inside the sky window.")
 
         subsample = self._subset(mask)
-        subsample.expected_counts = window.expected_counts_in_window(self)
+        subsample.expected_n = window.expected_n_in_window(self.n_events)
 
         return subsample
 
-    def add_directional_exposure(
+    def generate_directional_exposure(
         self,
         window: "SkyWindow",
         exposure_model: "ExposureModel",
-    ) -> None:
+    ) -> tuple[np.ndarray, np.ndarray, float, str]:
         """
-        Attach sampled cumulative directional exposure values to this EventSample,
+        Generate sampled cumulative directional exposure values for this EventSample,
         using the window definition as the reference direction.
 
         Intended workflow
@@ -262,16 +316,76 @@ class EventSample:
         1) Start from a full dataset (parent sample) spanning [t0, tf].
         2) Apply a sky-window selection to build a subsample:
             `subsample = parent.select_subsample(window)`
-        3) Call this method on the subsample `sub` to generate per-event epsilon values:
-            `subsample.add_directional_exposure(...)`
+        3) Call this method on the subsample to generate per-event epsilon values.
 
         Important notes
         ---------------
-        - This method is designed for *window-selected subsamples*.
-        It does not validate that the events actually lie inside `window`; it assumes
-        you already applied the window cut via `subset(...)`.
+        - This method is designed for *window-selected subsamples*. It assumes that the
+        sample was obtained via `select_subsample(...)` and does not validate that
+        the events lie inside `window`.
         - No event times are generated or required. The method samples values directly
         in cumulative exposure space.
+        - If flare events are present, exposure values are generated only for the
+        non-flare events.
+        - This method does not modify the sample.
+
+        Parameters
+        ----------
+        window : SkyWindow
+            The sky region that defined this subsample.
+        exposure_model : ExposureModel
+            Model providing the exposure-space sampling machinery.
+
+        Returns
+        -------
+        eps : np.ndarray
+            Sampled exposure values for the selected events.
+        target_mask : np.ndarray
+            Boolean mask indicating which events the sampled values correspond to.
+        expected_exposure_rate : float
+            Expected rate used in the exposure sampling.
+        method : str
+            Identifier of the sampling method used.
+        """
+
+        max_exposure = exposure_model.max_directional_exposure(window.centre)
+        expected_exposure_rate = self.expected_n/ max_exposure
+
+        if self.has_flare:
+            isotropy_mask = ~self.flare_mask
+        else:
+            isotropy_mask = np.ones(self.n_events, dtype=bool)
+
+        n_target = int(np.count_nonzero(isotropy_mask))
+
+        eps, method = exposure_model.sample_directional_exposure(
+            n_events=n_target,
+            expected_exposure_rate=expected_exposure_rate,
+            max_dir_exposure=max_exposure,
+        )
+
+        eps = np.asarray(eps, dtype=float)
+
+        return eps, isotropy_mask, expected_exposure_rate, str(method)
+
+    def assign_directional_exposure(
+        self,
+        window: "SkyWindow",
+        exposure_model: "ExposureModel",
+    ) -> None:
+        """
+        Generate and assign cumulative directional exposure values to this EventSample.
+
+        This method is intended for *window-selected subsamples* and acts as an
+        in-place wrapper around `generate_directional_exposure(...)`.
+
+        Important notes
+        ---------------
+        - If flare events are present, exposure values are generated only for the
+        non-flare events, and existing flare exposure values are preserved.
+        - If the sample does not yet contain an exposure array, it is initialized with
+        `np.nan` values and then populated at the relevant positions.
+        - This method modifies the current sample in-place.
 
         Parameters
         ----------
@@ -280,24 +394,16 @@ class EventSample:
         exposure_model : ExposureModel
             Model providing the exposure-space sampling machinery.
         """
-        
-        if self.expected_counts is None:
-            raise ValueError(
-                "expected_counts is not set. "
-                "Build this sample through a sky-window selection first."
-            )
-
-        max_dir_exposure = exposure_model.max_directional_exposure(window.centre)
-        self.exp_rate_exposure = self.expected_counts / max_dir_exposure
-
-        eps, method = exposure_model.sample_directional_exposure(
-            n_events=self.n_events,
-            exp_rate_exposure=self.exp_rate_exposure,
-            max_dir_exposure=max_dir_exposure,
+        eps, target_mask, expected_exposure_rate, method = (
+            self.generate_directional_exposure(window, exposure_model)
         )
 
-        self.dir_exposure = np.asarray(eps, dtype=float)
-        self.dir_exposure_method = str(method)
+        if self.exposure is None:
+            self.exposure = np.full(self.n_events, np.nan, dtype=float)
+
+        self.exposure[target_mask] = eps
+        self.expected_exposure_rate = expected_exposure_rate
+        self.exposure_type = method
 
     # -------------------------------------------------------------------------
     # Public flare manipulation
@@ -323,16 +429,10 @@ class EventSample:
         if self.has_flare:
             raise RuntimeError("This sample already contains an injected flare.")
 
-        if self.RA is None or self.Dec is None:
+        if not self.has_coordinates:
             raise ValueError("Sample coordinates are not available.")
-
-        if self.dir_exposure is None:
-            raise ValueError(
-                "Sample directional exposure is not available. "
-                "Generate or assign it before injecting a flare."
-            )
-
-        if flare.RA is None or flare.Dec is None or flare.dir_exposure is None:
+        
+        if flare.RA is None or flare.Dec is None or flare.exposure is None:
             raise ValueError(
                 "Flare is not fully generated. "
                 "Coordinates and exposure must be computed before injection."
@@ -347,10 +447,16 @@ class EventSample:
 
         self.RA[idx] = flare.RA
         self.Dec[idx] = flare.Dec
-        self.dir_exposure[idx] = flare.dir_exposure
 
+        # Check if an exposure array already exists
+        if self.exposure is None:
+            self.exposure = np.full(self.n_events, np.nan, dtype=float)
+
+        self.exposure[idx] = flare.exposure
+
+        self.flare_mask = np.zeros(self.n_events, dtype=bool)
+        self.flare_mask[idx] = True
         self.flare_type = flare.flare_type
-        self.flare_indices = idx
 
     # -------------------------------------------------------------------------
     # Public skymap / visualization interface
@@ -444,7 +550,7 @@ class EventSample:
         location: EarthLocation | None = None,
         zenith_max: u.Quantity | None = None,
         title: str = "Sky map",
-        cmap: str = "viridis",
+        cmap: str = "magma",
         output_file: str | None = None,
         astronomical: bool = True,
         show: bool = True,
@@ -500,6 +606,8 @@ class EventSample:
         else:
             ax.set_xticklabels([f"{x:.0f}°" for x in xticks_deg])
             ax.set_xlabel("Longitude")
+
+        #ax.tick_params(axis='x', colors='white')
 
         yticks_deg = np.array([-60, -30, 0, 30, 60])
         ax.set_yticks(np.deg2rad(yticks_deg))

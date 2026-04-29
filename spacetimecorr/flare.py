@@ -43,7 +43,7 @@ class Flare:
         t0: Time,
         tf: Time,
         centre: np.ndarray,
-        exposure: "ExposureModel",
+        exposure_model: "ExposureModel",
         rng: np.random.Generator,
     ):
         
@@ -78,7 +78,7 @@ class Flare:
         if not (-90.0 <= dec_c <= 90.0):
             raise ValueError("Dec must be in [-90, 90].")
         
-        if not isinstance(exposure, ExposureModel):
+        if not isinstance(exposure_model, ExposureModel):
             raise TypeError("exposure must be an instance of ExposureModel.")
 
         if not isinstance(rng, np.random.Generator):
@@ -101,7 +101,7 @@ class Flare:
         self.t0 = t0
         self.tf = tf
         self.centre = centre
-        self.exposure = exposure
+        self.exposure_model = exposure_model
 
         self.spatial_profile: str | None = None
         self.time_profile: str | None = None
@@ -110,7 +110,7 @@ class Flare:
         self.RA: np.ndarray | None = None
         self.Dec: np.ndarray | None = None
         self.time: Time | None = None
-        self.dir_exposure: np.ndarray | None = None
+        self.exposure: np.ndarray | None = None
 
     # -------------------------------------------------------------------------
     # Low-level sampling / evaluation methods
@@ -200,7 +200,7 @@ class Flare:
         """
 
         return np.asarray(
-            self.exposure.cumulative_directional_exposure(time, direction),
+            self.exposure_model.cumulative_directional_exposure(time, direction),
             dtype=float,
         )
     
@@ -227,7 +227,7 @@ class Flare:
         self.spatial_profile = "gaussian_spherical"
 
     @property
-    def is_populated(self) -> bool:
+    def has_coordinates(self) -> bool:
         """Return True if flare coordinates have been generated."""
         return self.RA is not None and self.Dec is not None
     
@@ -254,7 +254,7 @@ class Flare:
         if self.time is None:
             raise ValueError("Flare times are not set. Call generate_uniform_times() first.")
 
-        self.dir_exposure = self._evaluate_directional_exposure(self.time, direction)
+        self.exposure = self._evaluate_directional_exposure(self.time, direction)
 
     # -------------------------------------------------------------------------
     # Construction helpers
@@ -269,10 +269,10 @@ class Flare:
         t0: Time,
         tf: Time,
         centre: np.ndarray,
-        exposure: ExposureModel,
+        exposure_model: ExposureModel,
         rng: np.random.Generator,
         time: Time | None = None,
-        dir_exposure: np.ndarray | None = None,
+        exposure: np.ndarray | None = None,
         spatial_profile: str | None = None,
         time_profile: str | None = None,
     ) -> Flare:
@@ -291,11 +291,11 @@ class Flare:
         if time is not None and np.size(time) != RA.size:
             raise ValueError(f"time must have size {RA.size}, got {np.size(time)}.")
 
-        if dir_exposure is not None:
-            dir_exposure = np.asarray(dir_exposure, dtype=float)
-            if dir_exposure.shape != RA.shape:
+        if exposure is not None:
+            exposure = np.asarray(exposure, dtype=float)
+            if exposure.shape != RA.shape:
                 raise ValueError(
-                    f"dir_exposure must have shape {RA.shape}, got {dir_exposure.shape}."
+                    f"exposure must have shape {RA.shape}, got {exposure.shape}."
                 )
             
         obj = cls(
@@ -304,14 +304,14 @@ class Flare:
             t0=t0,
             tf=tf,
             centre=centre,
-            exposure=exposure,
+            exposure_model=exposure_model,
             rng=rng,
         )
 
         obj.RA = RA.copy()
         obj.Dec = Dec.copy()
         obj.time = time
-        obj.dir_exposure = None if dir_exposure is None else dir_exposure.copy()
+        obj.exposure = None if exposure is None else exposure.copy()
         obj.spatial_profile = spatial_profile
         obj.time_profile = time_profile
 
@@ -329,7 +329,7 @@ class Flare:
             raise ValueError(f"Mask must have shape {self.RA.shape}, got {mask.shape}.")
 
         sub_time = None if self.time is None else self.time[mask]
-        sub_dir_exposure = None if self.dir_exposure is None else self.dir_exposure[mask]
+        sub_exposure = None if self.exposure is None else self.exposure[mask]
 
         return Flare._from_arrays(
             RA=self.RA[mask],
@@ -338,10 +338,10 @@ class Flare:
             t0=self.t0,
             tf=self.tf,
             centre=self.centre,
-            exposure=self.exposure,
+            exposure_model=self.exposure_model,
             rng=self.rng,
             time=sub_time,
-            dir_exposure=sub_dir_exposure,
+            exposure=sub_exposure,
             spatial_profile=self.spatial_profile,
             time_profile=self.time_profile,
         )
@@ -397,7 +397,7 @@ class Flare:
             self.RA = np.empty(0, dtype=float)
             self.Dec = np.empty(0, dtype=float)
             self.time = self.t0 + TimeDelta(np.empty(0), format="sec")
-            self.dir_exposure = np.empty(0, dtype=float)
+            self.exposure = np.empty(0, dtype=float)
             self.spatial_profile = "gaussian_spherical"
             self.time_profile = "uniform_thinned"
             return
@@ -440,7 +440,7 @@ class Flare:
             times_cand = self._sample_uniform_times(ra_cand.size, start=flare_start)
 
             # --- Step 3: Exposure Thinning ---
-            detection_mask = self.exposure.acceptance_mask(
+            detection_mask = self.exposure_model.acceptance_mask(
                 times_cand, 
                 window.centre,
                 efficiency=efficiency

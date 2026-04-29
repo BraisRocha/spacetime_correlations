@@ -12,6 +12,7 @@ from spacetimecorr import RNGManager
 from spacetimecorr import SkyWindow
 from spacetimecorr import ExposureModel
 from spacetimecorr import Observatory
+from spacetimecorr import Flare
 
 
 # ------------------------------------------------------------------
@@ -34,7 +35,7 @@ def build_case_output_dir(case_name: str) -> Path:
 
 
 # ------------------------------------------------------------------
-# Text summary
+# Text summaries
 # ------------------------------------------------------------------
 
 def event_sample_summary_text(
@@ -49,20 +50,24 @@ def event_sample_summary_text(
     lines.append(f"{label} DIAGNOSTIC SUMMARY")
     lines.append("=" * 70)
 
-    lines.append(f"n_events stored          : {sample.n_events}")
-    lines.append(f"spatial_type             : {sample.spatial_type}")
-    lines.append(f"t0                       : {sample.t0.isot}")
-    lines.append(f"tf                       : {sample.tf.isot}")
-    lines.append(f"T_obs [s]                : {sample.T_obs.to_value(u.s):.6f}")
-    lines.append(f"exp_rate_time [1/s]      : {sample.exp_rate_time:.6g}")
-    lines.append(f"is_populated             : {sample.is_populated}")
-    lines.append(f"has_exposure             : {sample.has_exposure}")
-    lines.append(f"has_flare                : {sample.has_flare}")
+    lines.append(f"n_events stored              : {sample.n_events}")
+    lines.append(f"expected_n                   : {sample.expected_n}")
+    lines.append(f"spatial_type                 : {sample.spatial_type}")
+    lines.append(f"exposure_type                : {sample.exposure_type}")
+    lines.append(f"flare_type                   : {sample.flare_type}")
+    lines.append(f"t0                           : {sample.t0.isot}")
+    lines.append(f"tf                           : {sample.tf.isot}")
+    lines.append(f"T_obs [s]                    : {sample.T_obs.to_value(u.s):.6f}")
+    lines.append(f"expected_temporal_rate [1/s] : {sample.expected_temporal_rate:.6g}")
+    lines.append(f"has_coordinates              : {sample.has_coordinates}")
+    lines.append(f"has_exposure                 : {sample.has_exposure}")
+    lines.append(f"has_flare                    : {sample.has_flare}")
 
     lengths = {
         "RA": None if sample.RA is None else len(sample.RA),
         "Dec": None if sample.Dec is None else len(sample.Dec),
-        "dir_exposure": None if sample.dir_exposure is None else len(sample.dir_exposure),
+        "exposure": None if sample.exposure is None else len(sample.exposure),
+        "flare_mask": None if sample.flare_mask is None else len(sample.flare_mask),
     }
 
     lines.append("")
@@ -70,75 +75,157 @@ def event_sample_summary_text(
     for k, v in lengths.items():
         lines.append(f"  {k:12s}: {v}")
 
-    if sample.RA is None or sample.Dec is None:
+    if not sample.has_coordinates:
         lines.append("")
         lines.append("Sample is not populated.")
         return "\n".join(lines)
 
-    ra = np.asarray(sample.RA)
-    dec = np.asarray(sample.Dec)
+    ra = np.asarray(sample.RA, dtype=float)
+    dec = np.asarray(sample.Dec, dtype=float)
 
     lines.append("")
     lines.append("Coordinate diagnostics:")
-    lines.append(f"  finite RA?             : {bool(np.all(np.isfinite(ra)))}")
-    lines.append(f"  finite Dec?            : {bool(np.all(np.isfinite(dec)))}")
-    lines.append(f"  RA min [deg]           : {np.min(ra):.6f}")
-    lines.append(f"  RA max [deg]           : {np.max(ra):.6f}")
-    lines.append(f"  Dec min [deg]          : {np.min(dec):.6f}")
-    lines.append(f"  Dec max [deg]          : {np.max(dec):.6f}")
-    lines.append(f"  RA in [0, 360)?        : {bool(np.all((ra >= 0.0) & (ra < 360.0)))}")
-    lines.append(f"  Dec in [-90, 90]?      : {bool(np.all((dec >= -90.0) & (dec <= 90.0)))}")
+    lines.append(f"  finite RA?                 : {bool(np.all(np.isfinite(ra)))}")
+    lines.append(f"  finite Dec?                : {bool(np.all(np.isfinite(dec)))}")
+    lines.append(f"  RA min [deg]               : {np.min(ra):.6f}")
+    lines.append(f"  RA max [deg]               : {np.max(ra):.6f}")
+    lines.append(f"  Dec min [deg]              : {np.min(dec):.6f}")
+    lines.append(f"  Dec max [deg]              : {np.max(dec):.6f}")
+    lines.append(f"  RA in [0, 360)?            : {bool(np.all((ra >= 0.0) & (ra < 360.0)))}")
+    lines.append(f"  Dec in [-90, 90]?          : {bool(np.all((dec >= -90.0) & (dec <= 90.0)))}")
 
     sin_dec = np.sin(np.deg2rad(dec))
     lines.append("")
     lines.append("Isotropy quick-check diagnostics:")
-    lines.append(f"  mean(sin Dec)          : {np.mean(sin_dec):.6g}")
-    lines.append(f"  std(sin Dec)           : {np.std(sin_dec):.6g}")
-    lines.append(f"  mean(RA) [deg]         : {np.mean(ra):.6g}")
+    lines.append(f"  mean(sin Dec)              : {np.mean(sin_dec):.6g}")
+    lines.append(f"  std(sin Dec)               : {np.std(sin_dec):.6g}")
+    lines.append(f"  mean(RA) [deg]             : {np.mean(ra):.6g}")
 
-    if sample.expected_counts is not None:
+    lines.append("")
+    lines.append("Count / expectation diagnostics:")
+    lines.append(f"  expected_n                 : {sample.expected_n:.6g}")
+
+    if sample.exposure is not None and len(sample.exposure) > 0:
+        eps = np.asarray(sample.exposure, dtype=float)
+        finite_eps = np.isfinite(eps)
+
         lines.append("")
-        lines.append("Window / counts diagnostics:")
-        lines.append(f"  expected_counts        : {sample.expected_counts:.6g}")
+        lines.append("Exposure diagnostics:")
+        lines.append(f"  exposure_type              : {sample.exposure_type}")
+        lines.append(f"  finite entries             : {int(np.count_nonzero(finite_eps))}")
+        lines.append(f"  non-finite entries         : {int(np.count_nonzero(~finite_eps))}")
 
-    if sample.dir_exposure is not None and len(sample.dir_exposure) > 0:
-        eps = np.asarray(sample.dir_exposure)
-        lines.append("")
-        lines.append("Directional exposure diagnostics:")
-        lines.append(f"  method                 : {sample.dir_exposure_method}")
-        lines.append(f"  finite?                : {bool(np.all(np.isfinite(eps)))}")
-        lines.append(f"  min                    : {np.min(eps):.6g}")
-        lines.append(f"  max                    : {np.max(eps):.6g}")
-        lines.append(f"  mean                   : {np.mean(eps):.6g}")
+        if np.any(finite_eps):
+            eps_fin = eps[finite_eps]
+            lines.append(f"  min                        : {np.min(eps_fin):.6g}")
+            lines.append(f"  max                        : {np.max(eps_fin):.6g}")
+            lines.append(f"  mean                       : {np.mean(eps_fin):.6g}")
 
-        if sample.exp_rate_exposure is not None:
-            lines.append(f"  exp_rate_exposure      : {sample.exp_rate_exposure:.6g}")
+        lines.append(f"  expected_exposure_rate     : {sample.expected_exposure_rate}")
 
-    if sample.has_flare:
+    if sample.flare_mask is not None:
+        flare_mask = np.asarray(sample.flare_mask, dtype=bool)
         lines.append("")
         lines.append("Flare diagnostics:")
-        lines.append(f"  flare_type             : {getattr(sample, 'flare_type', None)}")
-        flare_indices = getattr(sample, "flare_indices", None)
-        lines.append(
-            f"  number injected        : "
-            f"{None if flare_indices is None else len(flare_indices)}"
-        )
+        lines.append(f"  flare_type                 : {sample.flare_type}")
+        lines.append(f"  flare events flagged       : {int(np.count_nonzero(flare_mask))}")
 
     nshow = min(max_rows, len(ra))
     lines.append("")
     lines.append(f"First {nshow} events:")
-    lines.append(" idx |      RA [deg] |     Dec [deg] | dir_exposure")
-    lines.append("-" * 70)
+    lines.append(" idx |      RA [deg] |     Dec [deg] |     exposure | flare")
+    lines.append("-" * 78)
 
     for i in range(nshow):
-        exp_i = None if sample.dir_exposure is None else sample.dir_exposure[i]
-        exp_txt = "None" if exp_i is None else f"{exp_i:.6g}"
+        exp_i = None if sample.exposure is None else sample.exposure[i]
+        flare_i = None if sample.flare_mask is None else bool(sample.flare_mask[i])
+
+        if exp_i is None or not np.isfinite(exp_i):
+            exp_txt = "None"
+        else:
+            exp_txt = f"{exp_i:.6g}"
+
+        flare_txt = "None" if flare_i is None else str(flare_i)
+
         lines.append(
             f"{i:4d} | "
             f"{sample.RA[i]:13.6f} | "
             f"{sample.Dec[i]:13.6f} | "
-            f"{exp_txt}"
+            f"{exp_txt:12s} | "
+            f"{flare_txt}"
         )
+
+    return "\n".join(lines)
+
+
+def flare_injection_summary_text(
+    sample_before: EventSample,
+    sample_after: EventSample,
+    *,
+    label: str = "FLARE INJECTION",
+    max_rows: int = 10,
+) -> str:
+    """Return a human-readable summary for a flare injection test."""
+    lines = []
+    lines.append("=" * 70)
+    lines.append(f"{label} SUMMARY")
+    lines.append("=" * 70)
+
+    lines.append(f"n_events before                : {sample_before.n_events}")
+    lines.append(f"n_events after                 : {sample_after.n_events}")
+    lines.append(f"same sample size               : {sample_before.n_events == sample_after.n_events}")
+
+    lines.append("")
+    lines.append("Flare bookkeeping:")
+    lines.append(f"  has_flare after injection    : {sample_after.has_flare}")
+    lines.append(f"  flare_type                   : {sample_after.flare_type}")
+
+    if sample_after.flare_mask is not None:
+        n_flare = int(np.count_nonzero(sample_after.flare_mask))
+        lines.append(f"  number flagged as flare      : {n_flare}")
+    else:
+        lines.append("  number flagged as flare      : None")
+
+    if sample_before.RA is not None and sample_after.RA is not None:
+        changed_ra = np.count_nonzero(sample_before.RA != sample_after.RA)
+        changed_dec = np.count_nonzero(sample_before.Dec != sample_after.Dec)
+        lines.append("")
+        lines.append("Coordinate replacement check:")
+        lines.append(f"  changed RA entries           : {changed_ra}")
+        lines.append(f"  changed Dec entries          : {changed_dec}")
+
+    if sample_before.exposure is not None and sample_after.exposure is not None:
+        before = np.asarray(sample_before.exposure, dtype=float)
+        after = np.asarray(sample_after.exposure, dtype=float)
+
+        changed_exp = np.count_nonzero(~np.isclose(before, after, equal_nan=True))
+
+        lines.append("")
+        lines.append("Exposure replacement check:")
+        lines.append(f"  changed exposure entries     : {changed_exp}")
+
+    if sample_after.flare_mask is not None:
+        flare_idx = np.flatnonzero(sample_after.flare_mask)
+        nshow = min(max_rows, len(flare_idx))
+
+        lines.append("")
+        lines.append(f"First {nshow} flare-tagged events:")
+        lines.append(" idx |      RA [deg] |     Dec [deg] |     exposure")
+        lines.append("-" * 70)
+
+        for idx in flare_idx[:nshow]:
+            exp_i = None if sample_after.exposure is None else sample_after.exposure[idx]
+            if exp_i is None or not np.isfinite(exp_i):
+                exp_txt = "None"
+            else:
+                exp_txt = f"{exp_i:.6g}"
+
+            lines.append(
+                f"{idx:4d} | "
+                f"{sample_after.RA[idx]:13.6f} | "
+                f"{sample_after.Dec[idx]:13.6f} | "
+                f"{exp_txt}"
+            )
 
     return "\n".join(lines)
 
@@ -157,20 +244,20 @@ def save_event_sample_arrays(
 
     np.savez_compressed(
         path,
-        RA=np.array([]) if sample.RA is None else sample.RA,
-        Dec=np.array([]) if sample.Dec is None else sample.Dec,
-        dir_exposure=np.array([]) if sample.dir_exposure is None else sample.dir_exposure,
+        RA=np.array([]) if sample.RA is None else np.asarray(sample.RA),
+        Dec=np.array([]) if sample.Dec is None else np.asarray(sample.Dec),
+        exposure=np.array([]) if sample.exposure is None else np.asarray(sample.exposure),
+        flare_mask=np.array([]) if sample.flare_mask is None else np.asarray(sample.flare_mask),
         n_events=sample.n_events,
+        expected_n=sample.expected_n,
         t0_isot=sample.t0.isot,
         tf_isot=sample.tf.isot,
         T_obs_s=sample.T_obs.to_value(u.s),
-        exp_rate_time=sample.exp_rate_time,
+        expected_temporal_rate=sample.expected_temporal_rate,
         spatial_type="" if sample.spatial_type is None else sample.spatial_type,
-        expected_counts=np.nan if sample.expected_counts is None else sample.expected_counts,
-        exp_rate_exposure=np.nan if sample.exp_rate_exposure is None else sample.exp_rate_exposure,
-        dir_exposure_method=""
-        if sample.dir_exposure_method is None
-        else sample.dir_exposure_method,
+        exposure_type="" if sample.exposure_type is None else sample.exposure_type,
+        expected_exposure_rate=np.nan if sample.expected_exposure_rate is None else sample.expected_exposure_rate,
+        flare_type="" if sample.flare_type is None else sample.flare_type,
     )
     return path
 
@@ -191,8 +278,8 @@ def save_coordinate_plots(
         raise ValueError("Sample must be populated before plotting.")
 
     saved = []
-    ra = np.asarray(sample.RA)
-    dec = np.asarray(sample.Dec)
+    ra = np.asarray(sample.RA, dtype=float)
+    dec = np.asarray(sample.Dec, dtype=float)
 
     plt.figure(figsize=(6, 4))
     plt.hist(ra, bins="fd", alpha=0.8, edgecolor="black", linewidth=0.8)
@@ -200,7 +287,7 @@ def save_coordinate_plots(
     plt.ylabel("Counts")
     plt.title("Right ascension distribution")
     plt.tight_layout()
-    p = outdir / f"ra_hist.png"
+    p = outdir / "ra_hist.png"
     plt.savefig(p, dpi=150, bbox_inches="tight")
     plt.close()
     saved.append(p)
@@ -211,7 +298,7 @@ def save_coordinate_plots(
     plt.ylabel("Counts")
     plt.title("Declination distribution")
     plt.tight_layout()
-    p = outdir / f"dec_hist.png"
+    p = outdir / "dec_hist.png"
     plt.savefig(p, dpi=150, bbox_inches="tight")
     plt.close()
     saved.append(p)
@@ -223,28 +310,30 @@ def save_coordinate_plots(
     plt.ylabel("Counts")
     plt.title("sin(Dec) distribution")
     plt.tight_layout()
-    p = outdir / f"sin_dec_hist.png"
+    p = outdir / "sin_dec_hist.png"
     plt.savefig(p, dpi=150, bbox_inches="tight")
     plt.close()
     saved.append(p)
 
-    x = np.asarray(ra)
-    y = np.asarray(dec)
-    xy = np.vstack([x, y])
-    z = gaussian_kde(xy)(xy)
-    idx = np.argsort(z)
-    x, y, z = x[idx], y[idx], z[idx]
-    plt.figure(figsize=(6.5, 5))
-    sc = plt.scatter(x, y, c=z, s=8, alpha=0.8)
-    plt.colorbar(sc, label="Point density")
-    plt.xlabel("RA [deg]")
-    plt.ylabel("Dec [deg]")
-    plt.title("Sky scatter")
-    plt.tight_layout()
-    p = outdir / f"sky_scatter.png"
-    plt.savefig(p, dpi=150, bbox_inches="tight")
-    plt.close()
-    saved.append(p)
+    if len(ra) >= 2:
+        x = np.asarray(ra, dtype=float)
+        y = np.asarray(dec, dtype=float)
+        xy = np.vstack([x, y])
+        z = gaussian_kde(xy)(xy)
+        idx = np.argsort(z)
+        x, y, z = x[idx], y[idx], z[idx]
+
+        plt.figure(figsize=(6.5, 5))
+        sc = plt.scatter(x, y, c=z, s=8, alpha=0.8)
+        plt.colorbar(sc, label="Point density")
+        plt.xlabel("RA [deg]")
+        plt.ylabel("Dec [deg]")
+        plt.title("Sky scatter")
+        plt.tight_layout()
+        p = outdir / "sky_scatter.png"
+        plt.savefig(p, dpi=150, bbox_inches="tight")
+        plt.close()
+        saved.append(p)
 
     return saved
 
@@ -255,23 +344,28 @@ def save_exposure_plots(
 ) -> list[Path]:
     """
     Save exposure-related plots.
-    Intended for subsamples where directional exposure has been attached.
+    Intended for samples where exposure has been attached.
     """
     saved = []
 
-    if sample.dir_exposure is None or len(sample.dir_exposure) == 0:
+    if sample.exposure is None or len(sample.exposure) == 0:
         return saved
 
-    eps = np.asarray(sample.dir_exposure)
-    ra = None if sample.RA is None else np.asarray(sample.RA)
+    eps = np.asarray(sample.exposure, dtype=float)
+    finite = np.isfinite(eps)
+
+    if not np.any(finite):
+        return saved
+
+    eps = eps[finite]
 
     plt.figure(figsize=(6, 4))
-    plt.hist(eps, bins="fd", alpha=0.8, edgecolor="black", linewidth=0.8)
-    plt.xlabel("Directional exposure")
+    plt.hist(eps, bins="sqrt", alpha=0.8, edgecolor="black", linewidth=0.8)
+    plt.xlabel("Exposure")
     plt.ylabel("Counts")
-    plt.title("Directional exposure distribution")
+    plt.title("Exposure distribution")
     plt.tight_layout()
-    p = outdir / f"dir_exposure_hist.png"
+    p = outdir / "exposure_hist.png"
     plt.savefig(p, dpi=150, bbox_inches="tight")
     plt.close()
     saved.append(p)
@@ -283,6 +377,7 @@ def save_skymap_plot(
     sample: EventSample,
     outdir: Path,
     *,
+    filename: str = "skymap.png",
     nside: int = 32,
     mask_fov: bool = False,
     location=None,
@@ -299,14 +394,14 @@ def save_skymap_plot(
         output_file=None,
         show=False,
     )
-    path = outdir / f"skymap.png"
+    path = outdir / filename
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
 # ------------------------------------------------------------------
-# Main diagnostic runner
+# Core diagnostic runners
 # ------------------------------------------------------------------
 
 def run_event_sample_diagnostic(
@@ -326,17 +421,6 @@ def run_event_sample_diagnostic(
 ) -> None:
     """
     Print diagnostics for one EventSample and save summary, arrays, and plots.
-
-    Parameters
-    ----------
-    sample : EventSample
-        Sample to diagnose.
-    case_name : str
-        Name of the output subdirectory.
-    label : str
-        Label used in the printed/saved summary title.
-    stem : str
-        Prefix for saved files.
     """
     outdir = build_case_output_dir(case_name)
 
@@ -359,25 +443,16 @@ def run_event_sample_diagnostic(
     plot_paths = []
 
     if save_coordinates:
-        plot_paths.extend(
-            save_coordinate_plots(
-                sample,
-                outdir=outdir,
-            )
-        )
+        plot_paths.extend(save_coordinate_plots(sample, outdir=outdir))
 
     if save_exposure:
-        plot_paths.extend(
-            save_exposure_plots(
-                sample,
-                outdir=outdir,
-            )
-        )
+        plot_paths.extend(save_exposure_plots(sample, outdir=outdir))
 
     if save_skymap:
         p = save_skymap_plot(
             sample,
             outdir=outdir,
+            filename="skymap.png",
             nside=nside,
             mask_fov=mask_fov,
             location=location,
@@ -393,6 +468,196 @@ def run_event_sample_diagnostic(
         print(f"  Plot    : {p}")
 
 
+def clone_event_sample(sample: EventSample) -> EventSample:
+    """
+    Clone an EventSample without resampling coordinates.
+
+    This uses the internal constructor from arrays, so your EventSample._from_arrays
+    method must already be fixed and consistent with flare_mask.
+    """
+    return EventSample._from_arrays(
+        RA=np.array(sample.RA, copy=True),
+        Dec=np.array(sample.Dec, copy=True),
+        t0=sample.t0,
+        tf=sample.tf,
+        rng=sample.rng,
+        spatial_type=sample.spatial_type,
+        expected_n=sample.expected_n,
+        exposure=None if sample.exposure is None else np.array(sample.exposure, copy=True),
+        exposure_type=sample.exposure_type,
+        expected_exposure_rate=sample.expected_exposure_rate,
+        flare_mask=None if sample.flare_mask is None else np.array(sample.flare_mask, copy=True),
+        flare_type=sample.flare_type,
+    )
+
+
+def run_flare_injection_diagnostic(
+    parent_sample: EventSample,
+    window: SkyWindow,
+    exposure_model: ExposureModel,
+    flare: Flare,
+    *,
+    case_name: str = "flare_injection",
+    max_rows: int = 10,
+    nside: int = 32,
+    mask_fov: bool = False,
+    location=None,
+    zenith_max=None,
+) -> None:
+    """
+    Run a diagnostic for flare injection.
+
+    Saves diagnostics for:
+    1) the full parent sample before injection,
+    2) the full parent sample after flare injection,
+    3) the cut sample after flare injection.
+    """
+    outdir = build_case_output_dir(case_name)
+
+    # --------------------------------------------------------------
+    # Full sample before injection
+    # --------------------------------------------------------------
+    full_before_dir = outdir / "full_sample_before_injection"
+    full_before_dir.mkdir(parents=True, exist_ok=True)
+
+    full_before_summary = event_sample_summary_text(
+        parent_sample,
+        label="FULL SAMPLE BEFORE FLARE INJECTION",
+        max_rows=max_rows,
+    )
+    (full_before_dir / "full_sample_before_injection_summary.txt").write_text(
+        full_before_summary,
+        encoding="utf-8",
+    )
+    save_event_sample_arrays(parent_sample, full_before_dir, "full_sample_before_injection")
+    save_coordinate_plots(parent_sample, full_before_dir)
+    save_skymap_plot(
+        parent_sample,
+        full_before_dir,
+        filename="skymap.png",
+        nside=nside,
+        mask_fov=mask_fov,
+        location=location,
+        zenith_max=zenith_max,
+        title="Full sample before flare injection",
+    )
+
+    # --------------------------------------------------------------
+    # Full sample after injection
+    # --------------------------------------------------------------
+    full_after = clone_event_sample(parent_sample)
+    full_after.inject_flare(flare)
+
+    full_after_dir = outdir / "full_sample_after_injection"
+    full_after_dir.mkdir(parents=True, exist_ok=True)
+
+    full_after_summary = event_sample_summary_text(
+        full_after,
+        label="FULL SAMPLE AFTER FLARE INJECTION",
+        max_rows=max_rows,
+    )
+    full_injection_summary = flare_injection_summary_text(
+        parent_sample,
+        full_after,
+        label="FULL-SAMPLE FLARE INJECTION CHECK",
+        max_rows=max_rows,
+    )
+
+    (full_after_dir / "full_sample_after_injection_summary.txt").write_text(
+        full_after_summary,
+        encoding="utf-8",
+    )
+    (full_after_dir / "flare_injection_check.txt").write_text(
+        full_injection_summary,
+        encoding="utf-8",
+    )
+
+    save_event_sample_arrays(full_after, full_after_dir, "full_sample_after_injection")
+    save_coordinate_plots(full_after, full_after_dir)
+    save_exposure_plots(full_after, full_after_dir)
+    save_skymap_plot(
+        full_after,
+        full_after_dir,
+        filename="skymap.png",
+        nside=nside,
+        mask_fov=mask_fov,
+        location=location,
+        zenith_max=zenith_max,
+        title="Full sample after flare injection",
+    )
+
+    # --------------------------------------------------------------
+    # Cut sample after injection
+    # --------------------------------------------------------------
+    cut_after = full_after.select_subsample(window)
+
+    cut_after_dir = outdir / "cut_after_injection"
+    cut_after_dir.mkdir(parents=True, exist_ok=True)
+
+    cut_after_summary = event_sample_summary_text(
+        cut_after,
+        label="CUT SAMPLE AFTER FLARE INJECTION",
+        max_rows=max_rows,
+    )
+    (cut_after_dir / "cut_after_injection_summary.txt").write_text(
+        cut_after_summary,
+        encoding="utf-8",
+    )
+
+    save_event_sample_arrays(cut_after, cut_after_dir, "cut_after_injection")
+    save_coordinate_plots(cut_after, cut_after_dir)
+    save_exposure_plots(cut_after, cut_after_dir)
+    save_skymap_plot(
+        cut_after,
+        cut_after_dir,
+        filename="skymap.png",
+        nside=nside,
+        mask_fov=mask_fov,
+        location=location,
+        zenith_max=zenith_max,
+        title="Cut sample after flare injection",
+    )
+
+    print("\n" + "=" * 70)
+    print("FLARE INJECTION DIAGNOSTIC")
+    print("=" * 70)
+    print(f"Saved full sample before injection : {full_before_dir}")
+    print(f"Saved full sample after injection  : {full_after_dir}")
+    print(f"Saved cut sample after injection   : {cut_after_dir}")
+
+def build_example_flare(
+    *,
+    rng_manager: RNGManager,
+    window: SkyWindow,
+    exposure_model: ExposureModel,
+    t0: Time,
+    tf: Time,
+    n_flare: int = 200,
+    flare_duration: u.Quantity = 1.0 * u.day,
+    flare_sigma: float = 3.0,
+) -> Flare:
+    """
+    Build and fully generate a flare object for the injection diagnostic.
+    """
+    rng_flare = rng_manager.get("flare")
+
+    flare = Flare(
+        n_events=n_flare,
+        duration=flare_duration,
+        t0=t0,
+        tf=tf,
+        centre=window.centre,
+        exposure_model=exposure_model,
+        rng=rng_flare,
+    )
+    flare.generate_in_window(
+        window=window,
+        sigma=flare_sigma,
+    )
+
+    return flare
+
+
 # ------------------------------------------------------------------
 # Example usage
 # ------------------------------------------------------------------
@@ -405,12 +670,12 @@ if __name__ == "__main__":
 
     # Observation interval
     t0 = Time("2025-01-01T00:00:00")
-    tf = Time("2025-01-14T00:00:00")
+    tf = Time("2025-02-01T00:00:00")
 
     # --------------------------------------------------------------
     # Full sample
     # --------------------------------------------------------------
-    n_events = 100000
+    n_events = 10000
     sample = EventSample(
         n_events=n_events,
         t0=t0,
@@ -446,7 +711,7 @@ if __name__ == "__main__":
 
     latitude_pa = -35.15
     longitude_pa = -69.15
-    altitude_pa = 1425
+    altitude_pa = 1425.0
 
     observatory = Observatory(
         latitude=latitude_pa,
@@ -461,12 +726,11 @@ if __name__ == "__main__":
         rng=rng_exposure,
     )
 
-    subsample.add_directional_exposure(
+    subsample.assign_directional_exposure(
         window=window,
         exposure_model=exposure_model,
     )
 
-    # Use this if Observatory exposes an EarthLocation:
     try:
         location = observatory.location
     except AttributeError:
@@ -487,6 +751,33 @@ if __name__ == "__main__":
         save_coordinates=True,
         save_exposure=True,
         save_skymap=True,
+        nside=32,
+        mask_fov=False,
+        location=location,
+        zenith_max=zenith_max,
+    )
+
+    # --------------------------------------------------------------
+    # Flare injection diagnostic
+    # --------------------------------------------------------------
+    flare = build_example_flare(
+        rng_manager=rng_manager,
+        window=window,
+        exposure_model=exposure_model,
+        t0=t0,
+        tf=tf,
+        n_flare=200,
+        flare_duration=1.0 * u.day,
+        flare_sigma=3.0,
+    )
+
+    run_flare_injection_diagnostic(
+        parent_sample=sample,
+        window=window,
+        exposure_model=exposure_model,
+        flare=flare,
+        case_name="flare_injection",
+        max_rows=12,
         nside=32,
         mask_fov=False,
         location=location,
