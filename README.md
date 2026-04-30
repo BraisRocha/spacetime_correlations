@@ -6,21 +6,21 @@ Current functionality includes:
 - isotropic event simulation in equatorial coordinates,
 - circular sky-window event selection,
 - observatory-based directional exposure modeling,
-- Monte Carlo scripts for isotropy and flare-injection studies,
+- Monte Carlo scripts for isotropy, flare-injection, and sensitivity studies,
 - diagnostic plotting helpers.
 
 ## Installation
 
 ### Requirements
 - Python `>=3.10`
-- Dependencies in `pyproject.toml`:
+- Core dependencies (declared in `pyproject.toml`):
   - `numpy`
   - `astropy`
   - `scipy`
   - `matplotlib`
-  - `cartopy`
 - Optional extras:
-  - `healpy` (required only for HEALPix sky-map generation/plotting APIs)
+  - `skymap` — installs `healpy`, required only for HEALPix sky-map generation/plotting APIs.
+  - `scripts` — installs `tqdm`, used by the helper scripts under `scripts/`.
 
 ### Install (editable)
 
@@ -37,10 +37,15 @@ pip install -e .
 pip install -e ".[skymap]"
 ```
 
-### Keeping dependencies updated (checked on 2026-03-26)
+### Install with the script helpers
 
-Use this command regularly to validate that your environment is using the newest
-available package releases:
+```bash
+pip install -e ".[scripts]"
+```
+
+You can combine extras: `pip install -e ".[skymap,scripts]"`.
+
+### Keeping dependencies updated
 
 ```bash
 pip list --outdated
@@ -49,17 +54,23 @@ pip list --outdated
 ## Repository layout
 
 ```text
-spacetime_correlations/
+stc_project/
 ├── pyproject.toml
 ├── README.md
+├── TODO.md
 ├── scripts/
 │   ├── diagnostics/
 │   │   ├── exposure_diagnostic.py
 │   │   ├── flare_diagnostic.py
 │   │   └── sampling_diagnostic.py
-│   └── montecarlo/
-│       ├── run_flare_injection.py
-│       └── run_isotropy.py
+│   ├── montecarlo/
+│   │   ├── run_flare_injection.py
+│   │   ├── run_isotropy.py
+│   │   └── run_sensitivity_study.py
+│   └── plots/
+│       ├── plot_flare_injection.py
+│       ├── plot_isotropy.py
+│       └── plot_sensitivity_study.py
 └── spacetimecorr/
     ├── __init__.py
     ├── event_sample.py
@@ -70,6 +81,7 @@ spacetime_correlations/
     ├── skywindow.py
     ├── statistics.py
     └── io/
+        ├── __init__.py
         ├── logs.py
         └── output.py
 ```
@@ -110,7 +122,7 @@ subsample = sample.select_subsample(window)
 obs = Observatory(latitude=-35.15, longitude=-69.2, altitude=1425)
 exposure = ExposureModel(observatory=obs, t0=t0, tf=tf, rng=rng_exposure)
 
-subsample.add_directional_exposure(
+subsample.assign_directional_exposure(
     window=window,
     exposure_model=exposure,
 )
@@ -121,20 +133,21 @@ print("Has exposure:", subsample.has_exposure)
 
 ## Diagnostics and Monte Carlo scripts
 
-Examples:
-
 ```bash
 python scripts/diagnostics/sampling_diagnostic.py
 python scripts/diagnostics/exposure_diagnostic.py
 python scripts/diagnostics/flare_diagnostic.py
 python scripts/montecarlo/run_isotropy.py
 python scripts/montecarlo/run_flare_injection.py
+python scripts/montecarlo/run_sensitivity_study.py
 ```
+
+Plotting helpers for the Monte Carlo outputs live in `scripts/plots/`.
 
 Outputs are written under `output/` (created by helper utilities/scripts).
 
 ## Notes
 
 - APIs are still evolving and may change between versions.
-- `cartopy` can be the hardest dependency to install on some systems; if needed, install system geospatial libraries first or use conda/mamba environments.
-- `spacetimecorr` can now be imported without `healpy`; `healpy` is loaded only when calling HEALPix map/plot methods.
+- `spacetimecorr` can be imported without `healpy`; `healpy` is loaded only when calling HEALPix map/plot methods.
+- See `TODO.md` for known issues and follow-up work that has been deferred.

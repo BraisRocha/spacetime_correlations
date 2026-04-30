@@ -127,9 +127,16 @@ def main(seed: int) -> None:
 
     expected_n = window.expected_n_in_window(N)
 
+    # Flare design (constant across realisations)
+    flare_duration_ST = 30 * u.day        # spatio-temporal / temporal cases
+    flare_duration_S = T_obs              # spatial case (flare spans all T_obs)
+    flare_sigma = 1.0                     # deg
+    mu_flare = 0.2 * expected_n           # mean flare multiplicity per trial
+
     n_success = 0
     n_failures = 0
     attempt = 0
+    n_zero_flare = 0
 
     # Progress bar tracks successful simulations, not attempts
     pbar = tqdm(total=n_simulations, desc="Successful simulations")
@@ -173,24 +180,47 @@ def main(seed: int) -> None:
             lambda_bkg.append(lambda_stat_bkg)
             n_events_bkg.append(subsample.n_events)
 
-            #---------------------------------------------------------
-            # Spatio-Temporal Case
-            #---------------------------------------------------------
-            working_sample = copy.deepcopy(parent_sample)
-
-            # Flare design
-            flare_duration = 30 * u.day
-            flare_sigma = 1.0 # deg
-            mu_flare = 0.2 * expected_n
+            # Draw flare multiplicity once per trial; the same n_flare is used
+            # for the spatio-temporal, temporal, and spatial cases.
             n_flare = int(
                 scp.poisson.rvs(
                     mu_flare,
                     random_state=rng_flare,
                 )
             )
+
+            if n_flare == 0:
+                # No flare events drawn this trial: the three injection cases
+                # collapse to the background-only subsample. We still record
+                # the result to keep the Monte-Carlo statistics unbiased.
+                logger.info(
+                    "Simulation attempt %d: drawn flare multiplicity is zero "
+                    "(mu=%.3f). No flare injected.",
+                    attempt,
+                    mu_flare,
+                )
+                n_zero_flare += 1
+
+                lambda_ST.append(lambda_stat_bkg)
+                lambda_T.append(lambda_stat_bkg)
+                lambda_S.append(lambda_stat_bkg)
+
+                n_events_ST.append(subsample.n_events)
+                n_events_T.append(subsample.n_events)
+                n_events_S.append(subsample.n_events)
+
+                n_success += 1
+                pbar.update(1)
+                continue
+
+            #---------------------------------------------------------
+            # Spatio-Temporal Case
+            #---------------------------------------------------------
+            working_sample = copy.deepcopy(parent_sample)
+
             flare = stc.Flare(
                     n_events=n_flare,
-                    duration=flare_duration,
+                    duration=flare_duration_ST,
                     t0=t0,
                     tf=tf,
                     centre=window.centre,
@@ -238,11 +268,9 @@ def main(seed: int) -> None:
             #---------------------------------------------------------
             working_sample = copy.deepcopy(parent_sample)
 
-            # Change flare_duration
-            flare_duration = T_obs
             flare = stc.Flare(
                     n_events=n_flare,
-                    duration=flare_duration,
+                    duration=flare_duration_S,
                     t0=t0,
                     tf=tf,
                     centre=window.centre,
@@ -289,6 +317,13 @@ def main(seed: int) -> None:
         n_success,
         n_failures,
     )
+    if attempt > 0:
+        logger.info(
+            "Zero-flare realizations: %d / %d (%.2f%%)",
+            n_zero_flare,
+            attempt,
+            100.0 * n_zero_flare / attempt,
+        )
 
     # ------------------------------------------------------------------
     # Final checks

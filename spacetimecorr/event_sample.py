@@ -216,7 +216,7 @@ class EventSample:
     # Core sampling and low-level data manipulation
     # -------------------------------------------------------------------------
 
-    def generate_equatorial_coordinates(self) -> None:
+    def generate_equatorial_coordinates(self) -> tuple[np.ndarray, np.ndarray]:
         """
         Simulate an isotropic distribution on the sphere in equatorial coordinates.
 
@@ -554,6 +554,8 @@ class EventSample:
         output_file: str | None = None,
         astronomical: bool = True,
         show: bool = True,
+        xticks_deg: np.ndarray | list | None = None,
+        yticks_deg: np.ndarray | list | None = None,
     ):
         """
         Plot the event sample as a HEALPix-binned sky map in Hammer projection.
@@ -597,7 +599,10 @@ class EventSample:
         cbar = fig.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.08)
         cbar.set_label("Number of events")
 
-        xticks_deg = np.array([-150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150])
+        if xticks_deg is None:
+            xticks_deg = np.array([-150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150])
+        else:
+            xticks_deg = np.asarray(xticks_deg, dtype=float)
         ax.set_xticks(np.deg2rad(xticks_deg))
 
         if astronomical:
@@ -607,9 +612,10 @@ class EventSample:
             ax.set_xticklabels([f"{x:.0f}°" for x in xticks_deg])
             ax.set_xlabel("Longitude")
 
-        #ax.tick_params(axis='x', colors='white')
-
-        yticks_deg = np.array([-60, -30, 0, 30, 60])
+        if yticks_deg is None:
+            yticks_deg = np.array([-60, -30, 0, 30, 60])
+        else:
+            yticks_deg = np.asarray(yticks_deg, dtype=float)
         ax.set_yticks(np.deg2rad(yticks_deg))
         ax.set_yticklabels([f"{y:.0f}°" for y in yticks_deg])
         ax.set_ylabel(r"Declination $\delta$")

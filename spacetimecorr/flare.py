@@ -48,9 +48,13 @@ class Flare:
     ):
         
         if not isinstance(n_events, int) or isinstance(n_events, bool):
-            raise TypeError("n_events must be a non-negative integer.")
-        if n_events < 0:
-            raise ValueError("n_events must be >= 0.")
+            raise TypeError("n_events must be a positive integer.")
+        if n_events < 1:
+            # Zero-event flares carry no signal and force every downstream
+            # consumer to handle a degenerate case (NaN exposures, empty
+            # arrays, ambiguous `has_flare` semantics, etc.). They should be
+            # filtered out by the caller, e.g. `if n > 0: Flare(n, ...)`.
+            raise ValueError("n_events must be >= 1; do not construct a Flare with 0 events.")
 
         if not isinstance(duration, u.Quantity):
             raise TypeError(
@@ -96,7 +100,7 @@ class Flare:
         self.rng = rng
 
         self.n_events = int(n_events)
-        self.duration = float(duration_sec)
+        self.duration = float(duration_sec)  # seconds
 
         self.t0 = t0
         self.tf = tf
@@ -393,15 +397,6 @@ class Flare:
 
         target = self.n_events
 
-        if target == 0:
-            self.RA = np.empty(0, dtype=float)
-            self.Dec = np.empty(0, dtype=float)
-            self.time = self.t0 + TimeDelta(np.empty(0), format="sec")
-            self.exposure = np.empty(0, dtype=float)
-            self.spatial_profile = "gaussian_spherical"
-            self.time_profile = "uniform_thinned"
-            return
-        
         ra_acc: list[np.ndarray] = []
         dec_acc: list[np.ndarray] = []
         time_acc: list[Time] = []

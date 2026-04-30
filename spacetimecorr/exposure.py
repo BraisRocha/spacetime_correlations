@@ -206,7 +206,14 @@ class ExposureModel:
 
         t_arr, scalar_input = self._as_time_array(t)
 
-        mask = self.acceptance_mask(t_arr, centre, efficiency=efficiency)
+        # Compute the detection probability once and reuse it for the
+        # Bernoulli draw and for the optional return value, instead of
+        # delegating to acceptance_mask (which would recompute it).
+        p = np.asarray(
+            self.detection_probability(t_arr, centre, efficiency=efficiency),
+            dtype=float,
+        )
+        mask = self.rng.random(size=p.shape) < p
         t_acc = t_arr[mask]
 
         outputs = [t_acc]
@@ -215,10 +222,6 @@ class ExposureModel:
             outputs.append(mask)
 
         if return_prob:
-            p = np.asarray(
-                self.detection_probability(t_arr, centre, efficiency=efficiency),
-                dtype=float,
-            )
             outputs.append(p)
 
         if return_exposure:
@@ -371,7 +374,7 @@ class ExposureModel:
         if not isinstance(factor, int) or isinstance(factor, bool) or factor <= 0:
             raise TypeError("factor must be a positive integer.")
         if not isinstance(expected_exposure_rate, (int, float)) or isinstance(expected_exposure_rate, bool):
-            raise TypeError("exp_rate_exposure must be numeric.")
+            raise TypeError("expected_exposure_rate must be numeric.")
         if expected_exposure_rate <= 0:
             raise ValueError("expected_exposure_rate must be > 0.")
         if not isinstance(max_dir_exposure, (int, float)) or isinstance(max_dir_exposure, bool):

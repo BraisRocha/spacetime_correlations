@@ -8,7 +8,7 @@ def make_run_dir(
     run_code: str,
     seed: int,
     job_id: str | None = None,
-) -> Path:
+) -> tuple[Path, str]:
     """
     Create and return a unique output directory for one run.
 
@@ -25,8 +25,10 @@ def make_run_dir(
 
     Returns
     -------
-    Path
+    outdir : Path
         Path to the created run directory.
+    run_name : str
+        Name component (timestamp_seed[_job]) used to build ``outdir``.
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 

@@ -6,11 +6,14 @@ import numpy as np
 import scipy.stats as scp
 import scipy.special as scs
 import os
-import matplotlib.pyplot as plt
-
-
 
 from .event_sample import EventSample
+
+
+def _pyplot():
+    """Lazy matplotlib.pyplot import (avoids requiring a display at import time)."""
+    import matplotlib.pyplot as plt
+    return plt
 
 # --------------------------------------------------------------------------------
 # Lambda Conditional PDF | $f_{Lambda}(x|n) = Gamma(n-1,1)$
@@ -156,12 +159,14 @@ def lambda_marginal_logsf(x, mu, nmax=None):
     # log Poisson weights: log[e^{-mu} mu^n / n!]
     logw = -mu + n * np.log(mu) - scs.gammaln(n + 1.0)
 
-    def _scalar_logsf(xi):
-        logQ = scp.gamma.logsf(xi, a=a, loc=0.0, scale=1.0)
-        return scs.logsumexp(logw + logQ)
+    # Vectorised over x: gamma.logsf broadcasts x[..., None] against a[None, :].
+    x_arr = np.atleast_1d(x)
+    logQ = scp.gamma.logsf(x_arr[:, None], a=a[None, :], loc=0.0, scale=1.0)
+    out = scs.logsumexp(logw[None, :] + logQ, axis=1)
 
-    out = np.vectorize(_scalar_logsf, otypes=[float])(x)
-    return out if out.ndim > 0 else float(out)
+    if np.ndim(x) == 0:
+        return float(out[0])
+    return out.reshape(np.shape(x))
 
 def lambda_marginal_sf(x, mu, nmax=None):
     """
@@ -264,6 +269,17 @@ def lambda_estimator(sample: EventSample) -> float:
     # Spacings of sorted exposure values
     delta_exp = np.diff(np.sort(sample.exposure))
 
+    # Duplicate exposure values produce delta_exp == 0, which makes the
+    # log term diverge. The spacings model assumes a continuous exposure
+    # distribution, so ties indicate a quantisation issue upstream rather
+    # than something we should silently regularise away.
+    if np.any(delta_exp <= 0.0):
+        raise ValueError(
+            "lambda_estimator: duplicate (or non-increasing) exposure values "
+            "detected. The spacings model requires strictly increasing exposure "
+            "values; check the upstream sampling for quantisation."
+        )
+
     # Computation of the Lambda estimator
     lambda_stat = float(-np.sum(np.log(1.0 - np.exp(-delta_exp * sample.expected_exposure_rate))))
 
@@ -278,7 +294,7 @@ def spatial_estimator(n_events, mu) -> float|np.ndarray:
         P(N >= n_events | mu).
     """
     n_events = np.asarray(n_events, dtype=float)
-    mu = np.asarray(n_events, dtype=float)
+    mu = np.asarray(mu, dtype=float)
 
     return scp.poisson.sf(n_events - 1, mu)
 
@@ -406,6 +422,7 @@ def plot_lambda_joint_heatmap(
     zmax = np.max(Z_log)
     zmin = zmax - log_range
 
+    plt = _pyplot()
     fig, ax = plt.subplots(figsize=(9, 6))
 
     im = ax.imshow(

@@ -117,6 +117,10 @@ def main(seed: int) -> None:
 
     expected_n = window.expected_n_in_window(n_events)
 
+    # Mean number of flare events drawn per realization. This depends only
+    # on parameters fixed before the loop, so compute it once.
+    mu_flare = flare_intensity * expected_n
+
     n_events_bkg = []
     n_events_flare = []
 
@@ -152,10 +156,10 @@ def main(seed: int) -> None:
             delta_exposure_bkg_val = np.diff(np.sort(subsample.exposure))
             lambda_stat_bkg = stc.lambda_estimator(sample=subsample)
 
-            n_bkg = subsample.n_events
+            # In-window event count for the background-only realisation.
+            n_in_window_before = subsample.n_events
 
             # Draw flare multiplicity
-            mu_flare = flare_intensity * subsample.expected_n
             n_flare = int(
                 scp.poisson.rvs(
                     mu_flare,
@@ -196,12 +200,14 @@ def main(seed: int) -> None:
                     exposure_model=exposure_model,
                 )
 
-            # Although n_flare may be 0 parameters are still obtained
+            # When n_flare == 0 the subsample is identical to the background
+            # one, but we still compute the statistic so the trial is recorded
+            # as a (zero-injection) outcome of the Poisson draw.
             delta_exposure_flare_val = np.diff(np.sort(subsample.exposure))
             lambda_stat_flare = stc.lambda_estimator(sample=subsample)
-            #p_val_flare = float(scp.gamma.sf(lambda_stat_flare, a=n_events_bkg - 1, scale=1.0))
 
-            n_flare = subsample.n_events
+            # In-window event count after (potential) flare injection.
+            n_in_window_after = subsample.n_events
 
             # Only store results after the full background+flare chain succeeds
             lambda_bkg.append(lambda_stat_bkg)
@@ -210,8 +216,8 @@ def main(seed: int) -> None:
             delta_exposure_bkg.append(delta_exposure_bkg_val)
             delta_exposure_flare.append(delta_exposure_flare_val)
 
-            n_events_bkg.append(n_bkg)
-            n_events_flare.append(n_flare)
+            n_events_bkg.append(n_in_window_before)
+            n_events_flare.append(n_in_window_after)
 
             n_success += 1
             pbar.update(1)
