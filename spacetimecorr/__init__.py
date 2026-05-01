@@ -1,3 +1,28 @@
+"""
+spacetimecorr
+=============
+
+Tools for simulating and analysing spatiotemporal correlations in
+ultra-high-energy cosmic-ray (UHECR) arrival directions.
+
+The package exposes:
+
+- ``Observatory`` / ``SkyWindow`` / ``ExposureModel``
+    Geometry and exposure primitives.
+- ``EventSample`` / ``Flare``
+    Event-level data containers and flare generators.
+- ``RNGManager``
+    Reproducible, named random-number streams.
+- ``lambda_*`` / ``spatial_estimator`` / ``empirical_p_values``
+    Anisotropy estimators and their distributions.
+
+Recommended usage
+-----------------
+Import the package as ``stc`` in scripts and notebooks::
+
+    import spacetimecorr as stc
+"""
+
 from .observatory import Observatory
 from .skywindow import SkyWindow
 from .exposure import ExposureModel
@@ -21,7 +46,6 @@ from .statistics import (
     lambda_marginal_rvs,
     lambda_estimator,
     spatial_estimator,
-    tau_log_likelihood,
     empirical_p_values,
     plot_lambda_joint_heatmap,
     pvalue_to_sigma,
@@ -53,15 +77,8 @@ __all__ = [
     "lambda_marginal_rvs",
     "lambda_estimator",
     "spatial_estimator",
-    "tau_log_likelihood",
     "empirical_p_values",
     "plot_lambda_joint_heatmap",
     "pvalue_to_sigma",
     "sigma_to_pvalue",
 ]
-
-"""
-Recommended
------------
-    Import spacetimecorr package as `stc` in your script.
-"""

@@ -44,7 +44,15 @@ def make_run_dir(
 
 def write_metadata(outdir: Path, metadata: dict) -> None:
     """
-    Write run metadata to a JSON file inside the output directory.
+    Write run metadata to ``outdir / "metadata.json"``.
+
+    Parameters
+    ----------
+    outdir : Path
+        Output directory of the run (must already exist).
+    metadata : dict
+        JSON-serialisable mapping of metadata fields. Numpy arrays and other
+        non-serialisable objects must be converted by the caller.
     """
     with open(outdir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)

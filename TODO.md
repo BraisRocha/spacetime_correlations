@@ -23,10 +23,6 @@ fix right now, but which should be revisited.
   sorting. Intended to avoid a bias near `max_exposure`. Worth revisiting
   to confirm the resulting distribution matches what we want analytically.
 
-- **`tau_log_likelihood` is currently unused**
-  Not exercised by any analysis or script at the moment. May be removed
-  in a future cleanup if it stays unused.
-
 ## Code quality
 
 - **Tests**
@@ -39,10 +35,6 @@ fix right now, but which should be revisited.
     counts).
   This would make it much easier to catch silent statistical bugs.
 
-- **Hour-angle bookkeeping in `cumulative_directional_exposure`**
-  The boundary handling at `eta == h_star` is consistent but not documented.
-  Add a short comment when revisited.
-
 - **Log-handler / file-handle housekeeping**
   `setup_logger` now resets handlers on each call; consider also surfacing a
   `close_logger` helper for very long-running pipelines.
@@ -53,6 +45,27 @@ fix right now, but which should be revisited.
   Several files (`event_sample.py`, `flare.py`, `exposure.py`) have no
   top-level summary. Add when the API stabilises.
 
-- **`spacetimecorr/__init__.py` docstring placement**
-  Current docstring sits below `__all__` and is therefore dropped by Python.
-  Move it to the top of the module on the next pass.
+## Open API decisions (pending review)
+
+- **`sample_directional_exposure` — asymmetric input handling**
+  Currently in `ExposureModel.sample_directional_exposure`:
+    * `expected_exposure_rate <= 0`  → raises `ValueError` (setup error).
+    * `max_dir_exposure <= 0`        → silently returns an empty array
+      (physically meaningful "always-invisible" regime, `A + B <= 0`).
+    * `n_events == 0` / `mu_expanded == 0` → silently returns an empty array.
+  The current behaviour kept the asymmetry on the grounds that the silent
+  branches encode genuine physical edge cases while the raising branch flags
+  caller bugs. Decision to revisit: keep this (status quo) or unify the
+  three branches (e.g. all raise, or all return empty).
+
+- **`EventSample.has_exposure` semantics with partly-NaN arrays**
+  Right after `inject_flare()` and before a follow-up
+  `assign_directional_exposure()`, the exposure array is allocated but the
+  non-flare slots are still `NaN`. Two interpretations:
+    * **(a)** Tighten `has_exposure` to require all-finite values
+      (`np.all(np.isfinite(self.exposure))`), i.e. "fully populated".
+    * **(b)** Leave `has_exposure` as the structural "array allocated?"
+      check (current behaviour) and rely on the NaN guard in
+      `lambda_estimator` to catch partly-filled arrays at the use site.
+  Currently using (b). Decision to revisit: keep (b), or switch to (a) if
+  we ever want `has_exposure` to mean "ready for analysis".

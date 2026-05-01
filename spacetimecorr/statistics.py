@@ -20,7 +20,23 @@ def _pyplot():
 # --------------------------------------------------------------------------------
 
 def lambda_conditional_pdf(x, n_events):
-    """PDF of Lambda | n ~ Gamma(n-1, 1)."""
+    """
+    Probability density of ``Lambda`` given ``n`` events::
+
+        Lambda | n  ~  Gamma(shape = n - 1, scale = 1).
+
+    Parameters
+    ----------
+    x : float or array-like
+        Evaluation point(s).
+    n_events : int or array-like of int
+        Number of events conditioning the distribution. Must be ``>= 2``.
+
+    Returns
+    -------
+    float or numpy.ndarray
+        PDF value(s) at ``x``.
+    """
     x = np.asarray(x)
     n_events = np.asarray(n_events)
 
@@ -28,7 +44,11 @@ def lambda_conditional_pdf(x, n_events):
     return scp.gamma.pdf(x, a=shape, loc=0.0, scale=1.0)
 
 def lambda_conditional_cdf(x, n_events):
-    """CDF of Lambda | n ~ Gamma(n-1, 1)."""
+    """
+    Cumulative distribution function of ``Lambda | n ~ Gamma(n-1, 1)``.
+
+    Parameters and returns mirror :func:`lambda_conditional_pdf`.
+    """
     x = np.asarray(x)
     n_events = np.asarray(n_events)
 
@@ -36,7 +56,12 @@ def lambda_conditional_cdf(x, n_events):
     return scp.gamma.cdf(x, a=shape, loc=0.0, scale=1.0)
 
 def lambda_conditional_sf(x, n_events):
-    """Upper-tail probability P(Lambda >= x | n)."""
+    """
+    Upper-tail probability ``P(Lambda >= x | n)`` for ``Lambda | n ~ Gamma(n-1, 1)``.
+
+    This is the conditional p-value associated with the observed Lambda
+    value at fixed event count ``n``.
+    """
     x = np.asarray(x)
     n_events = np.asarray(n_events)
 
@@ -44,7 +69,12 @@ def lambda_conditional_sf(x, n_events):
     return scp.gamma.sf(x, a=shape, loc=0.0, scale=1.0)
 
 def lambda_conditional_logsf(x, n_events):
-    """Log upper-tail probability log P(Lambda >= x | n)."""
+    """
+    Logarithm of the conditional upper-tail probability,
+    ``log P(Lambda >= x | n)``.
+
+    Useful when the survival function underflows (very large ``x``).
+    """
     x = np.asarray(x)
     n_events = np.asarray(n_events)
 
@@ -63,14 +93,17 @@ def lambda_conditional_sigma(x, n_events):
     return scp.norm.isf(p)
 
 def lambda_conditional_pvalue(x, n_events):
-    """Alias for the upper-tail p-value."""
+    """Alias for :func:`lambda_conditional_sf`, the conditional upper-tail p-value."""
     x = np.asarray(x)
     n_events = np.asarray(n_events)
 
     return lambda_conditional_sf(x, n_events)
 
 def lambda_conditional_pvalue_and_sigma(x, n_events):
-    """Return both p-value and one-sided Gaussian sigma."""
+    """
+    Return both the conditional p-value ``P(Lambda >= x | n)`` and its
+    one-sided Gaussian-equivalent significance.
+    """
     x = np.asarray(x)
     n_events = np.asarray(n_events)
 
@@ -79,7 +112,18 @@ def lambda_conditional_pvalue_and_sigma(x, n_events):
     return p, z
 
 def lambda_conditional_rvs(n_events, size=1, random_state=None):
-    """Random samples from Lambda | n ~ Gamma(n-1, 1)."""
+    """
+    Draw random samples from ``Lambda | n ~ Gamma(n-1, 1)``.
+
+    Parameters
+    ----------
+    n_events : int or array-like of int
+        Conditioning event count(s); must be ``>= 2``.
+    size : int or tuple of int, optional
+        Sample size, forwarded to ``scipy.stats.gamma.rvs``.
+    random_state : int, numpy.random.Generator, or None, optional
+        Random state forwarded to ``scipy.stats``.
+    """
     shape = n_events - 1
     return scp.gamma.rvs(
         a=shape,
@@ -185,11 +229,14 @@ def lambda_marginal_sigma(x, mu, nmax=None):
     return scp.norm.isf(p)
 
 def lambda_marginal_pvalue(x, mu, nmax=None):
-    """Alias for the upper-tail p-value."""
+    """Alias for :func:`lambda_marginal_sf`, the marginal upper-tail p-value."""
     return lambda_marginal_sf(x, mu, nmax=nmax)
 
 def lambda_marginal_pvalue_and_sigma(x, mu, nmax=None):
-    """Return both p-value and one-sided Gaussian sigma."""
+    """
+    Return both the marginal p-value ``P(Lambda >= x)`` (with ``N ~ Poisson(mu)``,
+    truncated to ``N >= 2``) and its one-sided Gaussian-equivalent significance.
+    """
     p = lambda_marginal_sf(x, mu, nmax=nmax)
     z = scp.norm.isf(p)
     return p, z
@@ -266,8 +313,21 @@ def lambda_estimator(sample: EventSample) -> float:
     if sample.n_events < 2:
         raise ValueError("Need at least 2 events to compute Delta exposure.")
 
+    # Reject incomplete exposure arrays before doing anything else: NaN
+    # comparisons silently evaluate to False, so a partly-filled array
+    # would slip through the duplicate check below and produce a NaN
+    # statistic. This commonly happens when `inject_flare` is called and
+    # the caller forgets the follow-up `assign_directional_exposure`.
+    exposure = np.asarray(sample.exposure, dtype=float)
+    if not np.all(np.isfinite(exposure)):
+        raise ValueError(
+            "lambda_estimator: sample.exposure contains non-finite values. "
+            "Did you call inject_flare() without a subsequent "
+            "assign_directional_exposure() to fill the background slots?"
+        )
+
     # Spacings of sorted exposure values
-    delta_exp = np.diff(np.sort(sample.exposure))
+    delta_exp = np.diff(np.sort(exposure))
 
     # Duplicate exposure values produce delta_exp == 0, which makes the
     # log term diverge. The spacings model assumes a continuous exposure
@@ -287,11 +347,28 @@ def lambda_estimator(sample: EventSample) -> float:
 
 def spatial_estimator(n_events, mu) -> float|np.ndarray:
     """
-    Compute a purely spatial correlation estimator.
+    Purely spatial correlation estimator: Poisson upper-tail probability.
 
-    The estimator is defined as the Poisson tail probability
+    For an observed event count ``n_events`` in a sky window with
+    expected count ``mu`` under the null (e.g. isotropy under uniform
+    full-sky exposure), this returns
 
-        P(N >= n_events | mu).
+        P(N >= n_events | mu)  =  Q(n_events, mu),
+
+    where ``N ~ Poisson(mu)``. Smaller values indicate a stronger
+    (positive) excess.
+
+    Parameters
+    ----------
+    n_events : int or array-like of int
+        Observed event count(s).
+    mu : float or array-like
+        Expected count(s) under the null.
+
+    Returns
+    -------
+    float or numpy.ndarray
+        Upper-tail probability/probabilities; broadcasts over inputs.
     """
     n_events = np.asarray(n_events, dtype=float)
     mu = np.asarray(mu, dtype=float)
@@ -466,91 +543,8 @@ def plot_lambda_joint_heatmap(
     return lambda_center
 
 # --------------------------------------------------------------------------------
-# Anisotropy estimators
+# Empirical (Monte-Carlo based) p-values
 # --------------------------------------------------------------------------------
-
-def tau_log_likelihood(sample, n_bins: int = 10) -> float:
-    """
-    Compute a Poisson-binned log-likelihood statistic from consecutive
-    directional-exposure differences.
-
-    The method sorts ``sample.dir_exposure``, computes the consecutive gaps,
-
-        Delta_i = eps[i+1] - eps[i],
-
-    and bins them into ``n_bins`` disjoint intervals between 0 and the maximum
-    observed gap.
-
-    For each bin [a, b), the expected number of counts under the null
-    hypothesis is approximated as
-
-        lambda_k = (n_events - 1) * [exp(-Gamma * a) - exp(-Gamma * b)],
-
-    where ``Gamma = sample.exp_rate_exposure``.
-
-    The returned statistic is
-
-        lnL = sum_k ln P(c_k | lambda_k),
-
-    where ``P(c_k | lambda_k)`` is the Poisson probability of observing
-    ``c_k`` counts in bin ``k``.
-
-    Parameters
-    ----------
-    sample : EventSample
-        Sample containing ``dir_exposure`` and ``exp_rate_exposure``.
-    n_bins : int, default=10
-        Number of bins used for the gap histogram.
-
-    Returns
-    -------
-    float
-        Poisson-binned log-likelihood statistic.
-    """
-    eps = np.sort(np.asarray(sample.exposure, dtype=float))
-    gamma = float(sample.expected_exposure_rate)
-
-    if eps.ndim != 1:
-        raise ValueError("sample.exposure must be a 1D array.")
-    if len(eps) < 2:
-        raise ValueError("At least two events are required to define gaps.")
-    if gamma < 0:
-        raise ValueError("sample.expected_exposure_rate must be >= 0.")
-    if n_bins < 1:
-        raise ValueError("n_bins must be >= 1.")
-
-    gaps = np.diff(eps)
-    n_gaps = len(gaps)
-
-    gmax = gaps.max()
-
-    if gmax <= 0:
-        # Degenerate case: all gaps are zero
-        return 0.0
-
-    bin_edges = np.linspace(0.0, gmax, n_bins + 1)
-
-    counts, _ = np.histogram(gaps, bins=bin_edges)
-
-    left = bin_edges[:-1]
-    right = bin_edges[1:]
-
-    lambda_k = n_gaps * (np.exp(-gamma * left) - np.exp(-gamma * right))
-
-    lnP_k = np.zeros_like(lambda_k, dtype=float)
-
-    positive = lambda_k > 0.0
-    lnP_k[positive] = (
-        counts[positive] * np.log(lambda_k[positive])
-        - lambda_k[positive]
-        - scs.gammaln(counts[positive] + 1)
-    )
-
-    impossible = (~positive) & (counts > 0)
-    if np.any(impossible):
-        return -np.inf
-
-    return float(np.sum(lnP_k))
 
 def empirical_p_values(null_estimators: np.ndarray, estimators: np.ndarray) -> np.ndarray:
     """

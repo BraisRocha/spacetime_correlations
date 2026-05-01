@@ -34,6 +34,17 @@ class ExposureModel:
         tf: Time,
         rng: np.random.Generator,
     ):
+        """
+        Parameters
+        ----------
+        observatory : Observatory
+            Observatory whose latitude defines the local geometric acceptance.
+        t0, tf : astropy.time.Time
+            Start and end of the observation interval. Must satisfy ``tf > t0``.
+        rng : numpy.random.Generator
+            Random stream used by the Bernoulli thinning and exposure-space
+            samplers. Typically obtained from :class:`RNGManager`.
+        """
 
         if not isinstance(observatory, Observatory):
             raise TypeError("observatory must be an instance of Observatory.")
@@ -58,6 +69,12 @@ class ExposureModel:
 
 
     def _as_time_array(self, t: Time) -> tuple[Time, bool]:
+        """
+        Coerce a possibly-scalar ``Time`` into a 1-element ``Time`` array.
+
+        Returns the array form together with a flag indicating whether the
+        original input was scalar, so callers can re-wrap the result.
+        """
         if not isinstance(t, Time):
             raise TypeError("Input must be an astropy.time.Time object.")
         scalar_input = bool(getattr(t, "isscalar", np.isscalar(t)))
@@ -65,11 +82,24 @@ class ExposureModel:
         return t_arr, scalar_input
 
     def _validate_centre(self, centre: np.ndarray) -> tuple[float, float]:
+        """
+        Coerce ``centre`` to ``(RA_deg, Dec_deg)`` floats and validate
+        both shape and value ranges (RA in ``[0, 360)``, Dec in
+        ``[-90, 90]``). Mirrors the validation done by :class:`SkyWindow`
+        and :class:`Flare` so that nonphysical centres do not silently
+        propagate through trigonometric expressions.
+        """
         c = np.asarray(centre, dtype=float)
         if c.size != 2:
             raise TypeError("centre must be array-like with 2 elements: [RA_deg, Dec_deg].")
         ra_deg, dec_deg = c.reshape(2,)
-        return float(ra_deg), float(dec_deg)
+        ra_deg = float(ra_deg)
+        dec_deg = float(dec_deg)
+        if not (0.0 <= ra_deg < 360.0):
+            raise ValueError(f"RA must be in [0, 360); got {ra_deg}.")
+        if not (-90.0 <= dec_deg <= 90.0):
+            raise ValueError(f"Dec must be in [-90, 90]; got {dec_deg}.")
+        return ra_deg, dec_deg
     
     def _continuous_hour_angle(self, t: Time, ra_deg: float) -> np.ndarray:
         """
@@ -89,10 +119,28 @@ class ExposureModel:
 
     def instantaneous_acceptance(self, t: Time, centre: np.ndarray) -> np.ndarray | float:
         """
-        Instantaneous geometric acceptance a(t) in [0, 1].
+        Instantaneous geometric acceptance ``a(t)`` for a fixed sky direction.
 
-        In the current model:
+        In the current model::
+
             a(t) = max(0, cos z(t))
+
+        where ``z(t)`` is the local zenith angle of ``centre`` at the
+        observatory at time ``t``. There is presently no upper zenith cut.
+
+        Parameters
+        ----------
+        t : astropy.time.Time
+            Scalar or array of evaluation times. Must satisfy
+            ``t0 <= t <= tf`` for every entry.
+        centre : array-like of shape (2,)
+            Sky direction ``[RA_deg, Dec_deg]``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            Acceptance value(s) in ``[0, 1]``. A float is returned when ``t``
+            is scalar, otherwise an array of the same shape as ``t``.
         """
         t_arr, scalar_input = self._as_time_array(t)
 
@@ -168,7 +216,34 @@ class ExposureModel:
         efficiency=None,
     ) -> np.ndarray | bool:
         """
-        Bernoulli thinning mask for candidate event times.
+        Draw a Bernoulli thinning mask for candidate event times.
+
+        For each input time the detection probability is computed via
+        :meth:`detection_probability` and a Bernoulli trial is drawn from
+        ``self.rng``.
+
+        Parameters
+        ----------
+        t : astropy.time.Time
+            Scalar or array of candidate times.
+        centre : array-like of shape (2,)
+            Sky direction ``[RA_deg, Dec_deg]``.
+        efficiency : callable or None, optional
+            Optional time-dependent efficiency in ``[0, 1]``, see
+            :meth:`detection_probability`.
+
+        Returns
+        -------
+        bool or numpy.ndarray of bool
+            Mask with the same shape as ``t``: ``True`` for accepted times.
+
+        Notes
+        -----
+        Because this method consumes random draws from ``self.rng``, calling
+        it directly and then asking for ``return_prob=True`` from
+        :meth:`detect_times` would either redo the draw or recompute the
+        probability. :meth:`detect_times` therefore inlines the same logic
+        and is the preferred entry point for combined draws.
         """
         t_arr, scalar_input = self._as_time_array(t)
         p = np.asarray(self.detection_probability(t_arr, centre, efficiency=efficiency), dtype=float)
@@ -189,19 +264,33 @@ class ExposureModel:
 
         Parameters
         ----------
-        t : Time
-            Candidate event times.
-        centre : array-like
-            [RA_deg, Dec_deg].
+        t : astropy.time.Time
+            Candidate event times (scalar or array).
+        centre : array-like of shape (2,)
+            ``[RA_deg, Dec_deg]``.
         efficiency : callable or None
-            Optional extra time-dependent efficiency in [0, 1].
+            Optional time-dependent efficiency in ``[0, 1]``.
         return_mask, return_prob, return_exposure : bool
-            Control extra outputs.
+            Toggle extra outputs.
 
         Returns
         -------
         Time or tuple
-            Accepted times, optionally with mask / probabilities / exposures.
+            * Without flags: the accepted times. For *array* input this is
+              a (possibly empty) ``Time`` array. For *scalar* input this
+              is the scalar ``Time`` if it was accepted, or ``None``.
+            * With flags: a tuple of length ``1 + n_flags``. For array
+              input the extras are arrays with the same shape as ``t``
+              (mask, probability) or as the accepted subset (exposure).
+              For scalar input the extras are scalars: ``mask`` is a
+              ``bool``, ``prob`` is a ``float``, and ``exposure`` is a
+              ``float`` if accepted or ``None`` otherwise.
+
+        Notes
+        -----
+        Scalar/array return shapes are kept consistent across all flag
+        combinations, so callers can use the same unpacking code for either
+        form.
         """
 
         t_arr, scalar_input = self._as_time_array(t)
@@ -216,14 +305,39 @@ class ExposureModel:
         mask = self.rng.random(size=p.shape) < p
         t_acc = t_arr[mask]
 
-        outputs = [t_acc]
+        any_flag = return_mask or return_prob or return_exposure
 
+        if scalar_input:
+            accepted = bool(mask[0])
+            t_out = t_arr[0] if accepted else None
+
+            if not any_flag:
+                return t_out
+
+            extras: list = []
+            if return_mask:
+                extras.append(accepted)
+            if return_prob:
+                extras.append(float(p[0]))
+            if return_exposure:
+                if accepted:
+                    eps = self.cumulative_directional_exposure(
+                        t_arr[mask], centre=centre
+                    )
+                    extras.append(float(np.asarray(eps).reshape(-1)[0]))
+                else:
+                    extras.append(None)
+            return (t_out, *extras)
+
+        # Array input
+        if not any_flag:
+            return t_acc
+
+        outputs: list = [t_acc]
         if return_mask:
             outputs.append(mask)
-
         if return_prob:
             outputs.append(p)
-
         if return_exposure:
             exp_acc = (
                 np.array([], dtype=float)
@@ -231,12 +345,6 @@ class ExposureModel:
                 else self.cumulative_directional_exposure(t_acc, centre=centre)
             )
             outputs.append(exp_acc)
-
-        if len(outputs) == 1:
-            if scalar_input:
-                return t_acc[0] if mask[0] else None
-            return t_acc
-
         return tuple(outputs)
     
     # -------------------------------------------------------------------------
@@ -249,11 +357,36 @@ class ExposureModel:
         centre: np.ndarray,
     ) -> np.ndarray | float:
         """
-        Exact cumulative directional exposure relative to self.t0:
+        Exact cumulative directional exposure relative to ``self.t0``::
 
             epsilon(t) = ∫_{t0}^{t} max(0, cos(theta(u))) du
 
-        using the analytic periodic primitive.
+        Computed analytically using the periodic primitive of the integrand
+        in the (continuous) hour-angle ``h``.
+
+        The expression splits into three regimes depending on the relative
+        sign of the geometric coefficients
+        ``A = sin(lat) * sin(dec)`` and ``B = cos(lat) * cos(dec)``:
+
+        - ``A + B <= 0``  (always invisible)  -> ``epsilon(t) = 0``,
+        - ``A - B >= 0``  (always visible)    -> the integrand is purely
+          sinusoidal and integrates to a closed form,
+        - otherwise (partial visibility)      -> the integrand is non-zero
+          only when ``|h| < h_star`` modulo ``2π`` with
+          ``h_star = arccos(-A/B)``; the integral is built piecewise
+          per sidereal cycle.
+
+        Parameters
+        ----------
+        t : astropy.time.Time
+            Scalar or array of evaluation times in ``[t0, tf]``.
+        centre : array-like of shape (2,)
+            Sky direction ``[RA_deg, Dec_deg]``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            ``epsilon(t)`` in seconds (acceptance is dimensionless).
         """
         t_arr, scalar_input = self._as_time_array(t)
 
@@ -294,6 +427,12 @@ class ExposureModel:
 
                 out_h = n * cycle_h
 
+                # The three masks cover [0, 2π) without overlap. The
+                # boundary `eta == h_star` is included in `m1` (rising
+                # edge) only, by virtue of `<` here vs. `>=` in `m2`;
+                # similarly `eta == 2π - h_star` is included in `m3`
+                # only. The integrand is continuous at both boundaries,
+                # so this assignment is consistent.
                 m1 = eta < h_star
                 m2 = (eta >= h_star) & (eta < two_pi - h_star)
                 m3 = eta >= two_pi - h_star
@@ -312,8 +451,18 @@ class ExposureModel:
 
     def max_directional_exposure(self, centre: np.ndarray) -> float:
         """
-        Return epsilon(tf), interpreted as the maximum cumulative directional
-        exposure over [t0, tf].
+        Return ``epsilon(tf)``, the maximum cumulative directional exposure
+        accumulated over ``[t0, tf]`` for the direction ``centre``.
+
+        Parameters
+        ----------
+        centre : array-like of shape (2,)
+            Sky direction ``[RA_deg, Dec_deg]``.
+
+        Returns
+        -------
+        float
+            Total accumulated exposure (in seconds).
         """
         return float(self.cumulative_directional_exposure(self.tf, centre))
     
@@ -369,17 +518,30 @@ class ExposureModel:
             Identifier string describing the sampling strategy.
         """
         
-        if not isinstance(n_events, int) or isinstance(n_events, bool) or n_events < 0:
-            raise TypeError("n_events must be a non-negative integer.")
-        if not isinstance(factor, int) or isinstance(factor, bool) or factor <= 0:
-            raise TypeError("factor must be a positive integer.")
+        if not isinstance(n_events, int) or isinstance(n_events, bool):
+            raise TypeError("n_events must be an integer.")
+        if n_events < 0:
+            raise ValueError("n_events must be non-negative.")
+        if not isinstance(factor, int) or isinstance(factor, bool):
+            raise TypeError("factor must be an integer.")
+        if factor <= 0:
+            raise ValueError("factor must be > 0.")
         if not isinstance(expected_exposure_rate, (int, float)) or isinstance(expected_exposure_rate, bool):
             raise TypeError("expected_exposure_rate must be numeric.")
         if expected_exposure_rate <= 0:
+            # A zero or negative *rate* is a setup error from the caller
+            # (the rate is `expected_n / max_exposure`, which is meaningful
+            # only when both are positive). We reject it loudly instead of
+            # silently returning an empty sample.
             raise ValueError("expected_exposure_rate must be > 0.")
         if not isinstance(max_dir_exposure, (int, float)) or isinstance(max_dir_exposure, bool):
             raise TypeError("max_dir_exposure must be numeric.")
         if max_dir_exposure <= 0:
+            # Zero (or negative) maximum directional exposure is the
+            # physically meaningful "always-invisible" regime of the
+            # cumulative exposure model (A + B <= 0). Pipelines should be
+            # able to call this method without special-casing that
+            # geometry, so we silently return an empty sample.
             return np.empty(0, dtype=float), "free_maximum_exposure_method"
 
         mu = float(factor) * float(expected_exposure_rate) * float(max_dir_exposure)

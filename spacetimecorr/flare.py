@@ -12,28 +12,40 @@ from .exposure import ExposureModel
 
 class Flare:
     """
-    Generate a synthetic flare component.
+    Synthetic flare component (compact spatial + temporal cluster of events).
 
-    A flare is defined independently of an EventSample. It stores the
-    parameters needed to generate a compact set of events in time and sky
-    coordinates within a fixed observation interval [t0, tf].
+    A ``Flare`` is constructed independently of an :class:`EventSample`. It
+    stores the parameters needed to generate a compact set of events in time
+    and sky coordinates within a fixed observation interval ``[t0, tf]``,
+    and exposes high-level helpers to populate them
+    (:meth:`generate_in_window`) or to inject them into an existing sample
+    (via :meth:`EventSample.inject_flare`).
 
     Parameters
     ----------
     n_events : int
-        Number of flare events to generate (non-negative).
+        Number of flare events to generate. Must be ``>= 1``: zero-event
+        flares are forbidden by construction (filter at the caller, e.g.
+        ``if n > 0: Flare(n, ...)``).
     duration : astropy.units.Quantity
-        Flare duration as a time Quantity. Must be > 0.
-    t0 : astropy.time.Time
-        Start of the observation interval.
-    tf : astropy.time.Time
-        End of the observation interval.
-    centre : np.ndarray
-        Central sky position of the flare, as [RA, Dec] in degrees.
-    exposure : ExposureModel
-        Exposure model associated with the observation.
+        Flare duration with time units (e.g. ``30 * u.day``). Must be
+        positive and not exceed ``tf - t0``.
+    t0, tf : astropy.time.Time
+        Start and end of the observation interval. Must satisfy ``tf > t0``.
+    centre : array-like of shape (2,)
+        Central sky position of the flare ``[RA_deg, Dec_deg]``.
+    exposure_model : ExposureModel
+        Directional exposure model used for thinning and exposure
+        evaluation.
     rng : numpy.random.Generator
-        Random generator stream used to generate flare coordinates and times.
+        Random stream used to draw flare coordinates and times.
+
+    Notes
+    -----
+    Generated arrays (``RA``, ``Dec``, ``time``, ``exposure``) are
+    initialised to ``None`` and populated by the ``generate_*`` /
+    ``compute_directional_exposure`` methods, or in one go by
+    :meth:`generate_in_window`.
     """
 
     def __init__(
@@ -117,12 +129,28 @@ class Flare:
         self.exposure: np.ndarray | None = None
 
     # -------------------------------------------------------------------------
+    # State-check properties
+    # -------------------------------------------------------------------------
+
+    @property
+    def has_coordinates(self) -> bool:
+        """Return True if flare coordinates have been generated."""
+        return self.RA is not None and self.Dec is not None
+
+    # -------------------------------------------------------------------------
     # Low-level sampling / evaluation methods
     # -------------------------------------------------------------------------
 
     def _draw_flare_start(self) -> Time:
         """
-        Draw the flare start time uniformly in [t0, tf - duration].
+        Draw the flare start time uniformly in ``[t0, tf - duration]``.
+
+        Notes
+        -----
+        When ``duration == tf - t0`` (the spatial-only regime exercised by
+        the sensitivity study) ``latest_start`` is exactly 0 and the start
+        time collapses to ``t0`` deterministically. This is the intended
+        behaviour for that regime.
         """
         latest_start = self._T_obs_sec - self.duration
         start_offset_sec = self.rng.uniform(0.0, latest_start)
@@ -212,36 +240,6 @@ class Flare:
     # Public population methods
     # -------------------------------------------------------------------------
 
-    def generate_gaussian_cluster(self, sigma: float) -> None:
-        """
-        Generate equatorial coordinates for this flare from a Gaussian cluster
-        on the sphere.
-
-        Parameters
-        ----------
-        sigma : float
-            Width of the cluster in degrees.
-        """
-        if sigma <= 0:
-            raise ValueError("sigma must be > 0.")
-
-        RA, Dec = self._sample_gaussian_cluster(self.n_events, sigma)
-        self.RA = RA
-        self.Dec = Dec
-        self.spatial_profile = "gaussian_spherical"
-
-    @property
-    def has_coordinates(self) -> bool:
-        """Return True if flare coordinates have been generated."""
-        return self.RA is not None and self.Dec is not None
-    
-    def generate_uniform_times(self) -> None:
-        """
-        Generate and store `self.n_events` flare times with a uniform profile.
-        """
-        self.time = self._sample_uniform_times(self.n_events)
-        self.time_profile = "uniform"
-
     def compute_directional_exposure(self, direction: np.ndarray) -> None:
         """
         Compute directional exposure for the generated flare times at a given direction.
@@ -256,110 +254,10 @@ class Flare:
             raise ValueError("direction must be a length-2 array: [RA, Dec] in degrees.")
 
         if self.time is None:
-            raise ValueError("Flare times are not set. Call generate_uniform_times() first.")
+            raise ValueError("Flare times are not set; populate `self.time` first.")
 
         self.exposure = self._evaluate_directional_exposure(self.time, direction)
 
-    # -------------------------------------------------------------------------
-    # Construction helpers
-    # -------------------------------------------------------------------------
-
-    @classmethod
-    def _from_arrays(
-        cls,
-        RA: np.ndarray,
-        Dec: np.ndarray,
-        duration: Quantity,
-        t0: Time,
-        tf: Time,
-        centre: np.ndarray,
-        exposure_model: ExposureModel,
-        rng: np.random.Generator,
-        time: Time | None = None,
-        exposure: np.ndarray | None = None,
-        spatial_profile: str | None = None,
-        time_profile: str | None = None,
-    ) -> Flare:
-        """
-        Create a Flare from existing arrays without generating new random values.
-        """
-
-        RA = np.asarray(RA, dtype=float)
-        Dec = np.asarray(Dec, dtype=float)
-
-        if RA.shape != Dec.shape:
-            raise ValueError(f"RA and Dec must have the same shape, got {RA.shape} vs {Dec.shape}.")
-        if RA.ndim != 1:
-            raise ValueError(f"RA and Dec must be 1D arrays, got ndim={RA.ndim}.")
-
-        if time is not None and np.size(time) != RA.size:
-            raise ValueError(f"time must have size {RA.size}, got {np.size(time)}.")
-
-        if exposure is not None:
-            exposure = np.asarray(exposure, dtype=float)
-            if exposure.shape != RA.shape:
-                raise ValueError(
-                    f"exposure must have shape {RA.shape}, got {exposure.shape}."
-                )
-            
-        obj = cls(
-            n_events=int(RA.size),
-            duration=duration,
-            t0=t0,
-            tf=tf,
-            centre=centre,
-            exposure_model=exposure_model,
-            rng=rng,
-        )
-
-        obj.RA = RA.copy()
-        obj.Dec = Dec.copy()
-        obj.time = time
-        obj.exposure = None if exposure is None else exposure.copy()
-        obj.spatial_profile = spatial_profile
-        obj.time_profile = time_profile
-
-        return obj
-    
-    def _subset(self, mask: np.ndarray) -> Flare:
-        """
-        Return a new Flare containing only events where mask is True.
-        """
-        if self.RA is None or self.Dec is None:
-            raise ValueError("RA/Dec are not set in the flare.")
-
-        mask = np.asarray(mask, dtype=bool)
-        if mask.shape != self.RA.shape:
-            raise ValueError(f"Mask must have shape {self.RA.shape}, got {mask.shape}.")
-
-        sub_time = None if self.time is None else self.time[mask]
-        sub_exposure = None if self.exposure is None else self.exposure[mask]
-
-        return Flare._from_arrays(
-            RA=self.RA[mask],
-            Dec=self.Dec[mask],
-            duration=self.duration * u.s,
-            t0=self.t0,
-            tf=self.tf,
-            centre=self.centre,
-            exposure_model=self.exposure_model,
-            rng=self.rng,
-            time=sub_time,
-            exposure=sub_exposure,
-            spatial_profile=self.spatial_profile,
-            time_profile=self.time_profile,
-        )
-    
-    def select_subsample(self, window: SkyWindow) -> Flare:
-        """
-        Return a new Flare containing only the events within the sky window.
-        """
-        if self.RA is None or self.Dec is None:
-            raise ValueError("RA/Dec are not set in the flare.")
-
-        mask = window.contains(self.RA, self.Dec)
-        return self._subset(mask)
-    
     # -------------------------------------------------------------------------
     # High-level realization method
     # -------------------------------------------------------------------------
@@ -371,23 +269,54 @@ class Flare:
         efficiency = None,
     ) -> Flare:
         """
-        Generate a flare realization inside a sky window and store it in `self`.
+        Generate a flare realisation inside a sky window and store it on ``self``.
 
-        This method:
-        1. draws spatial candidates from the Gaussian profile,
-        2. keeps only those inside the sky window,
-        3. assigns times within a single flare interval,
-        4. applies exposure thinning,
-        5. stores exactly `self.n_events` accepted events.
+        The procedure is:
+
+        1. draw a single flare start time uniformly in ``[t0, tf - duration]``,
+        2. iterate by batches:
+           a. sample spatial candidates from a Gaussian cluster around
+              ``self.centre`` with width ``sigma``,
+           b. keep only candidates inside ``window``,
+           c. draw uniform candidate times within the flare interval,
+           d. apply Bernoulli detection thinning via
+              :meth:`ExposureModel.acceptance_mask`,
+        3. accumulate accepted events until exactly ``self.n_events`` are
+           reached, then trim,
+        4. compute directional exposure values for the kept times via
+           :meth:`compute_directional_exposure` evaluated at ``window.centre``.
 
         Parameters
         ----------
         window : SkyWindow
-            Sky window used for spatial selection and exposure evaluation.
+            Sky window used for spatial selection and as the reference
+            direction for exposure evaluation.
         sigma : float
-            Standard deviation of the Gaussian spatial profile in degrees.
-        efficiency : optional
-            Optional efficiency parameter passed to the exposure model.
+            Standard deviation (in degrees) of the Gaussian spatial profile
+            on the sphere. The implementation uses a small-angle
+            approximation (Rayleigh radius in the tangent plane); errors
+            grow as ``sigma^2 / 24`` and are negligible for ``sigma``
+            of a few degrees.
+        efficiency : callable or None, optional
+            Optional time-dependent efficiency in ``[0, 1]`` forwarded to
+            the exposure model.
+
+        Raises
+        ------
+        TypeError
+            If ``window`` is not a :class:`SkyWindow`.
+        ValueError
+            If ``sigma <= 0``.
+        RuntimeError
+            If the rejection loop cannot reach ``self.n_events`` accepted
+            events within ``1000 * self.n_events`` candidate draws (e.g.
+            very small window combined with very low acceptance).
+
+        Notes
+        -----
+        Sets ``self.RA``, ``self.Dec``, ``self.time``, ``self.exposure``
+        and tags ``self.spatial_profile = "gaussian_spherical"``,
+        ``self.time_profile = "uniform_thinned"``.
         """
 
         if not isinstance(window, SkyWindow):
@@ -468,7 +397,11 @@ class Flare:
     @property
     def flare_type(self) -> str:
         """
-        Return a string describing the flare model.
+        Compact string label describing the flare model.
+
+        Format ``"{spatial_profile}-{time_profile}"`` once both have been
+        set (e.g. ``"gaussian_spherical-uniform_thinned"``); returns
+        ``"undefined_flare"`` if either profile is missing.
         """
         if self.spatial_profile is None or self.time_profile is None:
             return "undefined_flare"

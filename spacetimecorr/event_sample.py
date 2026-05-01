@@ -30,15 +30,15 @@ class EventSample:
     rng : numpy.random.Generator
         Random generator used for reproducible sampling
         (e.g. obtained from ``RNGManager.get(name)``).
-    auto_sample : bool, optional
-        If True (default), coordinates are sampled at construction time.
-        Set to False when constructing from pre-existing arrays to avoid
-        unnecessary random draws.
 
     Notes
     -----
-    - Default coordinates are generated using
-      :meth:`sample_equatorial_coordinates`.
+    - The constructor automatically samples isotropic ``(RA, Dec)``
+      coordinates by calling :meth:`assign_equatorial_coordinates`.
+    - All event coordinates are stored in degrees.
+    - Optional state (exposure values, flare bookkeeping, sample-type
+      labels) is set lazily by the corresponding ``assign_*`` /
+      ``inject_flare`` methods and inspected via the ``has_*`` properties.
     """
 
     # -------------------------------------------------------------------------
@@ -60,11 +60,13 @@ class EventSample:
         tf: Time,
         rng: np.random.Generator,
         *,
-        auto_sample: bool = True,
+        _auto_sample: bool = True,
     ):
         # ---- Input validation ------------------------------------------------
-        if not isinstance(n_events, int) or isinstance(n_events, bool) or n_events < 0:
-            raise TypeError("n_events must be a non-negative integer.")
+        if not isinstance(n_events, int) or isinstance(n_events, bool):
+            raise TypeError("n_events must be an integer.")
+        if n_events < 0:
+            raise ValueError("n_events must be non-negative.")
 
         if not isinstance(t0, Time) or not isinstance(tf, Time):
             raise TypeError("t0 and tf must be astropy.time.Time objects.")
@@ -102,7 +104,7 @@ class EventSample:
         self.flare_mask: np.ndarray | None = None
 
         # ---- Optional automatic coordinate generation ------------------------
-        if auto_sample:
+        if _auto_sample:
             self.assign_equatorial_coordinates()
 
     @classmethod
@@ -160,7 +162,7 @@ class EventSample:
             t0=t0,
             tf=tf,
             rng=rng,
-            auto_sample=False,
+            _auto_sample=False,
         )
 
         # Coordinates
@@ -216,33 +218,47 @@ class EventSample:
     # Core sampling and low-level data manipulation
     # -------------------------------------------------------------------------
 
-    def generate_equatorial_coordinates(self) -> tuple[np.ndarray, np.ndarray]:
+    def _generate_equatorial_coordinates(self) -> tuple[np.ndarray, np.ndarray]:
         """
         Simulate an isotropic distribution on the sphere in equatorial coordinates.
 
-        RA is uniform in [0, 360).
-        Dec is distributed such that sin(Dec) is uniform in [-1, 1]
-        (isotropic on the sphere).
-
-        Notes
-        -----
-        Coordinates are stored in degrees.
+        RA is uniform in ``[0, 360)``.
+        Dec is distributed so that ``sin(Dec)`` is uniform in ``[-1, 1]``
+        (isotropic on the sphere). Coordinates are returned in degrees.
         """
         RA = self.rng.uniform(0.0, 360.0, size=self.n_events)
         u_rand = self.rng.uniform(-1.0, 1.0, size=self.n_events)
         Dec = np.degrees(np.arcsin(u_rand))
 
         return np.asarray(RA, dtype=float), np.asarray(Dec, dtype=float)
-    
+
     def assign_equatorial_coordinates(self) -> None:
-        RA, Dec = self.generate_equatorial_coordinates()
+        """
+        Sample isotropic equatorial coordinates and store them on ``self``.
+
+        Sets ``self.RA``, ``self.Dec`` and tags ``self.spatial_type`` as
+        ``"equatorial"``.
+        """
+        RA, Dec = self._generate_equatorial_coordinates()
         self.RA = RA
         self.Dec = Dec
         self.spatial_type = "equatorial"
 
+    # -------------------------------------------------------------------------
+    # Public selection and exposure methods
+    # -------------------------------------------------------------------------
+
     def _subset(self, mask: np.ndarray) -> "EventSample":
         """
-        Return a new EventSample containing only events where mask is True.
+        Return a new ``EventSample`` containing only events where ``mask`` is True.
+
+        All optional per-event arrays present on ``self`` (``exposure``,
+        ``flare_mask``) are sliced consistently. Sample-level metadata
+        (``spatial_type``, ``exposure_type``, ``flare_type``,
+        ``expected_n``, ``expected_exposure_rate``) is propagated as-is.
+        Note that ``expected_n`` is *not* rescaled by the subset fraction
+        and should be set explicitly by the caller when its meaning changes
+        (e.g. by :meth:`select_subsample`).
         """
 
         if self.RA is None or self.Dec is None:
@@ -251,7 +267,7 @@ class EventSample:
         mask = np.asarray(mask, dtype=bool)
         if mask.shape != self.RA.shape:
             raise ValueError(f"Mask must have shape {self.RA.shape}, got {mask.shape}.")
-        
+
         exposure = None
         if self.exposure is not None:
             exposure = self.exposure[mask]
@@ -275,19 +291,34 @@ class EventSample:
             flare_type=self.flare_type,
         )
 
-    # -------------------------------------------------------------------------
-    # Public selection and exposure methods
-    # -------------------------------------------------------------------------
-
     def select_subsample(
         self,
         window: SkyWindow,
     ) -> EventSample:
         """
-        Return a new ``EventSample`` containing only the events within the window.
+        Return a new ``EventSample`` containing only events inside ``window``.
 
-        The returned sample modifies the attribute, ``expected_n``,
-        representing the expected number of events inside the window.
+        The returned sample carries an updated ``expected_n`` set to
+        ``window.expected_n_in_window(self.n_events)`` (i.e. the expected
+        number of events inside the window under the *uniform full-sky*
+        assumption built into :class:`SkyWindow`).
+
+        Parameters
+        ----------
+        window : SkyWindow
+            Spherical-cap window used to define the subset.
+
+        Returns
+        -------
+        EventSample
+            New sample with sliced ``RA``, ``Dec``, and any optional
+            per-event arrays.
+
+        Raises
+        ------
+        ValueError
+            If coordinates have not been generated, or if no event lies
+            inside the window.
         """
         if not self.has_coordinates:
             raise ValueError("RA and Dec are not available.")
@@ -411,15 +442,37 @@ class EventSample:
 
     def inject_flare(self, flare: "Flare") -> None:
         """
-        Inject a flare into the current sample by replacing random events.
+        Inject a fully-generated flare into the current sample in place.
 
-        The injection replaces ``flare.n_events`` randomly selected events in
-        the sample with the flare events.
+        ``flare.n_events`` event slots are chosen uniformly at random
+        (without replacement) from the existing events; their ``RA``,
+        ``Dec`` and ``exposure`` are overwritten by the flare values, and
+        a boolean ``flare_mask`` is recorded so that downstream code can
+        identify the injected events.
 
         Parameters
         ----------
         flare : Flare
-            Flare object containing RA, Dec, and directional exposure arrays.
+            Flare with ``RA``, ``Dec`` and ``exposure`` already populated
+            (typically via :meth:`Flare.generate_in_window`).
+
+        Raises
+        ------
+        TypeError
+            If ``flare`` is not a :class:`Flare` instance.
+        RuntimeError
+            If the sample already contains an injected flare.
+        ValueError
+            If ``self`` has no coordinates, ``flare`` is not fully
+            generated, or ``flare.n_events`` exceeds ``self.n_events``.
+
+        Notes
+        -----
+        - If ``self.exposure`` is ``None`` it is allocated as ``NaN`` and
+          only the flare slots are filled. The caller is responsible for
+          subsequently calling :meth:`assign_directional_exposure` to fill
+          the remaining background slots.
+        - Sample size (``self.n_events``) is preserved by construction.
         """
         from .flare import Flare
 
@@ -559,6 +612,37 @@ class EventSample:
     ):
         """
         Plot the event sample as a HEALPix-binned sky map in Hammer projection.
+
+        Parameters
+        ----------
+        nside : int, optional
+            HEALPix resolution parameter.
+        mask_fov : bool, optional
+            If True, mask pixels outside the observatory declination band
+            defined by ``location`` and ``zenith_max``.
+        location : astropy.coordinates.EarthLocation, optional
+            Required when ``mask_fov=True``.
+        zenith_max : astropy.units.Quantity, optional
+            Required when ``mask_fov=True``.
+        title : str, optional
+            Figure title.
+        cmap : str, optional
+            Matplotlib colormap name.
+        output_file : str or None, optional
+            If given, the figure is saved at this path with ``dpi=300``.
+        astronomical : bool, optional
+            If True (default), display the sky in the astronomical
+            convention (RA increases to the left).
+        show : bool, optional
+            If True, call ``plt.show()`` after drawing.
+        xticks_deg, yticks_deg : array-like or None, optional
+            Override the default tick locations (in degrees) on the
+            longitude/latitude axes.
+
+        Returns
+        -------
+        fig, ax : matplotlib.figure.Figure, matplotlib.axes.Axes
+            Created figure and axes objects.
         """
         skymap = self.get_healpix_skymap(
             nside=nside,

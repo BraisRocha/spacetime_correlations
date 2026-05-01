@@ -13,12 +13,38 @@ class RNGManager:
     """
 
     def __init__(self, seed: int = 42):
-        if not isinstance(seed, int):
+        """
+        Parameters
+        ----------
+        seed : int, optional
+            Master seed used to derive every named child stream. The same
+            ``(seed, name)`` pair always yields the same stream.
+        """
+        if not isinstance(seed, (int, np.integer)) or isinstance(seed, bool):
             raise TypeError("Seed must be an integer.")
-        self._seed = seed
+        self._seed = int(seed)
         self._rngs: dict[str, np.random.Generator] = {}
-    
+
     def get(self, name: str) -> np.random.Generator:
+        """
+        Return the ``Generator`` associated with ``name``, creating it on
+        first use.
+
+        The child stream is derived from a ``SeedSequence`` whose spawn key
+        is a stable hash of ``name``. Successive calls with the same
+        ``name`` therefore return the same instance, regardless of the
+        order in which different names are requested.
+
+        Parameters
+        ----------
+        name : str
+            Logical name of the stream (e.g. ``"events"``, ``"flare"``).
+
+        Returns
+        -------
+        numpy.random.Generator
+            Cached generator for the requested name.
+        """
         if name not in self._rngs:
             # Turn the name into a stable uint32 using a hash
             digest = hashlib.blake2b(name.encode("utf-8"), digest_size=4).digest()
@@ -29,5 +55,6 @@ class RNGManager:
 
         return self._rngs[name]
 
-    def names(self):
+    def names(self) -> tuple[str, ...]:
+        """Return the tuple of stream names that have been instantiated so far."""
         return tuple(self._rngs.keys())
