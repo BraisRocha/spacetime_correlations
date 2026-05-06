@@ -69,3 +69,11 @@ fix right now, but which should be revisited.
       `lambda_estimator` to catch partly-filled arrays at the use site.
   Currently using (b). Decision to revisit: keep (b), or switch to (a) if
   we ever want `has_exposure` to mean "ready for analysis".
+
+
+## IDEAS FOR THE FUTURE
+
+- Maybe in the future we could modify the estimator to weight
+the probability of a particle being neutral. Miguel says the the Polish are already dealing with the probability of a CR being a photon in his method. At the moment ours is purely statistical what leaves room for improvement. In the future adding modifications to account for the nature of the particles may increase the sensitivity of the method.
+
+- In the future, the direct exposure has to be modified to take into account all the different efects that affect the observation of effects. One of the most direct ones is to account for A(t), ie, the effects which can be modeled as a variation on the effective area of the detector as a function of time (bad periods, tanks down, increases of the observatorty's area, etc.). 

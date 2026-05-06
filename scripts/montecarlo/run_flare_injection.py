@@ -43,7 +43,7 @@ def main(seed: int) -> None:
 
     # Sky window parameters (RA [deg], Dec [deg], radius [deg])
     centre = np.array([30.0, 0.0])
-    radius = 1.5
+    radius = 2
 
     # Pierre Auger Observatory coordinates
     latitude_pa = -35.15
@@ -51,9 +51,9 @@ def main(seed: int) -> None:
     altitude_pa = 1425
 
     # Flare parameters
-    flare_duration = 30 * u.day
+    flare_duration = 1 * u.day
     flare_sigma = 1.0  # deg
-    flare_intensity = 0.2 # events of the flare/events expected from isotropy within the window
+    flare_intensity = 0.1 # events of the flare/events expected from isotropy within the window
 
     # ------------------------------------------------------------------
     # Output directory
@@ -116,6 +116,8 @@ def main(seed: int) -> None:
     delta_exposure_flare = []
 
     expected_n = window.expected_n_in_window(n_events)
+    print(window.sky_fraction)
+    print(expected_n)
 
     # Mean number of flare events drawn per realization. This depends only
     # on parameters fixed before the loop, so compute it once.

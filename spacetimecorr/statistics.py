@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Tuple
 
 import numpy as np
+import scipy.optimize as sco
 import scipy.stats as scp
 import scipy.special as scs
 import os
@@ -227,6 +228,19 @@ def lambda_marginal_sigma(x, mu, nmax=None):
     """
     p = lambda_marginal_sf(x, mu, nmax=nmax)
     return scp.norm.isf(p)
+
+def lambda_marginal_isigma(sigma, mu, nmax=None):
+    """
+    Lambda threshold corresponding to a given one-sided Gaussian significance.
+
+    Numerically inverts :func:`lambda_marginal_sigma` via Brent's method.
+    The lower bracket starts at 1.0 to avoid the mass point at Lambda = 0.
+    """
+    p_target = scp.norm.sf(sigma)
+    return sco.brentq(
+        lambda x: lambda_marginal_sf(x, mu, nmax=nmax) - p_target,
+        1.0, 1e4,
+    )
 
 def lambda_marginal_pvalue(x, mu, nmax=None):
     """Alias for :func:`lambda_marginal_sf`, the marginal upper-tail p-value."""

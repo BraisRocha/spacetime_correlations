@@ -165,11 +165,9 @@ def main(seed: int) -> None:
             #---------------------------------------------------------
             # Isotropy Case
             #---------------------------------------------------------
-            # Copy to work on without modifying the original
-            working_sample = copy.deepcopy(parent_sample)
-
-            # Window cut
-            subsample = working_sample.select_subsample(window=window)
+            # `select_subsample` returns a new object, so the parent is
+            # not mutated and no defensive copy is needed here.
+            subsample = parent_sample.select_subsample(window=window)
             subsample.assign_directional_exposure(
                 window=window,
                 exposure_model=exposure_model,
@@ -248,10 +246,8 @@ def main(seed: int) -> None:
             #---------------------------------------------------------
             # Temporal Case
             #---------------------------------------------------------
-            working_sample = copy.deepcopy(parent_sample)
-
-            # Same flare as before injected directly on the window selection
-            subsample = working_sample.select_subsample(window=window)
+            # The flare is injected on the window-selected subsample.
+            subsample = parent_sample.select_subsample(window=window)
             subsample.inject_flare(flare=flare)
             subsample.assign_directional_exposure(
                 window=window,

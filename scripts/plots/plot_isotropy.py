@@ -266,6 +266,6 @@ def main(results_dir: str | Path) -> None:
 
 if __name__ == "__main__":
     # Change this path to the run you want to plot
-    run_dir = Path("/home/brais_rocha/Work/dev/stc_project/output/scripts/isotropy")
-    sim_id = "20260420_125929_seed42"
+    run_dir = Path("/home/brais/PhD/dev/stc_project/output/scripts/isotropy")
+    sim_id = "20260501_131947_seed42"
     main(run_dir/sim_id)

@@ -63,6 +63,21 @@ class ExposureModel:
         self.tf = tf
         self.rng = rng
 
+        # Cached sidereal time at t0 (function of observatory + t0 only).
+        # Used by `_continuous_hour_angle`; precomputing it here avoids
+        # rebuilding an astropy `Time` object and re-evaluating
+        # `sidereal_time("mean")` on every call.
+        self._sidereal_t0_rad = float(
+            Time(self.t0, location=self.observatory.location)
+            .sidereal_time("mean")
+            .rad
+        )
+
+        # Cache for `max_directional_exposure`, keyed by (RA_deg, Dec_deg).
+        # The value depends only on (observatory, t0, tf, centre), all of
+        # which are immutable after construction.
+        self._max_exposure_cache: dict[tuple[float, float], float] = {}
+
     # -------------------------------------------------------------------------
     # Private input / geometry helpers
     # -------------------------------------------------------------------------
@@ -107,8 +122,7 @@ class ExposureModel:
         """
         ra_rad = np.deg2rad(ra_deg)
 
-        t0_loc = Time(self.t0, location=self.observatory.location)
-        h0 = float(t0_loc.sidereal_time("mean").rad - ra_rad)
+        h0 = self._sidereal_t0_rad - ra_rad
 
         dt_sec = (t - self.t0).to_value("sec")
         return h0 + 2.0 * np.pi * dt_sec / self.SIDEREAL_DAY_SEC
@@ -464,7 +478,16 @@ class ExposureModel:
         float
             Total accumulated exposure (in seconds).
         """
-        return float(self.cumulative_directional_exposure(self.tf, centre))
+        ra_deg, dec_deg = self._validate_centre(centre)
+        key = (ra_deg, dec_deg)
+
+        cached = self._max_exposure_cache.get(key)
+        if cached is not None:
+            return cached
+
+        value = float(self.cumulative_directional_exposure(self.tf, centre))
+        self._max_exposure_cache[key] = value
+        return value
     
     # -------------------------------------------------------------------------
     # Exposure-space sampling
