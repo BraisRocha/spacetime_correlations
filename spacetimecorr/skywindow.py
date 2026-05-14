@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .event_sample import EventSample
 
 import numpy as np
 from dataclasses import dataclass, field
+
+if TYPE_CHECKING:
+    from .exposure import ExposureModel
 
 @dataclass(frozen=True, slots=True)
 class SkyWindow:
@@ -19,10 +24,10 @@ class SkyWindow:
 
     Notes
     -----
-    This class is *geometry-only*. It provides selection masks and the
-    spherical-cap sky fraction. Any expected-count computation is only valid
-    under uniform full-sky exposure assumptions, and is provided separately
-    as a convenience method.
+    This class is *geometry-only*. It provides selection masks, spherical-cap
+    sky fraction, and uniform sampling within the cap.  Expected-count
+    computations are available as a convenience method but are only meaningful
+    under the stated exposure assumptions.
     """
 
     centre: np.ndarray  # shape (2,) -> [RA_deg, Dec_deg]
@@ -32,6 +37,10 @@ class SkyWindow:
     _center_vec: np.ndarray = field(init=False, repr=False, compare=False)
     _cos_radius: float      = field(init=False, repr=False, compare=False)
     _sky_fraction: float    = field(init=False, repr=False, compare=False)
+
+    # -------------------------------------------------------------------------
+    # Construction
+    # -------------------------------------------------------------------------
 
     def __post_init__(self) -> None:
         # --- coerce + validate centre ---
@@ -71,12 +80,18 @@ class SkyWindow:
         object.__setattr__(self, "_cos_radius", float(np.cos(radius_rad)))
         object.__setattr__(self, "_sky_fraction", float((1.0 - np.cos(radius_rad)) / 2.0))
 
+    # -------------------------------------------------------------------------
+    # Basic properties
+    # -------------------------------------------------------------------------
+
     @property
     def sky_fraction(self) -> float:
-        """
-        Fraction of the full sky covered by this window (spherical cap).
-        """
+        """Fraction of the full sky covered by this window (spherical cap)."""
         return self._sky_fraction
+
+    # -------------------------------------------------------------------------
+    # Geometric selection
+    # -------------------------------------------------------------------------
 
     def contains(self, ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
         """Return boolean mask selecting coordinates inside the window.
@@ -101,11 +116,9 @@ class SkyWindow:
                 f"ra and dec must have the same shape, got {ra.shape} vs {dec.shape}."
             )
 
-        # Convert to radians
-        ra_rad = np.deg2rad(ra)
+        ra_rad  = np.deg2rad(ra)
         dec_rad = np.deg2rad(dec)
 
-        # Unit vectors for events
         event_vecs = np.column_stack(
             (
                 np.cos(dec_rad) * np.cos(ra_rad),
@@ -114,14 +127,116 @@ class SkyWindow:
             )
         )
 
-        # Dot products with cached centre vector
         dots = event_vecs @ self._center_vec
         dots = np.clip(dots, -1.0, 1.0)
 
         return dots >= self._cos_radius
 
-    def expected_n_in_window(self, n_events: int | float) -> float:
+    # -------------------------------------------------------------------------
+    # Uniform sampling
+    # -------------------------------------------------------------------------
+
+    def sample_uniform(
+        self,
+        n: int,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Expected number of events in the window under uniform full-sky exposure.
+        Sample ``n`` points distributed uniformly in solid angle within the window.
+
+        The method samples in a local frame with the cap centre at the north
+        pole and then rotates to the true centre direction.  In the local
+        frame, ``cos(theta_local)`` is drawn uniformly in
+        ``[cos(radius), 1]`` (which gives uniform solid-angle coverage) and
+        the azimuthal angle ``phi`` is drawn uniformly in ``[0, 2π)``.
+
+        Parameters
+        ----------
+        n : int
+            Number of points to sample.
+        rng : numpy.random.Generator
+            Random generator.
+
+        Returns
+        -------
+        ra, dec : numpy.ndarray
+            Right ascension and declination in degrees, each of shape ``(n,)``.
         """
-        return float(n_events) * self.sky_fraction
+        if n == 0:
+            return np.empty(0, dtype=float), np.empty(0, dtype=float)
+
+        ra_c  = np.deg2rad(self.centre[0])
+        dec_c = np.deg2rad(self.centre[1])
+
+        # --- local-frame sampling (cap centre = north pole) ---
+        cos_theta = rng.uniform(self._cos_radius, 1.0, size=n)
+        phi       = rng.uniform(0.0, 2.0 * np.pi, size=n)
+
+        sin_theta = np.sqrt(1.0 - cos_theta ** 2)
+        x_local   = sin_theta * np.cos(phi)
+        y_local   = sin_theta * np.sin(phi)
+        z_local   = cos_theta
+
+        # --- orthonormal frame at the cap centre ---
+        n_hat   = np.array([
+            np.cos(dec_c) * np.cos(ra_c),
+            np.cos(dec_c) * np.sin(ra_c),
+            np.sin(dec_c),
+        ])
+        e_east  = np.array([-np.sin(ra_c), np.cos(ra_c), 0.0])
+        e_north = np.cross(n_hat, e_east)
+
+        # --- rotate local samples into the equatorial frame ---
+        x = e_east[0] * x_local + e_north[0] * y_local + n_hat[0] * z_local
+        y = e_east[1] * x_local + e_north[1] * y_local + n_hat[1] * z_local
+        z = e_east[2] * x_local + e_north[2] * y_local + n_hat[2] * z_local
+
+        ra  = np.degrees(np.arctan2(y, x)) % 360.0
+        dec = np.degrees(np.arcsin(np.clip(z, -1.0, 1.0)))
+
+        return ra, dec
+
+    # -------------------------------------------------------------------------
+    # Expected event counts
+    # -------------------------------------------------------------------------
+
+    def expected_n_in_window(
+        self,
+        n_events: int | float,
+        exposure_model: "ExposureModel | None" = None,
+    ) -> float:
+        """
+        Expected number of events in the window.
+
+        When an :class:`ExposureModel` is supplied, the count is weighted by
+        the analytical relative directional exposure ``omega(delta_centre)``
+        evaluated at the window centre (see
+        :meth:`ExposureModel.relative_exposure`)::
+
+            expected_n = n_events * sky_fraction * omega(delta_centre)
+
+        so that windows at well-exposed declinations get more events and
+        poorly-exposed ones get fewer.  If no exposure model is provided,
+        all declinations are weighted equally and the formula reduces to::
+
+            expected_n = n_events * sky_fraction
+
+        Parameters
+        ----------
+        n_events : int or float
+            Total number of events in the full sky.
+        exposure_model : ExposureModel or None, optional
+            If provided, weights the result by
+            ``exposure_model.relative_exposure(self.centre)``.  If ``None``
+            (default), assumes uniform full-sky exposure.
+
+        Returns
+        -------
+        float
+            Expected number of events in the window.
+        """
+        if exposure_model is None:
+            return float(n_events) * self.sky_fraction
+
+        weight = exposure_model.relative_exposure(self.centre)
+        return float(n_events) * self.sky_fraction * weight

@@ -61,9 +61,18 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Optional job identifier (e.g. Condor $(Process) or "
-            "$(ClusterId).$(Process)). Embedded in the output directory "
-            "name to avoid collisions across array jobs."
+            "Optional job identifier (e.g. Condor $(Process)). Used to "
+            "name per-job output files within a shared submission directory."
+        ),
+    )
+    parser.add_argument(
+        "--submission-id",
+        type=str,
+        default=None,
+        help=(
+            "Identifier shared by all jobs in one submission batch "
+            "(e.g. a timestamp or Condor ClusterId). When provided all jobs "
+            "write into the same directory and files are suffixed by job_id."
         ),
     )
     return parser.parse_args()
@@ -74,6 +83,7 @@ def main(
     flare_duration_days: float,
     flare_intensity_value: float,
     job_id: str | None,
+    submission_id: str | None,
 ) -> None:
     start_time = time.time()
 
@@ -114,13 +124,19 @@ def main(
         run_code="grid_p50",
         seed=seed,
         job_id=job_id,
+        submission_id=submission_id,
     )
+
+    data_dir = outdir / "data"
+    data_dir.mkdir(exist_ok=True)
+
+    job_suffix = f"_job{job_id}" if job_id is not None else ""
 
     # ------------------------------------------------------------------
     # Logger and metadata
     # ------------------------------------------------------------------
     logger = setup_logger(
-        log_path=outdir / "run.log",
+        log_path=data_dir / f"run{job_suffix}.log",
         name="grid_p50",
     )
 
@@ -162,6 +178,7 @@ def main(
     # Storage
     # ------------------------------------------------------------------
     lambda_flare = np.zeros(n_simulations)
+    n_events_window = np.zeros(n_simulations, dtype=int)
 
     expected_n = window.expected_n_in_window(n_events)
     mu_flare = flare_intensity * expected_n
@@ -188,6 +205,7 @@ def main(
                 tf=tf,
                 rng=rng_events,
             )
+            event_sample.assign_coordinates()
 
             n_flare = int(
                 scp.poisson.rvs(
@@ -227,6 +245,7 @@ def main(
             )
 
             lambda_flare[n_success] = stc.lambda_estimator(sample=subsample)
+            n_events_window[n_success] = subsample.n_events
 
             n_success += 1
 
@@ -282,17 +301,21 @@ def main(
             max_attempts,
         )
         lambda_flare = lambda_flare[:n_success]
+        n_events_window = n_events_window[:n_success]
 
     # ------------------------------------------------------------------
-    # 50th percentile (median) is the only quantity persisted
+    # 50th percentiles
     # ------------------------------------------------------------------
     lambda_flare_p50 = float(np.percentile(lambda_flare, 50))
+    n_events_window_p50 = float(np.percentile(n_events_window, 50))
 
     logger.info("lambda_flare p50: %.6e", lambda_flare_p50)
+    logger.info("n_events_window p50: %.1f", n_events_window_p50)
 
     np.savez_compressed(
-        outdir / "results.npz",
+        data_dir / f"results{job_suffix}.npz",
         lambda_flare_p50=lambda_flare_p50,
+        n_events_window_p50=n_events_window_p50,
         flare_duration_days=flare_duration.to_value(u.day),
         flare_intensity=flare_intensity,
     )
@@ -300,7 +323,8 @@ def main(
     elapsed = time.time() - start_time
 
     write_metadata(
-        outdir=outdir,
+        outdir=data_dir,
+        filename=f"metadata{job_suffix}.json",
         metadata={
             "script": Path(__file__).name,
             "run_code": "grid_p50",
@@ -316,6 +340,7 @@ def main(
             "max_attempts": max_attempts,
             "n_zero_flare": int(n_zero_flare),
             "lambda_flare_p50": lambda_flare_p50,
+            "n_events_window_p50": n_events_window_p50,
             "time": {
                 "t0": t0.isot,
                 "tf": tf.isot,
@@ -338,7 +363,7 @@ def main(
         },
     )
 
-    logger.info("Saved results to %s", outdir / "results.npz")
+    logger.info("Saved results to %s", data_dir / f"results{job_suffix}.npz")
     logger.info("Simulation finished in %.2f seconds", elapsed)
 
 
@@ -354,4 +379,5 @@ if __name__ == "__main__":
         flare_duration_days=args.flare_duration_days,
         flare_intensity_value=args.flare_intensity,
         job_id=args.job_id,
+        submission_id=args.submission_id,
     )

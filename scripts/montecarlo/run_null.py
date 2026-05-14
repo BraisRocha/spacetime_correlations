@@ -129,6 +129,7 @@ def main(seed: int) -> None:
                 tf=tf,
                 rng=rng_events,
             )
+            parent_sample.assign_coordinates()
 
             subsample = parent_sample.select_subsample(window=window)
             subsample.assign_directional_exposure(

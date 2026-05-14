@@ -33,6 +33,8 @@ class ExposureModel:
         t0: Time,
         tf: Time,
         rng: np.random.Generator,
+        *,
+        theta_max_deg: float = 60.0,
     ):
         """
         Parameters
@@ -44,6 +46,11 @@ class ExposureModel:
         rng : numpy.random.Generator
             Random stream used by the Bernoulli thinning and exposure-space
             samplers. Typically obtained from :class:`RNGManager`.
+        theta_max_deg : float, optional
+            Maximum zenith angle in degrees for the acceptance cut.  Events
+            with zenith angle ``theta > theta_max_deg`` are rejected (a = 0).
+            Must be in ``(0, 90]``.  Defaults to 60°, matching the Auger SD
+            standard analysis cut.
         """
 
         if not isinstance(observatory, Observatory):
@@ -57,11 +64,17 @@ class ExposureModel:
                 "rng must be a numpy.random.Generator. "
                 "Obtain one from RNGManager.get(name) and pass it here."
             )
+        if not isinstance(theta_max_deg, (int, float)) or isinstance(theta_max_deg, bool):
+            raise TypeError("theta_max_deg must be a numeric value in degrees.")
+        if not (0.0 < theta_max_deg <= 90.0):
+            raise ValueError("theta_max_deg must be in (0, 90].")
 
         self.observatory = observatory
         self.t0 = t0
         self.tf = tf
         self.rng = rng
+        self.theta_max_deg = float(theta_max_deg)
+        self._cos_theta_max = math.cos(math.radians(self.theta_max_deg))
 
         # Cached sidereal time at t0 (function of observatory + t0 only).
         # Used by `_continuous_hour_angle`; precomputing it here avoids
@@ -137,10 +150,14 @@ class ExposureModel:
 
         In the current model::
 
-            a(t) = max(0, cos z(t))
+            a(t) = cos theta(t)   for cos(theta_max) <= cos theta(t) <= 1
+                   0              otherwise
 
-        where ``z(t)`` is the local zenith angle of ``centre`` at the
-        observatory at time ``t``. There is presently no upper zenith cut.
+        where ``theta(t)`` is the local zenith angle of ``centre`` at the
+        observatory at time ``t`` and ``theta_max`` is set at construction.
+        The accepted region corresponds to ``theta(t) <= theta_max``, where
+        ``a(t)`` ranges from ``cos(theta_max)`` (at the cut boundary) to 1
+        (at the zenith).
 
         Parameters
         ----------
@@ -153,8 +170,9 @@ class ExposureModel:
         Returns
         -------
         float or numpy.ndarray
-            Acceptance value(s) in ``[0, 1]``. A float is returned when ``t``
-            is scalar, otherwise an array of the same shape as ``t``.
+            Acceptance value(s) in ``{0} ∪ [cos(theta_max), 1]``. A float is
+            returned when ``t`` is scalar, otherwise an array of the same
+            shape as ``t``.
         """
         t_arr, scalar_input = self._as_time_array(t)
 
@@ -175,7 +193,7 @@ class ExposureModel:
 
         cos_theta = sin_lat * sin_dec + cos_lat * cos_dec * np.cos(h)
         cos_theta = np.clip(cos_theta, -1.0, 1.0)
-        out = np.maximum(0.0, cos_theta)
+        out = np.where(cos_theta >= self._cos_theta_max, cos_theta, 0.0)
 
         return float(out[0]) if scalar_input else out
     
@@ -186,7 +204,16 @@ class ExposureModel:
         efficiency=None,
     ) -> np.ndarray | float:
         """
-        Detection probability p_det(t).
+        Detection probability ``p_det(t)`` for candidate event times.
+
+        The probability is computed as::
+
+            p_det(t) = a(t) * efficiency(t)
+
+        where ``a(t)`` is the instantaneous geometric acceptance (see
+        :meth:`instantaneous_acceptance`) and ``efficiency(t)`` is an
+        optional time-dependent correction factor.  When no efficiency is
+        provided, ``p_det(t) = a(t)``.
 
         Parameters
         ----------
@@ -195,15 +222,14 @@ class ExposureModel:
         centre : array-like
             [RA_deg, Dec_deg].
         efficiency : callable or None
-            Optional multiplicative factor. Must return values in [0, 1]
-            with the same shape as t.
-            Final probability is:
-                p_det(t) = a(t) * efficiency(t)
+            Optional time-dependent efficiency correction.  Must accept ``t``
+            and return one value in ``[0, 1]`` per input time (same shape as
+            ``t``).
 
         Returns
         -------
         array or float
-            Detection probability in [0, 1].
+            Detection probability in ``[0, 1]``.
         """
         a = np.asarray(self.instantaneous_acceptance(t, centre), dtype=float)
 
@@ -382,13 +408,20 @@ class ExposureModel:
         sign of the geometric coefficients
         ``A = sin(lat) * sin(dec)`` and ``B = cos(lat) * cos(dec)``:
 
-        - ``A + B <= 0``  (always invisible)  -> ``epsilon(t) = 0``,
-        - ``A - B >= 0``  (always visible)    -> the integrand is purely
+        With the zenith cut ``c = cos(theta_max)``, the integrand is
+        ``cos theta(t)`` only when ``cos theta(t) >= c``, i.e. when the
+        source is within the acceptance cone.  The three regimes become:
+
+        - ``A + B <= c``  (always outside cut)  -> ``epsilon(t) = 0``,
+        - ``A - B >= c``  (always inside cut)   -> the integrand is purely
           sinusoidal and integrates to a closed form,
-        - otherwise (partial visibility)      -> the integrand is non-zero
+        - otherwise (partial visibility)        -> the integrand is non-zero
           only when ``|h| < h_star`` modulo ``2π`` with
-          ``h_star = arccos(-A/B)``; the integral is built piecewise
+          ``h_star = arccos((c - A) / B)``; the integral is built piecewise
           per sidereal cycle.
+
+        Setting ``c = 0`` (``theta_max = 90°``) recovers the original
+        horizon-only formula.
 
         Parameters
         ----------
@@ -421,17 +454,19 @@ class ExposureModel:
         h = np.asarray(self._continuous_hour_angle(t_arr, ra_deg), dtype=float)
         h0 = float(self._continuous_hour_angle(Time([self.t0]), ra_deg)[0])
 
-        # Case 1: always invisible
-        if A + B <= 0.0:
+        c = self._cos_theta_max
+
+        # Case 1: source never enters the acceptance cone
+        if A + B <= c:
             out = np.zeros_like(h, dtype=float)
 
-        # Case 2: always visible
-        elif A - B >= 0.0:
+        # Case 2: source always inside the acceptance cone
+        elif A - B >= c:
             out = (A * (h - h0) + B * (np.sin(h) - np.sin(h0))) / omega
 
-        # Case 3: partial visibility
+        # Case 3: partial visibility — generalised cut angle
         else:
-            h_star = np.arccos(-A / B)
+            h_star = np.arccos((c - A) / B)
             cycle_h = 2.0 * (A * h_star + B * np.sin(h_star))   # integral over one full cycle in h-space
             plateau = A * h_star + B * np.sin(h_star)
 
@@ -488,7 +523,70 @@ class ExposureModel:
         value = float(self.cumulative_directional_exposure(self.tf, centre))
         self._max_exposure_cache[key] = value
         return value
-    
+
+    # -------------------------------------------------------------------------
+    # Relative directional exposure
+    # -------------------------------------------------------------------------
+
+    def relative_exposure(self, centre: np.ndarray) -> float:
+        """
+        Time-integrated relative directional exposure ``omega(delta)`` for a
+        given sky direction, following the closed-form expression of
+        Sommers (2001).
+
+        The per-sidereal-cycle integral of ``cos(theta)`` over the visible
+        portion of the sky reduces analytically to::
+
+            omega(delta) ∝ A * h_star + B * sin(h_star)
+
+        with the geometric coefficients::
+
+            A      = sin(lat) * sin(dec)
+            B      = cos(lat) * cos(dec)
+            c      = cos(theta_max)
+            h_star = arccos((c - A) / B)
+
+        and three regimes selected by the relative magnitude of ``A``, ``B``
+        and ``c``:
+
+        - ``A + B <= c``  (always outside the cut)  -> ``omega = 0``,
+        - ``A - B >= c``  (always inside the cut)   -> ``h_star = pi``,
+          so ``omega = A * pi``,
+        - otherwise (partial visibility)            -> the formula above
+          with ``h_star = arccos((c - A) / B)``.
+
+        Since ``omega`` is independent of RA (it averages over a sidereal
+        cycle), only the declination of ``centre`` enters the computation.
+        RA is validated for consistency with the rest of the API.
+
+        Parameters
+        ----------
+        centre : array-like of shape (2,)
+            Sky direction ``[RA_deg, Dec_deg]``.
+
+        Returns
+        -------
+        float
+            The relative directional exposure at ``centre``, as defined by
+            the analytical Sommers expression.
+        """
+        _, dec_deg = self._validate_centre(centre)
+
+        lat_rad = math.radians(self.observatory.latitude)
+        dec_rad = math.radians(dec_deg)
+
+        A = math.sin(lat_rad) * math.sin(dec_rad)
+        B = math.cos(lat_rad) * math.cos(dec_rad)
+        c = self._cos_theta_max
+
+        if A + B <= c:
+            return 0.0
+        if A - B >= c:
+            return float(A * math.pi)
+
+        h_star = math.acos((c - A) / B)
+        return float(A * h_star + B * math.sin(h_star))
+
     # -------------------------------------------------------------------------
     # Exposure-space sampling
     # -------------------------------------------------------------------------
@@ -560,11 +658,11 @@ class ExposureModel:
         if not isinstance(max_dir_exposure, (int, float)) or isinstance(max_dir_exposure, bool):
             raise TypeError("max_dir_exposure must be numeric.")
         if max_dir_exposure <= 0:
-            # Zero (or negative) maximum directional exposure is the
-            # physically meaningful "always-invisible" regime of the
-            # cumulative exposure model (A + B <= 0). Pipelines should be
-            # able to call this method without special-casing that
-            # geometry, so we silently return an empty sample.
+            # Zero (or negative) maximum directional exposure means the
+            # source never enters the acceptance cone (A + B <= c).
+            # Pipelines should be able to call this method without
+            # special-casing that geometry, so we silently return an empty
+            # sample.
             return np.empty(0, dtype=float), "free_maximum_exposure_method"
 
         mu = float(factor) * float(expected_exposure_rate) * float(max_dir_exposure)

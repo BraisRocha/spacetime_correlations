@@ -5,18 +5,6 @@ fix right now, but which should be revisited.
 
 ## Physics / modelling
 
-- **Zenith-angle cut in the directional exposure model**
-  `ExposureModel.instantaneous_acceptance` (`spacetimecorr/exposure.py`) currently
-  uses `a(t) = max(0, cos θ)` with no upper-zenith cut. Real Auger SD/HE
-  acceptance is capped (e.g. 60° or 80°). To revisit when we want a more
-  realistic acceptance.
-
-- **`expected_n_in_window` assumes uniform sky**
-  `EventSample.select_subsample` propagates `expected_n` based on a uniform
-  sky-fraction (`SkyWindow.expected_n_in_window`). This ignores the
-  declination dependence of Auger's directional exposure. Plan to replace
-  with an exposure-weighted estimate in the near future.
-
 - **`sample_directional_exposure` ("free maximum exposure" sampling)**
   `ExposureModel.sample_directional_exposure` oversamples uniformly on
   `[0, factor * max_exposure / Γ]` and keeps the first `n_events` after
@@ -24,6 +12,29 @@ fix right now, but which should be revisited.
   to confirm the resulting distribution matches what we want analytically.
 
 ## Code quality
+
+- **`EventSample` dual-pipeline state**
+  The class currently contains two generations of methods that coexist but
+  serve different pipelines and have not yet been reconciled:
+
+  *Old full-sky pipeline* — generate a large isotropic sample over the whole
+  sky, then carve out a window:
+  - `assign_coordinates()` (full-sky isotropic sampling)
+  - `select_subsample(window)` — filters events and sets `expected_n` using
+    the uniform `SkyWindow.expected_n_in_window`. Note that
+    `SkyWindow.expected_n_in_window` now supports an optional `exposure_model`
+    argument for exposure-weighted counts, but `select_subsample` does not yet
+    thread it through.
+  - `generate_directional_exposure` / `assign_directional_exposure` — exposure
+    sampling machinery tied to the full-sky subsample workflow.
+
+  *New per-window pipeline* — sample directly within a window with a
+  Poisson-drawn event count:
+  - `assign_coordinates_in_window(window)` (spherical-cap uniform sampling)
+
+  The old methods have been kept deliberately while the new pipeline matures.
+  Once the per-window workflow is validated end-to-end, decide which old
+  methods to adapt, deprecate, or remove.
 
 - **Tests**
   No `tests/` directory yet. A small pytest suite covering at least:
@@ -71,9 +82,45 @@ fix right now, but which should be revisited.
   we ever want `has_exposure` to mean "ready for analysis".
 
 
-## IDEAS FOR THE FUTURE
+## Ideas for the future
 
-- Maybe in the future we could modify the estimator to weight
-the probability of a particle being neutral. Miguel says the the Polish are already dealing with the probability of a CR being a photon in his method. At the moment ours is purely statistical what leaves room for improvement. In the future adding modifications to account for the nature of the particles may increase the sensitivity of the method.
+- **Particle-nature weighting in the estimator**
+  The estimator is currently purely statistical. Incorporating the probability
+  that a cosmic ray is a neutral particle (e.g. a photon) could increase
+  sensitivity. The Polish group is reportedly already working on photon
+  probability weights in their method. Extending our estimator in this
+  direction is a natural next step once the current pipeline is stable.
 
-- In the future, the direct exposure has to be modified to take into account all the different efects that affect the observation of effects. One of the most direct ones is to account for A(t), ie, the effects which can be modeled as a variation on the effective area of the detector as a function of time (bad periods, tanks down, increases of the observatorty's area, etc.). 
+- **Time-dependent effective area A(t)**
+  The directional exposure model should eventually account for effects that
+  modulate the detector's effective area over time: bad periods, tanks going
+  offline, planned extensions of the array, etc. These can all be parametrised
+  as a time-dependent factor `A(t)` multiplying the geometric acceptance, and
+  incorporated into the temporal sampling naturally.
+
+## Current homework
+
+- **Per-window event generation and isotropy validation**
+  Migrate the simulation pipeline to draw `n ~ Poisson(expected_n_in_window)`
+  and sample events directly within the window, rather than generating a
+  full-sky sample and carving out a subset. Once implemented, verify that
+  isotropy is correctly reproduced by checking that background p-values are
+  uniformly distributed. It is also worth investigating whether a Poisson or
+  a binomial draw is more appropriate given the absence of sampling bias.
+
+- **Exposure-weighted pipeline**
+  The per-window pipeline should weight the expected event count by the
+  relative exposure `omega(delta)` at the window centre, as implemented in
+  `SkyWindow.expected_n_in_window`. The solid-angle factor is already in
+  place; the remaining step is to fold in the declination-dependent exposure
+  and verify the end-to-end result. Time-dependent effects on the acceptance
+  will be absorbed into the temporal sampling via the cumulative directional
+  exposure.
+
+- **Effect of T_obs on signal significance**
+  Produce a plot analogous to Fig. 1 of the paper comparing two scenarios:
+  `(T_obs = 10 yr, flare duration = 1 day)` vs.
+  `(T_obs = 1 yr,  flare duration = 1 day)`.
+  As the signal fraction increases the significance should grow, but results
+  must be penalised for the number of tested intervals: if `T_obs` is divided
+  into 10 windows, p-values should be multiplied by 10.

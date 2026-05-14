@@ -682,6 +682,7 @@ if __name__ == "__main__":
         tf=tf,
         rng=rng_sample,
     )
+    sample.assign_coordinates()
 
     run_event_sample_diagnostic(
         sample,

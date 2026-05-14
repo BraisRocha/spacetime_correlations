@@ -364,10 +364,11 @@ class Flare:
             times_cand = self._sample_uniform_times(ra_cand.size, start=flare_start)
 
             # --- Step 3: Exposure Thinning ---
-            detection_mask = self.exposure_model.acceptance_mask(
-                times_cand, 
+            _, detection_mask = self.exposure_model.detect_times(
+                times_cand,
                 window.centre,
-                efficiency=efficiency
+                efficiency=efficiency,
+                return_mask=True,
             )
 
             if not np.any(detection_mask):

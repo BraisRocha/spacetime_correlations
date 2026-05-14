@@ -161,6 +161,7 @@ def main(seed: int) -> None:
                 tf=tf,
                 rng=rng_events,
             )
+            parent_sample.assign_coordinates()
 
             #---------------------------------------------------------
             # Isotropy Case

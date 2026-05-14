@@ -33,8 +33,10 @@ class EventSample:
 
     Notes
     -----
-    - The constructor automatically samples isotropic ``(RA, Dec)``
-      coordinates by calling :meth:`assign_equatorial_coordinates`.
+    - Coordinates are not assigned automatically. Call
+      :meth:`assign_coordinates` for full-sky isotropic sampling or
+      :meth:`assign_coordinates_in_window` to sample within a
+      :class:`SkyWindow`.
     - All event coordinates are stored in degrees.
     - Optional state (exposure values, flare bookkeeping, sample-type
       labels) is set lazily by the corresponding ``assign_*`` /
@@ -59,8 +61,6 @@ class EventSample:
         t0: Time,
         tf: Time,
         rng: np.random.Generator,
-        *,
-        _auto_sample: bool = True,
     ):
         # ---- Input validation ------------------------------------------------
         if not isinstance(n_events, int) or isinstance(n_events, bool):
@@ -102,10 +102,6 @@ class EventSample:
 
         # ---- Flare bookkeeping -----------------------------------------------
         self.flare_mask: np.ndarray | None = None
-
-        # ---- Optional automatic coordinate generation ------------------------
-        if _auto_sample:
-            self.assign_equatorial_coordinates()
 
     @classmethod
     def _from_arrays(
@@ -162,7 +158,6 @@ class EventSample:
             t0=t0,
             tf=tf,
             rng=rng,
-            _auto_sample=False,
         )
 
         # Coordinates
@@ -218,7 +213,7 @@ class EventSample:
     # Core sampling and low-level data manipulation
     # -------------------------------------------------------------------------
 
-    def _generate_equatorial_coordinates(self) -> tuple[np.ndarray, np.ndarray]:
+    def _generate_coordinates(self) -> tuple[np.ndarray, np.ndarray]:
         """
         Simulate an isotropic distribution on the sphere in equatorial coordinates.
 
@@ -231,18 +226,49 @@ class EventSample:
         Dec = np.degrees(np.arcsin(u_rand))
 
         return np.asarray(RA, dtype=float), np.asarray(Dec, dtype=float)
-
-    def assign_equatorial_coordinates(self) -> None:
+    
+    def _generate_coordinates_in_window(
+        self,
+        window: "SkyWindow",
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Sample isotropic equatorial coordinates and store them on ``self``.
+        Sample ``self.n_events`` positions uniformly within ``window``.
+
+        Delegates to :meth:`SkyWindow.sample_uniform`, which draws uniformly
+        in solid angle over the spherical cap.  Coordinates are returned in
+        degrees.
+        """
+        return window.sample_uniform(self.n_events, self.rng)
+
+    def assign_coordinates(self) -> None:
+        """
+        Sample isotropic coordinates over the full sky and store them on ``self``.
 
         Sets ``self.RA``, ``self.Dec`` and tags ``self.spatial_type`` as
-        ``"equatorial"``.
+        ``"isotropic"``.
         """
-        RA, Dec = self._generate_equatorial_coordinates()
+        RA, Dec = self._generate_coordinates()
         self.RA = RA
         self.Dec = Dec
-        self.spatial_type = "equatorial"
+        self.spatial_type = "isotropic"
+
+    def assign_coordinates_in_window(self, window: "SkyWindow") -> None:
+        """
+        Sample coordinates uniformly within ``window`` and store them on ``self``.
+
+        Delegates to :meth:`SkyWindow.sample_uniform` for the spherical-cap
+        sampling.  Sets ``self.RA``, ``self.Dec`` and tags
+        ``self.spatial_type`` as ``"window"``.
+
+        Parameters
+        ----------
+        window : SkyWindow
+            Spherical-cap window defining the sampling region.
+        """
+        RA, Dec = self._generate_coordinates_in_window(window)
+        self.RA = RA
+        self.Dec = Dec
+        self.spatial_type = "window"
 
     # -------------------------------------------------------------------------
     # Public selection and exposure methods
@@ -824,4 +850,15 @@ class EventSample:
             image = np.where(np.isfinite(image), image, np.nan)
 
         return lon_edges, lat_edges, image
+    
+
+class WindowSample:
+
+    """
+    Generate a sample of events on an already selected window of the sphere.
+    Once the events are selected in a window, we lose track of the its actual
+    position. Therefore, there is no need to sample equatorial coordinates at 
+    all, we only need to compute the mean number of events in a given area of
+    the sky, and set an array of arrival times of that length.
+    """
     
