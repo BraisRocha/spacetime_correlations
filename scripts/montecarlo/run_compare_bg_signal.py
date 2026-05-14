@@ -1,6 +1,5 @@
 """
-Run background simulations and compare them
-with flare-injection simulations.
+Compare background-only and flare-injected Lambda distributions.
 """
 
 from pathlib import Path
@@ -63,7 +62,7 @@ def main(seed: int) -> None:
 
     outdir, sim_ID = make_run_dir(
         base_dir=base_dir,
-        run_code="flare_injection",
+        run_code="compare_bg_signal",
         seed=seed,
     )
 
@@ -72,10 +71,10 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     logger = setup_logger(
         log_path=outdir / "run.log",
-        name="flare_injection",
+        name="compare_bg_signal",
     )
 
-    logger.info("Starting flare injection run")
+    logger.info("Starting bg vs signal comparison run")
     logger.info("Simulation ID: %s", sim_ID)
     logger.info("Output directory: %s", outdir)
     logger.info("Seed: %d", seed)
@@ -305,7 +304,7 @@ def main(seed: int) -> None:
         outdir=outdir,
         metadata={
             "script": Path(__file__).name,
-            "run_code": "flare_injection",
+            "run_code": "compare_bg_signal",
             "seed": seed,
             "n_events": n_events,
             "mu_window": expected_n,

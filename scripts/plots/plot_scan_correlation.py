@@ -1,5 +1,5 @@
 """
-Load saved isotropy Monte Carlo outputs and make plots.
+Load saved correlation-scan outputs and make plots.
 """
 import json
 from pathlib import Path
@@ -293,6 +293,6 @@ def main(results_dir: str | Path) -> None:
 
 if __name__ == "__main__":
     # Change this path to the run you want to plot
-    run_dir = Path("/home/brais_rocha/Work/dev/stc_project/output/scripts/sensitivity_study")
+    run_dir = Path("/home/brais_rocha/Work/dev/stc_project/output/scripts/scan_correlation")
     sim_id = "20260428_212445_seed42"
     main(run_dir/sim_id)

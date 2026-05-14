@@ -5,3 +5,6 @@ __pycache__/
 output/
 spacetimecorr.egg-info/
 notebook.txt
+logs/condor/*.out
+logs/condor/*.err
+logs/condor/*.log

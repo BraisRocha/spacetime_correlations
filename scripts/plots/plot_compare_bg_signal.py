@@ -1,5 +1,5 @@
 """
-Load saved flare-injection Monte Carlo outputs and make plots.
+Load saved bg-vs-signal comparison outputs and make plots.
 """
 import json
 from pathlib import Path
@@ -228,6 +228,6 @@ def main(results_dir: str | Path) -> None:
 
 if __name__ == "__main__":
     # Change this path to the run you want to plot
-    run_dir = Path("/home/brais/PhD/dev/stc_project/output/scripts/flare_injection")
+    run_dir = Path("/home/brais/PhD/dev/stc_project/output/scripts/compare_bg_signal")
     sim_id = "20260505_162754_seed42"
     main(run_dir/sim_id)

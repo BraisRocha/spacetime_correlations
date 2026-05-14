@@ -1,0 +1,11 @@
+executable = jobs/condor/run_grid_p50.sh
+arguments  = $(flare_duration) $(flare_intensity) $(seed) $(Process)
+
+output = logs/condor/$(Process).out
+error  = logs/condor/$(Process).err
+log    = logs/condor/grid_p50.log
+
+request_cpus   = 1
+request_memory = 2GB
+
+queue flare_duration, flare_intensity, seed from jobs/condor/grid_p50_params.txt

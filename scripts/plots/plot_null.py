@@ -1,5 +1,5 @@
 """
-Load saved isotropy Monte Carlo outputs and make plots.
+Load saved null-hypothesis MC outputs and make plots.
 """
 import json
 from pathlib import Path
@@ -266,6 +266,6 @@ def main(results_dir: str | Path) -> None:
 
 if __name__ == "__main__":
     # Change this path to the run you want to plot
-    run_dir = Path("/home/brais/PhD/dev/stc_project/output/scripts/isotropy")
+    run_dir = Path("/home/brais/PhD/dev/stc_project/output/scripts/null")
     sim_id = "20260501_131947_seed42"
     main(run_dir/sim_id)

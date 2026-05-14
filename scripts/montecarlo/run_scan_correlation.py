@@ -1,6 +1,6 @@
 """
-Sensitivity Study: Correlation Types in Spatiotemporal Analysis
-===============================================================
+Correlation-type scan: compare Lambda sensitivity to spatial, temporal,
+and spatio-temporal signals.
 
 Compares the response of the Lambda estimator to three distinct types of
 correlation signals, each isolated using a different flare injection scheme.
@@ -72,7 +72,7 @@ def main(seed: int) -> None:
 
     outdir, sim_ID = make_run_dir(
         base_dir=base_dir,
-        run_code="sensitivity_study",
+        run_code="scan_correlation",
         seed=seed,
     )
 
@@ -81,10 +81,10 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     logger = setup_logger(
         log_path=outdir / "run.log",
-        name="sensitivity_study",
+        name="scan_correlation",
     )
 
-    logger.info("Starting sensitivity study run")
+    logger.info("Starting correlation scan run")
     logger.info("Simulation ID: %s", sim_ID)
     logger.info("Output directory: %s", outdir)
     logger.info("Seed: %d", seed)
@@ -381,7 +381,7 @@ def main(seed: int) -> None:
         outdir=outdir,
         metadata={
             "script": Path(__file__).name,
-            "run_code": "isotropy",
+            "run_code": "scan_correlation",
             "seed": seed,
             "n_events": N,
             "expected_n": expected_n,

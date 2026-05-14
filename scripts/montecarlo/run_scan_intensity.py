@@ -1,6 +1,6 @@
 """
-Flare-intensity study: scan the Lambda statistic across a range of
-flare signal-to-noise ratios at fixed observation time and flare duration.
+Scan the Lambda statistic across a range of flare signal-to-noise ratios
+at fixed observation time and flare duration.
 
 For each Monte Carlo trial, an isotropic background sample is generated
 once and Lambda is computed. The same parent sample is then reused as
@@ -10,7 +10,7 @@ matrix of Lambda values. Sharing the parent sample across intensities
 reduces background-driven variance in the intensity-to-intensity
 comparison.
 
-Outputs are written to ``output/scripts/flare_intensity_study/<sim_ID>/``
+Outputs are written to ``output/scripts/scan_intensity/<sim_ID>/``
 as ``results.npz`` plus a ``metadata.json`` describing the run.
 """
 
@@ -83,7 +83,7 @@ def main(seed: int) -> None:
 
     outdir, sim_ID = make_run_dir(
         base_dir=base_dir,
-        run_code="flare_intensity_study",
+        run_code="scan_intensity",
         seed=seed,
     )
 
@@ -92,10 +92,10 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     logger = setup_logger(
         log_path=outdir / "run.log",
-        name="flare_intensity_study",
+        name="scan_intensity",
     )
 
-    logger.info("Starting flare intensity study run")
+    logger.info("Starting intensity scan run")
     logger.info("Simulation ID: %s", sim_ID)
     logger.info("Output directory: %s", outdir)
     logger.info("Seed: %d", seed)
@@ -308,7 +308,7 @@ def main(seed: int) -> None:
         outdir=outdir,
         metadata={
             "script": Path(__file__).name,
-            "run_code": "flare_intensity_study",
+            "run_code": "scan_intensity",
             "seed": seed,
             "runtime_seconds": elapsed,
             "n_events": n_events,

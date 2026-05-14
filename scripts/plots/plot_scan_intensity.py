@@ -1,7 +1,7 @@
 """
-Paper-quality plots for the flare-intensity study.
+Paper-quality plots for the intensity scan.
 
-Combines two ``run_flare_intensity_study.py`` runs (one per flare
+Combines two ``run_scan_intensity.py`` runs (one per flare
 duration) into a single two-panel figure of Lambda distributions vs
 flare intensity. Each run contributes one panel; the isotropy null is
 pooled across both runs to maximise statistics.
@@ -145,7 +145,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
     Build the flare-intensity study figure from two MC runs.
 
     ``run_dirs`` must contain exactly two paths, each pointing to a
-    ``run_flare_intensity_study.py`` output directory (one per flare
+    ``run_scan_intensity.py`` output directory (one per flare
     duration). The two panels of the resulting figure correspond to
     the two runs, in the order given.
     """
@@ -289,7 +289,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
 
 if __name__ == "__main__":
     # Edit these paths to point at the two runs you want to combine
-    base = Path("/home/brais/PhD/dev/stc_project/output/scripts/flare_intensity_study")
+    base = Path("/home/brais/PhD/dev/stc_project/output/scripts/scan_intensity")
     run_dirs = [
         base / "20260505_155935_seed42", # run 1 day
         base / "20260505_161025_seed42", # run 1 month

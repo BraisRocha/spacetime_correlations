@@ -1,5 +1,5 @@
 """
-Run isotropy simulations.
+Run null-hypothesis (pure isotropy) simulations.
 
 This script:
     - generates isotropic event samples within a sky window,
@@ -61,7 +61,7 @@ def main(seed: int) -> None:
 
     outdir, sim_ID = make_run_dir(
         base_dir=base_dir,
-        run_code="isotropy",
+        run_code="null",
         seed=seed,
     )
 
@@ -70,10 +70,10 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     logger = setup_logger(
         log_path=outdir / "run.log",
-        name="isotropy",
+        name="null",
     )
 
-    logger.info("Starting isotropy run")
+    logger.info("Starting null run")
     logger.info("Simulation ID: %s", sim_ID)
     logger.info("Output directory: %s", outdir)
     logger.info("Seed: %d", seed)
@@ -210,7 +210,7 @@ def main(seed: int) -> None:
         outdir=outdir,
         metadata={
             "script": Path(__file__).name,
-            "run_code": "isotropy",
+            "run_code": "null",
             "seed": seed,
             "n_events": n_events,
             "expected_n": expected_n,
