@@ -40,11 +40,11 @@ def main(results_dir: str | Path) -> None:
     delta_exposure_bkg = data["delta_exposure_bkg"]
     delta_exposure_flare = data["delta_exposure_flare"]
 
-    n_events_bkg = data["n_events_bkg"]
-    n_events_flare = data["n_events_flare"]
+    n_sample_bkg = data["n_sample_bkg"]
+    n_sample_flare = data["n_sample_flare"]
 
     # data from `metadata.json`
-    mu_window = metadata["mu_window"]
+    expected_n = metadata["expected_n"]
     n_sim = metadata["n_simulations_requested"]
     expected_exposure_rate = metadata["expected_exposure_rate"]
     T_obs_days = metadata["T_obs_days"]
@@ -64,12 +64,12 @@ def main(results_dir: str | Path) -> None:
     # ------------------------------------------------------------------
     # Lambda estimator plot
     # ------------------------------------------------------------------
-    stc.plot_lambda_joint_heatmap(int(mu_window), results_dir)
+    stc.plot_lambda_joint_heatmap(int(expected_n), results_dir)
 
     # Quantiles of the distribution
     quantiles = [0.1, 0.5]
     q_flare = np.quantile(lambda_flare, quantiles)
-    qp_flare = stc.lambda_marginal_sf(q_flare, mu_window)
+    qp_flare = stc.lambda_marginal_sf(q_flare, expected_n)
     qsigma_flare = stc.pvalue_to_sigma(qp_flare)
 
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -108,7 +108,7 @@ def main(results_dir: str | Path) -> None:
 
     info_text = (
         rf"$N_{{\rm sim}} = {sci_label(n_sim)}$" "\n"
-        rf"$\mu_{{\rm window}} = {mu_window:.2f}$" "\n"
+        rf"$\mu_{{\rm window}} = {expected_n:.2f}$" "\n"
         rf"$\mu_{{\rm flare}} = {mu_flare:.2f}$" "\n"
         rf"$T_{{\rm obs}} = {int(T_obs_days/365)}\,\mathrm{{years}}$" "\n"
         rf"$\Delta t_{{\rm flare}} = {int(flare_duration_days/30)}\,\mathrm{{month}}$"
@@ -136,13 +136,13 @@ def main(results_dir: str | Path) -> None:
 
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(n_events_bkg, 
-            bins=np.arange(min(n_events_bkg) - 0.5, max(n_events_bkg) + 1.5, 1), # Create bins of width 1 centered on integers
+    ax.hist(n_sample_bkg, 
+            bins=np.arange(min(n_sample_bkg) - 0.5, max(n_sample_bkg) + 1.5, 1), # Create bins of width 1 centered on integers
             density=False, histtype="step", linewidth=1.5, label="Isotropy")
-    ax.hist(n_events_flare, 
-            bins=np.arange(min(n_events_flare) - 0.5, max(n_events_flare) + 1.5, 1),
+    ax.hist(n_sample_flare, 
+            bins=np.arange(min(n_sample_flare) - 0.5, max(n_sample_flare) + 1.5, 1),
             density=False, histtype="step", linewidth=1.5, label="Flare")
-    ax.axvline(mu_window, color="black", linestyle="--", linewidth=1.5, label="Expected n")
+    ax.axvline(expected_n, color="black", linestyle="--", linewidth=1.5, label="Expected n")
 
     ax.set_xlabel("Number of events")
     ax.set_ylabel("Counts")
@@ -152,7 +152,7 @@ def main(results_dir: str | Path) -> None:
 
     info_text = (
         rf"$N_{{\rm sim}} = {sci_label(n_sim)}$" "\n"
-        rf"$\mu_{{\rm window}} = {mu_window:.2f}$" "\n"
+        rf"$\mu_{{\rm window}} = {expected_n:.2f}$" "\n"
         rf"$\mu_{{\rm flare}} = {mu_flare:.2f}$" "\n"
         rf"$T_{{\rm obs}} = {T_obs_days}\,\mathrm{{d}}$" "\n"
         rf"$\Delta t_{{\rm flare}} = {flare_duration_days}\,\mathrm{{d}}$"
@@ -170,7 +170,7 @@ def main(results_dir: str | Path) -> None:
     )
 
     fig.tight_layout()
-    fig.savefig(results_dir/ "n_events.png", dpi=300, bbox_inches="tight")
+    fig.savefig(results_dir/ "n_sample.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     # ------------------------------------------------------------------

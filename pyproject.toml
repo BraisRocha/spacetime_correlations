@@ -24,7 +24,15 @@ skymap = [
 scripts = [
   "tqdm>=4.65",
 ]
+# Test dependencies
+dev = [
+  "pytest>=7",
+]
 
 [tool.setuptools.packages.find]
 include = ["spacetimecorr*"]
-exclude = ["scripts*", "stc_venv*", "output*"]
+exclude = ["scripts*", "stc_venv*", "output*", "tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

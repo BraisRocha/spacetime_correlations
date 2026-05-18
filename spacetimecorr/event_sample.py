@@ -21,8 +21,15 @@ class EventSample:
 
     Parameters
     ----------
-    n_events : int
-        Number of events to generate (must be non-negative).
+    n_sample : int
+        Number of events the sample will hold (length of ``ra``/``dec``).
+        Must be non-negative.
+    n_total : int
+        Equivalent full-sky event count this sample is derived from.
+        For full-sky samples ``n_total == n_sample``. For per-window
+        samples ``n_total`` is the parent full-sky population whose
+        exposure-weighted fraction inside the window produced
+        ``expected_n`` and, by Poisson draw, ``n_sample``.
     t0 : astropy.time.Time
         Observation start time.
     tf : astropy.time.Time
@@ -33,14 +40,15 @@ class EventSample:
 
     Notes
     -----
-    - Coordinates are not assigned automatically. Call
-      :meth:`assign_coordinates` for full-sky isotropic sampling or
-      :meth:`assign_coordinates_in_window` to sample within a
-      :class:`SkyWindow`.
+    - ``__init__`` is the low-level constructor; it allocates state but
+      does **not** draw coordinates. End-user code should normally use
+      one of the factory classmethods, :meth:`full_sky` or
+      :meth:`in_window`, which return a fully-formed sample with
+      coordinates and ``expected_n`` set.
     - All event coordinates are stored in degrees.
-    - Optional state (exposure values, flare bookkeeping, sample-type
-      labels) is set lazily by the corresponding ``assign_*`` /
-      ``inject_flare`` methods and inspected via the ``has_*`` properties.
+    - Optional state (exposure values, flare bookkeeping) is set lazily
+      by the corresponding ``assign_*`` / ``inject_flare`` methods and
+      inspected via the ``has_*`` properties.
     """
 
     # -------------------------------------------------------------------------
@@ -57,16 +65,22 @@ class EventSample:
 
     def __init__(
         self,
-        n_events: int,
+        n_sample: int,
+        n_total: int,
         t0: Time,
         tf: Time,
         rng: np.random.Generator,
     ):
         # ---- Input validation ------------------------------------------------
-        if not isinstance(n_events, int) or isinstance(n_events, bool):
-            raise TypeError("n_events must be an integer.")
-        if n_events < 0:
-            raise ValueError("n_events must be non-negative.")
+        if not isinstance(n_sample, int) or isinstance(n_sample, bool):
+            raise TypeError("n_sample must be an integer.")
+        if n_sample < 0:
+            raise ValueError("n_sample must be non-negative.")
+
+        if not isinstance(n_total, int) or isinstance(n_total, bool):
+            raise TypeError("n_total must be an integer.")
+        if n_total < 0:
+            raise ValueError("n_total must be non-negative.")
 
         if not isinstance(t0, Time) or not isinstance(tf, Time):
             raise TypeError("t0 and tf must be astropy.time.Time objects.")
@@ -82,8 +96,9 @@ class EventSample:
 
         # ---- Core configuration ----------------------------------------------
         self.rng = rng
-        self.n_events = int(n_events)
-        self.expected_n = float(n_events)
+        self.n_sample = int(n_sample)
+        self.n_total = int(n_total)
+        self.expected_n: float | None = None
         self.t0 = t0
         self.tf = tf
 
@@ -92,9 +107,13 @@ class EventSample:
         self.exposure_type: str | None = None
         self.flare_type: str | None = None
 
+        # ---- Generation context (set by per-window factory) ------------------
+        self.window: "SkyWindow | None" = None
+        self.exposure_model: "ExposureModel | None" = None
+
         # ---- Event coordinates (stored in degrees) ---------------------------
-        self.RA: np.ndarray | None = None
-        self.Dec: np.ndarray | None = None
+        self.ra: np.ndarray | None = None
+        self.dec: np.ndarray | None = None
 
         # ---- Exposure-related attributes -------------------------------------
         self.expected_exposure_rate: float | None = None
@@ -103,17 +122,145 @@ class EventSample:
         # ---- Flare bookkeeping -----------------------------------------------
         self.flare_mask: np.ndarray | None = None
 
+    # -------------------------------------------------------------------------
+    # Public factory classmethods
+    # -------------------------------------------------------------------------
+
+    @classmethod
+    def full_sky(
+        cls,
+        n_total: int,
+        t0: Time,
+        tf: Time,
+        rng: np.random.Generator,
+    ) -> "EventSample":
+        """
+        Build a full-sky isotropic sample of ``n_total`` events.
+
+        ``n_sample == n_total`` and ``expected_n == n_total``. The sample
+        carries no window and no exposure model.
+
+        Parameters
+        ----------
+        n_total : int
+            Number of events in the full-sky sample (also the expected
+            count under the uniform isotropic model).
+        t0, tf : astropy.time.Time
+            Observation interval.
+        rng : numpy.random.Generator
+            Random generator used for the isotropic draw.
+
+        Returns
+        -------
+        EventSample
+            Sample with ``ra``, ``dec``, ``expected_n`` and
+            ``spatial_type='full_sky'`` set.
+        """
+        obj = cls(
+            n_sample=int(n_total),
+            n_total=int(n_total),
+            t0=t0,
+            tf=tf,
+            rng=rng,
+        )
+        obj._assign_full_sky_coordinates()
+        obj.expected_n = float(n_total)
+        return obj
+
+    @classmethod
+    def in_window(
+        cls,
+        window: "SkyWindow",
+        n_total: int,
+        exposure_model: "ExposureModel",
+        t0: Time,
+        tf: Time,
+        rng: np.random.Generator,
+    ) -> "EventSample":
+        """
+        Build a per-window sample drawn directly inside ``window``.
+
+        The construction is:
+
+        1. ``expected_n = window.expected_n_in_window(n_total, exposure_model)``
+           — the exposure-weighted expected count inside the window for an
+           equivalent full-sky population of size ``n_total``.
+        2. ``n_sample = rng.poisson(expected_n)`` — the realised event count.
+        3. Coordinates are drawn uniformly in solid angle inside the cap.
+
+        The window and the exposure model are stored on the returned
+        instance (``self.window``, ``self.exposure_model``) so downstream
+        code can reference them without re-passing.
+
+        Parameters
+        ----------
+        window : SkyWindow
+            Spherical-cap window defining the sampling region and the
+            expected-count weighting.
+        n_total : int
+            Equivalent full-sky population (parent count) used to compute
+            ``expected_n`` via the window's exposure-weighted fraction.
+        exposure_model : ExposureModel
+            Used to weight the expected count by the relative directional
+            exposure at the window centre.
+        t0, tf : astropy.time.Time
+            Observation interval.
+        rng : numpy.random.Generator
+            Random generator used for the Poisson draw and the spatial
+            sampling.
+
+        Returns
+        -------
+        EventSample
+            Fully-formed sample with ``ra``, ``dec``, ``expected_n``,
+            ``window``, ``exposure_model`` and
+            ``spatial_type='window'`` set.
+
+        Raises
+        ------
+        ValueError
+            If the Poisson draw yields ``n_sample == 0``; the downstream
+            pipeline is not meaningful for zero-event samples (mirrors
+            the zero-event Flare and the ``>=2`` events requirement of
+            the Lambda estimator).
+        """
+        expected_n = float(window.expected_n_in_window(n_total, exposure_model))
+        n_sample = int(rng.poisson(expected_n))
+
+        if n_sample == 0:
+            raise ValueError(
+                f"Per-window Poisson draw yielded n_sample=0 "
+                f"(expected_n={expected_n:.3g}). Downstream estimators "
+                f"require at least 2 events; aborting construction."
+            )
+
+        obj = cls(
+            n_sample=n_sample,
+            n_total=int(n_total),
+            t0=t0,
+            tf=tf,
+            rng=rng,
+        )
+        obj._assign_window_coordinates(window)
+        obj.expected_n = expected_n
+        obj.window = window
+        obj.exposure_model = exposure_model
+        return obj
+
     @classmethod
     def _from_arrays(
         cls,
-        RA: np.ndarray,
-        Dec: np.ndarray,
+        ra: np.ndarray,
+        dec: np.ndarray,
+        n_total: int,
         t0: Time,
         tf: Time,
         rng: np.random.Generator,
         *,
         spatial_type: str | None = None,
         expected_n: float | None = None,
+        window: "SkyWindow | None" = None,
+        exposure_model: "ExposureModel | None" = None,
         exposure: np.ndarray | None = None,
         exposure_type: str | None = None,
         expected_exposure_rate: float | None = None,
@@ -127,47 +274,52 @@ class EventSample:
         exposure values and flare bookkeeping.
         """
 
-        RA = np.asarray(RA, dtype=float)
-        Dec = np.asarray(Dec, dtype=float)
+        ra = np.asarray(ra, dtype=float)
+        dec = np.asarray(dec, dtype=float)
 
-        if RA.shape != Dec.shape:
+        if ra.shape != dec.shape:
             raise ValueError(
-                f"RA and Dec must have the same shape, got {RA.shape} vs {Dec.shape}."
+                f"ra and dec must have the same shape, got {ra.shape} vs {dec.shape}."
             )
-        if RA.ndim != 1:
-            raise ValueError(f"RA and Dec must be 1D arrays, got ndim={RA.ndim}.")
-        
+        if ra.ndim != 1:
+            raise ValueError(f"ra and dec must be 1D arrays, got ndim={ra.ndim}.")
+
         if exposure is not None:
             exposure = np.asarray(exposure, dtype=float)
-            if exposure.shape != RA.shape:
+            if exposure.shape != ra.shape:
                 raise ValueError(
-                    f"exposure must have the same shape as RA/Dec, "
-                    f"got {exposure.shape} vs {RA.shape}."
+                    f"exposure must have the same shape as ra/dec, "
+                    f"got {exposure.shape} vs {ra.shape}."
                 )
-            
+
         if flare_mask is not None:
             flare_mask = np.asarray(flare_mask, dtype=bool)
-            if flare_mask.shape != RA.shape:
+            if flare_mask.shape != ra.shape:
                 raise ValueError(
-                    f"flare_mask must have same shape as RA/Dec, "
-                    f"got {flare_mask.shape} vs {RA.shape}."
+                    f"flare_mask must have same shape as ra/dec, "
+                    f"got {flare_mask.shape} vs {ra.shape}."
                 )
 
         obj = cls(
-            n_events=int(RA.size),
+            n_sample=int(ra.size),
+            n_total=int(n_total),
             t0=t0,
             tf=tf,
             rng=rng,
         )
 
         # Coordinates
-        obj.RA = RA
-        obj.Dec = Dec
+        obj.ra = ra
+        obj.dec = dec
         obj.spatial_type = spatial_type
 
         # Expected counts
         if expected_n is not None:
             obj.expected_n = float(expected_n)
+
+        # Generation context
+        obj.window = window
+        obj.exposure_model = exposure_model
 
         # Exposure-related attributes
         obj.exposure = exposure
@@ -192,12 +344,17 @@ class EventSample:
     @property
     def expected_temporal_rate(self) -> float:
         """Expected rate of events per unit of time."""
-        return float(self.n_events / self.T_obs.to(u.s).value)
+        if self.expected_n is None:
+            raise RuntimeError(
+                "expected_n is not set; cannot compute expected_temporal_rate. "
+                "Assign expected_n via the factory / generation routine first."
+            )
+        return float(self.expected_n / self.T_obs.to(u.s).value)
 
     @property
     def has_coordinates(self) -> bool:
         """Return True if coordinates have been assigned."""
-        return self.RA is not None and self.Dec is not None
+        return self.ra is not None and self.dec is not None
 
     @property
     def has_exposure(self) -> bool:
@@ -213,61 +370,61 @@ class EventSample:
     # Core sampling and low-level data manipulation
     # -------------------------------------------------------------------------
 
-    def _generate_coordinates(self) -> tuple[np.ndarray, np.ndarray]:
+    def _generate_full_sky_coordinates(self) -> tuple[np.ndarray, np.ndarray]:
         """
-        Simulate an isotropic distribution on the sphere in equatorial coordinates.
+        Draw ``self.n_sample`` isotropic coordinates over the whole sphere.
 
-        RA is uniform in ``[0, 360)``.
-        Dec is distributed so that ``sin(Dec)`` is uniform in ``[-1, 1]``
-        (isotropic on the sphere). Coordinates are returned in degrees.
+        Right ascension is uniform in ``[0, 360)``.
+        Declination is distributed so that ``sin(dec)`` is uniform in
+        ``[-1, 1]`` (isotropic on the sphere). Coordinates are returned in
+        degrees.
         """
-        RA = self.rng.uniform(0.0, 360.0, size=self.n_events)
-        u_rand = self.rng.uniform(-1.0, 1.0, size=self.n_events)
-        Dec = np.degrees(np.arcsin(u_rand))
+        ra = self.rng.uniform(0.0, 360.0, size=self.n_sample)
+        u_rand = self.rng.uniform(-1.0, 1.0, size=self.n_sample)
+        dec = np.degrees(np.arcsin(u_rand))
 
-        return np.asarray(RA, dtype=float), np.asarray(Dec, dtype=float)
-    
-    def _generate_coordinates_in_window(
+        return np.asarray(ra, dtype=float), np.asarray(dec, dtype=float)
+
+    def _generate_window_coordinates(
         self,
         window: "SkyWindow",
     ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Sample ``self.n_events`` positions uniformly within ``window``.
+        Draw ``self.n_sample`` isotropic coordinates within ``window``.
 
         Delegates to :meth:`SkyWindow.sample_uniform`, which draws uniformly
-        in solid angle over the spherical cap.  Coordinates are returned in
-        degrees.
+        in solid angle over the spherical cap (i.e. isotropic on the cap).
+        Coordinates are returned in degrees.
         """
-        return window.sample_uniform(self.n_events, self.rng)
+        return window.sample_uniform(self.n_sample, self.rng)
 
-    def assign_coordinates(self) -> None:
+    def _assign_full_sky_coordinates(self) -> None:
         """
-        Sample isotropic coordinates over the full sky and store them on ``self``.
+        Generate isotropic full-sky coordinates and store them on ``self``.
 
-        Sets ``self.RA``, ``self.Dec`` and tags ``self.spatial_type`` as
-        ``"isotropic"``.
+        Sets ``self.ra``, ``self.dec`` and tags ``self.spatial_type`` as
+        ``"full_sky"``. Private helper invoked by :meth:`full_sky`.
         """
-        RA, Dec = self._generate_coordinates()
-        self.RA = RA
-        self.Dec = Dec
-        self.spatial_type = "isotropic"
+        ra, dec = self._generate_full_sky_coordinates()
+        self.ra = ra
+        self.dec = dec
+        self.spatial_type = "full_sky"
 
-    def assign_coordinates_in_window(self, window: "SkyWindow") -> None:
+    def _assign_window_coordinates(self, window: "SkyWindow") -> None:
         """
-        Sample coordinates uniformly within ``window`` and store them on ``self``.
+        Generate isotropic coordinates within ``window`` and store them on ``self``.
 
-        Delegates to :meth:`SkyWindow.sample_uniform` for the spherical-cap
-        sampling.  Sets ``self.RA``, ``self.Dec`` and tags
-        ``self.spatial_type`` as ``"window"``.
+        Sets ``self.ra``, ``self.dec`` and tags ``self.spatial_type`` as
+        ``"window"``. Private helper invoked by :meth:`in_window`.
 
         Parameters
         ----------
         window : SkyWindow
             Spherical-cap window defining the sampling region.
         """
-        RA, Dec = self._generate_coordinates_in_window(window)
-        self.RA = RA
-        self.Dec = Dec
+        ra, dec = self._generate_window_coordinates(window)
+        self.ra = ra
+        self.dec = dec
         self.spatial_type = "window"
 
     # -------------------------------------------------------------------------
@@ -287,12 +444,12 @@ class EventSample:
         (e.g. by :meth:`select_subsample`).
         """
 
-        if self.RA is None or self.Dec is None:
-            raise ValueError("RA and Dec are not available.")
+        if self.ra is None or self.dec is None:
+            raise ValueError("ra and dec are not available.")
 
         mask = np.asarray(mask, dtype=bool)
-        if mask.shape != self.RA.shape:
-            raise ValueError(f"Mask must have shape {self.RA.shape}, got {mask.shape}.")
+        if mask.shape != self.ra.shape:
+            raise ValueError(f"Mask must have shape {self.ra.shape}, got {mask.shape}.")
 
         exposure = None
         if self.exposure is not None:
@@ -303,13 +460,16 @@ class EventSample:
             flare_mask = self.flare_mask[mask]
 
         return EventSample._from_arrays(
-            RA=self.RA[mask],
-            Dec=self.Dec[mask],
+            ra=self.ra[mask],
+            dec=self.dec[mask],
+            n_total=self.n_total,
             t0=self.t0,
             tf=self.tf,
             rng=self.rng,
             spatial_type=self.spatial_type,
             expected_n=self.expected_n,
+            window=self.window,
+            exposure_model=self.exposure_model,
             exposure=exposure,
             exposure_type=self.exposure_type,
             expected_exposure_rate=self.expected_exposure_rate,
@@ -325,7 +485,7 @@ class EventSample:
         Return a new ``EventSample`` containing only events inside ``window``.
 
         The returned sample carries an updated ``expected_n`` set to
-        ``window.expected_n_in_window(self.n_events)`` (i.e. the expected
+        ``window.expected_n_in_window(self.n_total)`` (i.e. the expected
         number of events inside the window under the *uniform full-sky*
         assumption built into :class:`SkyWindow`).
 
@@ -337,7 +497,7 @@ class EventSample:
         Returns
         -------
         EventSample
-            New sample with sliced ``RA``, ``Dec``, and any optional
+            New sample with sliced ``ra``, ``dec``, and any optional
             per-event arrays.
 
         Raises
@@ -347,15 +507,16 @@ class EventSample:
             inside the window.
         """
         if not self.has_coordinates:
-            raise ValueError("RA and Dec are not available.")
+            raise ValueError("ra and dec are not available.")
 
-        mask = window.contains(self.RA, self.Dec)
+        mask = window.contains(self.ra, self.dec)
 
         if not np.any(mask):
             raise ValueError("No events found inside the sky window.")
 
         subsample = self._subset(mask)
-        subsample.expected_n = window.expected_n_in_window(self.n_events)
+        subsample.expected_n = window.expected_n_in_window(self.n_total)
+        subsample.window = window
 
         return subsample
 
@@ -411,7 +572,7 @@ class EventSample:
         if self.has_flare:
             isotropy_mask = ~self.flare_mask
         else:
-            isotropy_mask = np.ones(self.n_events, dtype=bool)
+            isotropy_mask = np.ones(self.n_sample, dtype=bool)
 
         n_target = int(np.count_nonzero(isotropy_mask))
 
@@ -456,7 +617,7 @@ class EventSample:
         )
 
         if self.exposure is None:
-            self.exposure = np.full(self.n_events, np.nan, dtype=float)
+            self.exposure = np.full(self.n_sample, np.nan, dtype=float)
 
         self.exposure[target_mask] = eps
         self.expected_exposure_rate = expected_exposure_rate
@@ -470,16 +631,16 @@ class EventSample:
         """
         Inject a fully-generated flare into the current sample in place.
 
-        ``flare.n_events`` event slots are chosen uniformly at random
-        (without replacement) from the existing events; their ``RA``,
-        ``Dec`` and ``exposure`` are overwritten by the flare values, and
+        ``flare.n_flare`` event slots are chosen uniformly at random
+        (without replacement) from the existing events; their ``ra``,
+        ``dec`` and ``exposure`` are overwritten by the flare values, and
         a boolean ``flare_mask`` is recorded so that downstream code can
         identify the injected events.
 
         Parameters
         ----------
         flare : Flare
-            Flare with ``RA``, ``Dec`` and ``exposure`` already populated
+            Flare with ``ra``, ``dec`` and ``exposure`` already populated
             (typically via :meth:`Flare.generate_in_window`).
 
         Raises
@@ -490,7 +651,7 @@ class EventSample:
             If the sample already contains an injected flare.
         ValueError
             If ``self`` has no coordinates, ``flare`` is not fully
-            generated, or ``flare.n_events`` exceeds ``self.n_events``.
+            generated, or ``flare.n_flare`` exceeds ``self.n_sample``.
 
         Notes
         -----
@@ -498,7 +659,7 @@ class EventSample:
           only the flare slots are filled. The caller is responsible for
           subsequently calling :meth:`assign_directional_exposure` to fill
           the remaining background slots.
-        - Sample size (``self.n_events``) is preserved by construction.
+        - Sample size (``self.n_sample``) is preserved by construction.
         """
         from .flare import Flare
 
@@ -510,30 +671,30 @@ class EventSample:
 
         if not self.has_coordinates:
             raise ValueError("Sample coordinates are not available.")
-        
-        if flare.RA is None or flare.Dec is None or flare.exposure is None:
+
+        if flare.ra is None or flare.dec is None or flare.exposure is None:
             raise ValueError(
                 "Flare is not fully generated. "
                 "Coordinates and exposure must be computed before injection."
             )
 
-        if flare.n_events > self.n_events:
+        if flare.n_flare > self.n_sample:
             raise ValueError(
                 "Cannot inject flare: flare has more events than the sample."
             )
 
-        idx = self.rng.choice(self.n_events, size=flare.n_events, replace=False)
+        idx = self.rng.choice(self.n_sample, size=flare.n_flare, replace=False)
 
-        self.RA[idx] = flare.RA
-        self.Dec[idx] = flare.Dec
+        self.ra[idx] = flare.ra
+        self.dec[idx] = flare.dec
 
         # Check if an exposure array already exists
         if self.exposure is None:
-            self.exposure = np.full(self.n_events, np.nan, dtype=float)
+            self.exposure = np.full(self.n_sample, np.nan, dtype=float)
 
         self.exposure[idx] = flare.exposure
 
-        self.flare_mask = np.zeros(self.n_events, dtype=bool)
+        self.flare_mask = np.zeros(self.n_sample, dtype=bool)
         self.flare_mask[idx] = True
         self.flare_type = flare.flare_type
 
@@ -572,11 +733,11 @@ class EventSample:
 
         Notes
         -----
-        This method assumes ``self.RA`` and ``self.Dec`` are stored in degrees.
+        This method assumes ``self.ra`` and ``self.dec`` are stored in degrees.
         """
-        if self.RA is None or self.Dec is None:
+        if self.ra is None or self.dec is None:
             raise ValueError(
-                "RA and Dec are not available. "
+                "ra and dec are not available. "
                 "Sample coordinates before building the skymap."
             )
 
@@ -585,11 +746,11 @@ class EventSample:
         if not hp.isnsideok(nside):
             raise ValueError("nside must be a valid HEALPix NSIDE value.")
 
-        ra_deg = np.asarray(self.RA, dtype=float)
-        dec_deg = np.asarray(self.Dec, dtype=float)
+        ra_deg = np.asarray(self.ra, dtype=float)
+        dec_deg = np.asarray(self.dec, dtype=float)
 
         if ra_deg.shape != dec_deg.shape:
-            raise ValueError("RA and Dec must have the same shape.")
+            raise ValueError("ra and dec must have the same shape.")
 
         valid = np.isfinite(ra_deg) & np.isfinite(dec_deg)
         ra_deg = ra_deg[valid]
@@ -850,15 +1011,4 @@ class EventSample:
             image = np.where(np.isfinite(image), image, np.nan)
 
         return lon_edges, lat_edges, image
-    
-
-class WindowSample:
-
-    """
-    Generate a sample of events on an already selected window of the sphere.
-    Once the events are selected in a window, we lose track of the its actual
-    position. Therefore, there is no need to sample equatorial coordinates at 
-    all, we only need to compute the mean number of events in a given area of
-    the sky, and set an array of arrival times of that length.
-    """
     

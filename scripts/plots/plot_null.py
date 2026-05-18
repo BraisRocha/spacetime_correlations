@@ -38,7 +38,7 @@ def main(results_dir: str | Path) -> None:
 
     # data from `results.npz`
     lambda_mc = data["lambda_mc"]
-    n_events = data ["n_events_window"]
+    n_sample = data["n_sample_window"]
 
     p_values_conditional = data["p_values_conditional"]
     p_values_marginal = data["p_values_marginal"]
@@ -195,15 +195,15 @@ def main(results_dir: str | Path) -> None:
 
 
     fig, ax = plt.subplots(figsize=(8, 5)) # Create bins of width 1 centered on integers
-    bin_edges = np.arange(min(n_events) - 0.5, max(n_events) + 1.5, 1)
-    ax.hist(n_events, 
+    bin_edges = np.arange(min(n_sample) - 0.5, max(n_sample) + 1.5, 1)
+    ax.hist(n_sample, 
             bins=bin_edges, 
             density=False, histtype="step", linewidth=1.5, label="MC")
     ax.axvline(expected_n, color="black", linestyle="--", linewidth=1.5, label=fr"$\mu={expected_n:.2f}$")
 
-    k = np.arange(min(n_events), max(n_events) + 1)
+    k = np.arange(min(n_sample), max(n_sample) + 1)
     pmf = scp.poisson.pmf(k, expected_n)
-    N = len(n_events)
+    N = len(n_sample)
     expected_counts = N * pmf
 
     step_y = np.r_[expected_counts, expected_counts[-1]]
@@ -238,7 +238,7 @@ def main(results_dir: str | Path) -> None:
     )
 
     fig.tight_layout()
-    fig.savefig(results_dir/ "n_events.png", dpi=300, bbox_inches="tight")
+    fig.savefig(results_dir/ "n_sample.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     # ------------------------------------------------------------------
@@ -266,6 +266,6 @@ def main(results_dir: str | Path) -> None:
 
 if __name__ == "__main__":
     # Change this path to the run you want to plot
-    run_dir = Path("/home/brais/PhD/dev/stc_project/output/scripts/null")
-    sim_id = "20260501_131947_seed42"
+    run_dir = Path("/lustre/Auger/brais.rocha/spacetime_correlations/output/scripts/null")
+    sim_id = "20260518_164126_seed42"
     main(run_dir/sim_id)

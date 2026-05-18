@@ -35,6 +35,8 @@ class SkyWindow:
 
     # Cached private attributes (set in __post_init__)
     _center_vec: np.ndarray = field(init=False, repr=False, compare=False)
+    _e_east: np.ndarray     = field(init=False, repr=False, compare=False)
+    _e_north: np.ndarray    = field(init=False, repr=False, compare=False)
     _cos_radius: float      = field(init=False, repr=False, compare=False)
     _sky_fraction: float    = field(init=False, repr=False, compare=False)
 
@@ -76,7 +78,12 @@ class SkyWindow:
             dtype=float,
         )
 
+        e_east  = np.array([-np.sin(ra_c_rad), np.cos(ra_c_rad), 0.0])
+        e_north = np.cross(center_vec, e_east)
+
         object.__setattr__(self, "_center_vec", center_vec)
+        object.__setattr__(self, "_e_east", e_east)
+        object.__setattr__(self, "_e_north", e_north)
         object.__setattr__(self, "_cos_radius", float(np.cos(radius_rad)))
         object.__setattr__(self, "_sky_fraction", float((1.0 - np.cos(radius_rad)) / 2.0))
 
@@ -119,16 +126,19 @@ class SkyWindow:
         ra_rad  = np.deg2rad(ra)
         dec_rad = np.deg2rad(dec)
 
-        event_vecs = np.column_stack(
-            (
-                np.cos(dec_rad) * np.cos(ra_rad),
-                np.cos(dec_rad) * np.sin(ra_rad),
-                np.sin(dec_rad),
-            )
-        )
+        cos_dec = np.cos(dec_rad)
+        sin_dec = np.sin(dec_rad)
 
-        dots = event_vecs @ self._center_vec
-        dots = np.clip(dots, -1.0, 1.0)
+        sin_ra = np.sin(ra_rad)
+        cos_ra = np.cos(ra_rad)
+
+        cx, cy, cz = self._center_vec
+
+        dots = (
+            cos_dec * cos_ra * cx
+            + cos_dec * sin_ra * cy
+            + sin_dec * cz
+        )
 
         return dots >= self._cos_radius
 
@@ -165,26 +175,19 @@ class SkyWindow:
         if n == 0:
             return np.empty(0, dtype=float), np.empty(0, dtype=float)
 
-        ra_c  = np.deg2rad(self.centre[0])
-        dec_c = np.deg2rad(self.centre[1])
-
         # --- local-frame sampling (cap centre = north pole) ---
         cos_theta = rng.uniform(self._cos_radius, 1.0, size=n)
         phi       = rng.uniform(0.0, 2.0 * np.pi, size=n)
 
-        sin_theta = np.sqrt(1.0 - cos_theta ** 2)
+        sin_theta = np.sqrt(1.0 - cos_theta * cos_theta)
         x_local   = sin_theta * np.cos(phi)
         y_local   = sin_theta * np.sin(phi)
         z_local   = cos_theta
 
-        # --- orthonormal frame at the cap centre ---
-        n_hat   = np.array([
-            np.cos(dec_c) * np.cos(ra_c),
-            np.cos(dec_c) * np.sin(ra_c),
-            np.sin(dec_c),
-        ])
-        e_east  = np.array([-np.sin(ra_c), np.cos(ra_c), 0.0])
-        e_north = np.cross(n_hat, e_east)
+        # --- cached orthonormal frame ---
+        e_east  = self._e_east
+        e_north = self._e_north
+        n_hat   = self._center_vec
 
         # --- rotate local samples into the equatorial frame ---
         x = e_east[0] * x_local + e_north[0] * y_local + n_hat[0] * z_local
@@ -236,7 +239,7 @@ class SkyWindow:
             Expected number of events in the window.
         """
         if exposure_model is None:
-            return float(n_events) * self.sky_fraction
+            return float(n_events) * self._sky_fraction
 
         weight = exposure_model.relative_exposure(self.centre)
-        return float(n_events) * self.sky_fraction * weight
+        return float(n_events) * self._sky_fraction * weight

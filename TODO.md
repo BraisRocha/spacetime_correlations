@@ -10,41 +10,34 @@ fix right now, but which should be revisited.
   `[0, factor * max_exposure / Γ]` and keeps the first `n_events` after
   sorting. Intended to avoid a bias near `max_exposure`. Worth revisiting
   to confirm the resulting distribution matches what we want analytically.
+  Perhaps a test script could be written in order to have a tool to check
+  it at any moment.
 
 ## Code quality
 
-- **`EventSample` dual-pipeline state**
-  The class currently contains two generations of methods that coexist but
-  serve different pipelines and have not yet been reconciled:
+- **Statistical-validation tests** (not yet in `tests/`)
+  The deterministic / contract part of the test suite is in place under
+  `tests/` (see `test_skywindow.py`, `test_event_sample.py`,
+  `test_flare.py`, `test_exposure.py`, `test_statistics.py`,
+  `test_observatory.py`).  Three statistical validations remain to be
+  added as proper pass/fail tests, with seeded RNG + a numeric tolerance.
+  Visual versions of (some of) these already exist as Monte-Carlo
+  diagnostics; the pytest versions will assert on a statistic rather than
+  produce a plot.
 
-  *Old full-sky pipeline* — generate a large isotropic sample over the whole
-  sky, then carve out a window:
-  - `assign_coordinates()` (full-sky isotropic sampling)
-  - `select_subsample(window)` — filters events and sets `expected_n` using
-    the uniform `SkyWindow.expected_n_in_window`. Note that
-    `SkyWindow.expected_n_in_window` now supports an optional `exposure_model`
-    argument for exposure-weighted counts, but `select_subsample` does not yet
-    thread it through.
-  - `generate_directional_exposure` / `assign_directional_exposure` — exposure
-    sampling machinery tied to the full-sky subsample workflow.
-
-  *New per-window pipeline* — sample directly within a window with a
-  Poisson-drawn event count:
-  - `assign_coordinates_in_window(window)` (spherical-cap uniform sampling)
-
-  The old methods have been kept deliberately while the new pipeline matures.
-  Once the per-window workflow is validated end-to-end, decide which old
-  methods to adapt, deprecate, or remove.
-
-- **Tests**
-  No `tests/` directory yet. A small pytest suite covering at least:
-  - `cumulative_directional_exposure` in the always-visible / always-invisible
-    / partial-visibility branches,
-  - the `lambda_estimator`, `spatial_estimator`, and the marginal/conditional
-    Lambda PDFs,
-  - the `EventSample` -> `Flare` -> `inject_flare` chain (round-trip masks /
-    counts).
-  This would make it much easier to catch silent statistical bugs.
+  - **Per-window isotropy validation** — with `EventSample.in_window`
+    generating background-only events, verify that the realised
+    p-value distribution is uniform on `[0, 1]` (KS test against
+    `Uniform(0, 1)`).  Also resolve whether a Poisson or a binomial
+    draw is more appropriate given the absence of sampling bias.
+  - **Exposure-weighted end-to-end check** — now that
+    `SkyWindow.expected_n_in_window` folds in `omega(delta_centre)` and
+    `EventSample.in_window` threads `exposure_model` through, verify
+    that the realised event count vs. declination tracks the expected
+    count within Poisson tolerance.
+  - **Effect of the significance-function cut** — add a test that
+    quantifies whether the cut in the significance function affects
+    the result.
 
 - **Log-handler / file-handle housekeeping**
   `setup_logger` now resets handlers on each call; consider also surfacing a
@@ -100,23 +93,6 @@ fix right now, but which should be revisited.
 
 ## Current homework
 
-- **Per-window event generation and isotropy validation**
-  Migrate the simulation pipeline to draw `n ~ Poisson(expected_n_in_window)`
-  and sample events directly within the window, rather than generating a
-  full-sky sample and carving out a subset. Once implemented, verify that
-  isotropy is correctly reproduced by checking that background p-values are
-  uniformly distributed. It is also worth investigating whether a Poisson or
-  a binomial draw is more appropriate given the absence of sampling bias.
-
-- **Exposure-weighted pipeline**
-  The per-window pipeline should weight the expected event count by the
-  relative exposure `omega(delta)` at the window centre, as implemented in
-  `SkyWindow.expected_n_in_window`. The solid-angle factor is already in
-  place; the remaining step is to fold in the declination-dependent exposure
-  and verify the end-to-end result. Time-dependent effects on the acceptance
-  will be absorbed into the temporal sampling via the cumulative directional
-  exposure.
-
 - **Effect of T_obs on signal significance**
   Produce a plot analogous to Fig. 1 of the paper comparing two scenarios:
   `(T_obs = 10 yr, flare duration = 1 day)` vs.
@@ -124,3 +100,28 @@ fix right now, but which should be revisited.
   As the signal fraction increases the significance should grow, but results
   must be penalised for the number of tested intervals: if `T_obs` is divided
   into 10 windows, p-values should be multiplied by 10.
+
+- I want Claude to review thoroughly the Flare class. It would be better to
+  break it into FlareModel and FlareSample classes? Are there inconsistencies
+  among the class' script?
+
+- **`run_scan_correlation.py` / `plot_scan_correlation.py` not migrated**
+  The other four `scripts/montecarlo/` scripts and their corresponding
+  `scripts/plots/` plotting scripts have been migrated to the new
+  per-window pipeline (`EventSample.in_window`, exposure-weighted
+  `expected_n`, renamed keys `n_events_* → n_sample_*`). The
+  scan-correlation pair was deliberately left untouched: the old
+  pipeline's three-case structure (`bkg / ST / T / S`) does not survive
+  the new pipeline as-is — `inject_flare` on an in-window sample always
+  *replaces* events, so the old `ST` (inject-into-parent → re-window,
+  which *adds* events) and old `T` (inject-into-subsample, which
+  replaces them) collapse to the same operation. A pipeline-level
+  redesign is needed before migrating this pair.
+
+- **Pre-migration MC `.npz` outputs are not readable by the new plot scripts**
+  The renamed keys (`n_events_window → n_sample_window`,
+  `n_events_bkg → n_sample_bkg`, `n_events_flare → n_sample_flare`,
+  metadata `mu_window → expected_n`, etc.) mean the migrated plot
+  scripts cannot consume runs produced before this migration. To view
+  old results, either re-run the MC scripts or write a one-off
+  conversion that copies the old keys to the new names.

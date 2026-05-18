@@ -1,5 +1,21 @@
 """
 Compare background-only and flare-injected Lambda distributions.
+
+For each trial:
+    1. Generate one isotropic in-window sample directly via
+       ``EventSample.in_window`` and attach exposure.
+    2. Compute background Lambda.
+    3. Draw ``n_flare ~ Poisson(flare_intensity * expected_n)``.
+       If ``n_flare > 0``, generate and inject the flare in place. The
+       flare *replaces* ``n_flare`` random slots in the sample, so
+       ``n_sample`` is preserved (this is the new in-window pipeline's
+       inject semantics).
+    4. Compute the post-injection Lambda.
+
+If ``n_flare > n_sample`` (very rare for the parameters used here)
+``inject_flare`` raises ``ValueError`` and the script terminates with a
+loud error so the operator can adjust ``n_total``, ``flare_intensity``,
+or the window geometry.
 """
 
 from pathlib import Path
@@ -7,31 +23,23 @@ from pathlib import Path
 import astropy.units as u
 import numpy as np
 import scipy.stats as scp
+import time
+import copy
 
 from astropy.time import Time
 from tqdm import tqdm
-import time
 
 import spacetimecorr as stc
 from spacetimecorr.io import setup_logger, make_run_dir, write_metadata
 
 
 def main(seed: int) -> None:
-    """
-    Generate simulated event samples and compare background-only and
-    flare-injected simulations.
-
-    Failed simulation attempts are logged and replaced by fresh random
-    attempts until n_simulations successful runs are collected, or until
-    max_attempts is reached.
-    """
-
     start_time = time.time()
 
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_events = int(1e5)
+    n_total = int(1e5)
     n_simulations = int(1e3)
     max_attempts = int(3 * n_simulations)
 
@@ -40,11 +48,11 @@ def main(seed: int) -> None:
     t0 = Time("2013-01-01T00:00:00", scale="utc")
     tf = t0 + T_obs
 
-    # Sky window parameters (RA [deg], Dec [deg], radius [deg])
+    # Sky window
     centre = np.array([30.0, 0.0])
     radius = 2
 
-    # Pierre Auger Observatory coordinates
+    # Pierre Auger Observatory
     latitude_pa = -35.15
     longitude_pa = -69.15
     altitude_pa = 1425
@@ -52,7 +60,7 @@ def main(seed: int) -> None:
     # Flare parameters
     flare_duration = 1 * u.day
     flare_sigma = 1.0  # deg
-    flare_intensity = 0.1 # events of the flare/events expected from isotropy within the window
+    flare_intensity = 0.1  # n_flare / expected_n
 
     # ------------------------------------------------------------------
     # Output directory
@@ -69,10 +77,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Logger and metadata
     # ------------------------------------------------------------------
-    logger = setup_logger(
-        log_path=outdir / "run.log",
-        name="compare_bg_signal",
-    )
+    logger = setup_logger(log_path=outdir / "run.log", name="compare_bg_signal")
 
     logger.info("Starting bg vs signal comparison run")
     logger.info("Simulation ID: %s", sim_ID)
@@ -88,150 +93,110 @@ def main(seed: int) -> None:
     rng_flare = rng_manager.get("flare")
 
     window = stc.SkyWindow(centre=centre, radius=radius)
-
     observatory = stc.Observatory(
-        latitude=latitude_pa,
-        longitude=longitude_pa,
-        altitude=altitude_pa,
+        latitude=latitude_pa, longitude=longitude_pa, altitude=altitude_pa,
+    )
+    exposure_model = stc.ExposureModel(
+        observatory=observatory, t0=t0, tf=tf, rng=rng_exposure,
     )
 
-    exposure_model = stc.ExposureModel(
-        observatory=observatory,
-        t0=t0,
-        tf=tf,
-        rng=rng_exposure,
-    )
+    expected_n = window.expected_n_in_window(n_total, exposure_model)
+    mu_flare = flare_intensity * expected_n
+
+    logger.info("sky_fraction=%g, expected_n=%g, mu_flare=%g",
+                window.sky_fraction, expected_n, mu_flare)
 
     # ------------------------------------------------------------------
     # Storage
     # ------------------------------------------------------------------
     lambda_bkg = []
-    pvalues_bkg = []
-
-    lambda_flare = []
-    pvalues_flare = []
-
+    lambda_flare_list = []
     delta_exposure_bkg = []
     delta_exposure_flare = []
-
-    expected_n = window.expected_n_in_window(n_events)
-    print(window.sky_fraction)
-    print(expected_n)
-
-    # Mean number of flare events drawn per realization. This depends only
-    # on parameters fixed before the loop, so compute it once.
-    mu_flare = flare_intensity * expected_n
-
-    n_events_bkg = []
-    n_events_flare = []
+    n_sample_bkg = []
+    n_sample_flare = []
 
     n_success = 0
     n_failures = 0
     attempt = 0
     n_zero_flare = 0
 
-    # Progress bar tracks successful simulations, not attempts
     pbar = tqdm(total=n_simulations, desc="Successful simulations")
 
     # ------------------------------------------------------------------
     # Main simulation loop
     # ------------------------------------------------------------------
-    
     while n_success < n_simulations and attempt < max_attempts:
         attempt += 1
 
         try:
-            # Isotropy
-            parent_sample = stc.EventSample(
-                n_events=n_events,
+            # --- Background-only ---
+            bkg_sample = stc.EventSample.in_window(
+                window=window,
+                n_total=n_total,
+                exposure_model=exposure_model,
                 t0=t0,
                 tf=tf,
                 rng=rng_events,
             )
-            parent_sample.assign_coordinates()
-            subsample = parent_sample.select_subsample(window=window)
-            subsample.assign_directional_exposure(
-                window=window,
-                exposure_model=exposure_model,
+            bkg_sample.assign_directional_exposure(
+                window=window, exposure_model=exposure_model,
             )
-            
-            delta_exposure_bkg_val = np.diff(np.sort(subsample.exposure))
-            lambda_stat_bkg = stc.lambda_estimator(sample=subsample)
 
-            # In-window event count for the background-only realisation.
-            n_in_window_before = subsample.n_events
+            lambda_stat_bkg = stc.lambda_estimator(sample=bkg_sample)
+            delta_exposure_bkg_val = np.diff(np.sort(bkg_sample.exposure))
+            n_in_window_bkg = bkg_sample.n_sample
 
-            # Draw flare multiplicity
-            n_flare = int(
-                scp.poisson.rvs(
-                    mu_flare,
-                    random_state=rng_flare,
-                )
-            )
+            # --- Flare injection on a deep copy ---
+            n_flare = int(scp.poisson.rvs(mu_flare, random_state=rng_flare))
 
             if n_flare == 0:
                 logger.info(
                     "Simulation %d: drawn flare multiplicity is zero (mu=%.3f). "
                     "No flare will be injected in this realization.",
-                    attempt,
-                    mu_flare,
+                    attempt, mu_flare,
                 )
                 n_zero_flare += 1
+                flare_sample = bkg_sample
 
             else:
-                # Isotropy + Flare
                 flare = stc.Flare(
-                    n_events=n_flare,
+                    n_flare=n_flare,
                     duration=flare_duration,
-                    t0=t0,
-                    tf=tf,
+                    t0=t0, tf=tf,
                     centre=window.centre,
                     exposure_model=exposure_model,
                     rng=rng_flare,
                 )
-                flare.generate_in_window(
-                    window=window,
-                    sigma=flare_sigma,
+                flare.generate_in_window(window=window, sigma=flare_sigma)
+
+                flare_sample = copy.deepcopy(bkg_sample)
+                flare_sample.inject_flare(flare=flare)
+                flare_sample.assign_directional_exposure(
+                    window=window, exposure_model=exposure_model,
                 )
 
-                # We inject the flare in the parent sample and redo the window cut
-                parent_sample.inject_flare(flare=flare)
-                subsample = parent_sample.select_subsample(window=window)
-                subsample.assign_directional_exposure(
-                    window=window,
-                    exposure_model=exposure_model,
-                )
+            lambda_stat_flare = stc.lambda_estimator(sample=flare_sample)
+            delta_exposure_flare_val = np.diff(np.sort(flare_sample.exposure))
+            n_in_window_flare = flare_sample.n_sample
 
-            # When n_flare == 0 the subsample is identical to the background
-            # one, but we still compute the statistic so the trial is recorded
-            # as a (zero-injection) outcome of the Poisson draw.
-            delta_exposure_flare_val = np.diff(np.sort(subsample.exposure))
-            lambda_stat_flare = stc.lambda_estimator(sample=subsample)
-
-            # In-window event count after (potential) flare injection.
-            n_in_window_after = subsample.n_events
-
-            # Only store results after the full background+flare chain succeeds
+            # Record only after the full chain succeeds.
             lambda_bkg.append(lambda_stat_bkg)
-            lambda_flare.append(lambda_stat_flare)
-
+            lambda_flare_list.append(lambda_stat_flare)
             delta_exposure_bkg.append(delta_exposure_bkg_val)
             delta_exposure_flare.append(delta_exposure_flare_val)
-
-            n_events_bkg.append(n_in_window_before)
-            n_events_flare.append(n_in_window_after)
+            n_sample_bkg.append(n_in_window_bkg)
+            n_sample_flare.append(n_in_window_flare)
 
             n_success += 1
             pbar.update(1)
 
-        except Exception:
+        except RuntimeError:
             n_failures += 1
             logger.exception(
                 "Simulation attempt %d failed "
                 "(successes=%d, failures=%d)",
-                attempt,
-                n_success,
-                n_failures,
+                attempt, n_success, n_failures,
             )
             continue
 
@@ -239,15 +204,11 @@ def main(seed: int) -> None:
 
     logger.info(
         "Run finished: attempts=%d, successes=%d, failures=%d",
-        attempt,
-        n_success,
-        n_failures,
+        attempt, n_success, n_failures,
     )
     logger.info(
         "Zero-flare realizations: %d / %d (%.2f%%)",
-        n_zero_flare,
-        attempt,
-        100.0 * n_zero_flare / attempt,
+        n_zero_flare, attempt, 100.0 * n_zero_flare / max(attempt, 1),
     )
 
     # ------------------------------------------------------------------
@@ -255,8 +216,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     if n_success == 0:
         raise RuntimeError(
-            "All simulation attempts failed. "
-            f"See log file: {outdir / 'failed_simulations.log'}"
+            f"All simulation attempts failed. See log file: {outdir / 'run.log'}"
         )
 
     if n_success < n_simulations:
@@ -267,20 +227,16 @@ def main(seed: int) -> None:
         )
         logger.warning(warning_msg)
         print(f"Warning: {warning_msg}")
-        print(f"See log file: {outdir / 'failed_simulations.log'}")
 
     # ------------------------------------------------------------------
     # Convert to arrays
     # ------------------------------------------------------------------
     lambda_bkg = np.array(lambda_bkg)
-    lambda_flare = np.array(lambda_flare)
-
-    # Flatten delta-exposure lists
+    lambda_flare = np.array(lambda_flare_list)
     delta_exposure_bkg = np.concatenate(delta_exposure_bkg)
     delta_exposure_flare = np.concatenate(delta_exposure_flare)
-
-    n_events_bkg = np.array(n_events_bkg)
-    n_events_flare = np.array(n_events_flare)
+    n_sample_bkg = np.array(n_sample_bkg)
+    n_sample_flare = np.array(n_sample_flare)
 
     pvalues_bkg = stc.lambda_marginal_sf(lambda_bkg, expected_n)
     pvalues_flare = stc.lambda_marginal_sf(lambda_flare, expected_n)
@@ -288,6 +244,10 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Save outputs and metadata
     # ------------------------------------------------------------------
+    # `expected_exposure_rate` is the same for bkg / flare since both attach
+    # exposure with the same (window, exposure_model) pair.
+    expected_exposure_rate = bkg_sample.expected_exposure_rate
+
     np.savez_compressed(
         outdir / "results.npz",
         lambda_bkg=lambda_bkg,
@@ -296,9 +256,9 @@ def main(seed: int) -> None:
         pvalues_flare=pvalues_flare,
         delta_exposure_bkg=delta_exposure_bkg,
         delta_exposure_flare=delta_exposure_flare,
-        expected_exposure_rate=subsample.expected_exposure_rate,
-        n_events_bkg=n_events_bkg,
-        n_events_flare=n_events_flare,
+        expected_exposure_rate=expected_exposure_rate,
+        n_sample_bkg=n_sample_bkg,
+        n_sample_flare=n_sample_flare,
     )
 
     write_metadata(
@@ -307,10 +267,12 @@ def main(seed: int) -> None:
             "script": Path(__file__).name,
             "run_code": "compare_bg_signal",
             "seed": seed,
-            "n_events": n_events,
-            "mu_window": expected_n,
+            "n_total": n_total,
+            "expected_n": expected_n,
             "n_simulations_requested": n_simulations,
+            "n_simulations_successful": n_success,
             "max_attempts": max_attempts,
+            "n_zero_flare": n_zero_flare,
             "t0": t0.isot,
             "tf": tf.isot,
             "T_obs_days": T_obs.to_value(u.day),
@@ -321,16 +283,16 @@ def main(seed: int) -> None:
             "altitude_pa_m": altitude_pa,
             "flare_duration_days": flare_duration.to_value(u.day),
             "flare_sigma_deg": flare_sigma,
-            "expected_exposure_rate": subsample.expected_exposure_rate,
+            "flare_intensity": flare_intensity,
             "mu_flare": mu_flare,
+            "expected_exposure_rate": expected_exposure_rate,
         },
     )
 
     logger.info("Saved results to %s", outdir / "results.npz")
-
-    end_time = time.time()
-    elapsed = end_time - start_time
+    elapsed = time.time() - start_time
     logger.info(f"Simulation finished in {elapsed:.2f} seconds")
+
 
 if __name__ == "__main__":
     seed = 42

@@ -93,6 +93,8 @@ def lambda_conditional_sigma(x, n_events):
     p = lambda_conditional_sf(x, n_events)
     return scp.norm.isf(p)
 
+# Consider removing these two functions:
+########################################
 def lambda_conditional_pvalue(x, n_events):
     """Alias for :func:`lambda_conditional_sf`, the conditional upper-tail p-value."""
     x = np.asarray(x)
@@ -111,6 +113,7 @@ def lambda_conditional_pvalue_and_sigma(x, n_events):
     p = lambda_conditional_sf(x, n_events)
     z = scp.norm.isf(p)
     return p, z
+########################################
 
 def lambda_conditional_rvs(n_events, size=1, random_state=None):
     """
@@ -242,6 +245,8 @@ def lambda_marginal_isigma(sigma, mu, nmax=None):
         1.0, 1e4,
     )
 
+# Consider removing these two functions:
+########################################
 def lambda_marginal_pvalue(x, mu, nmax=None):
     """Alias for :func:`lambda_marginal_sf`, the marginal upper-tail p-value."""
     return lambda_marginal_sf(x, mu, nmax=nmax)
@@ -254,6 +259,7 @@ def lambda_marginal_pvalue_and_sigma(x, mu, nmax=None):
     p = lambda_marginal_sf(x, mu, nmax=nmax)
     z = scp.norm.isf(p)
     return p, z
+########################################
 
 def lambda_marginal_rvs(mu, size=1, random_state=None):
     """
@@ -324,7 +330,7 @@ def lambda_estimator(sample: EventSample) -> float:
             "Directional exposure not set. Call a method to generate it first."
         )
 
-    if sample.n_events < 2:
+    if sample.n_sample < 2:
         raise ValueError("Need at least 2 events to compute Delta exposure.")
 
     # Reject incomplete exposure arrays before doing anything else: NaN
@@ -358,36 +364,6 @@ def lambda_estimator(sample: EventSample) -> float:
     lambda_stat = float(-np.sum(np.log(1.0 - np.exp(-delta_exp * sample.expected_exposure_rate))))
 
     return lambda_stat
-
-def spatial_estimator(n_events, mu) -> float|np.ndarray:
-    """
-    Purely spatial correlation estimator: Poisson upper-tail probability.
-
-    For an observed event count ``n_events`` in a sky window with
-    expected count ``mu`` under the null (e.g. isotropy under uniform
-    full-sky exposure), this returns
-
-        P(N >= n_events | mu)  =  Q(n_events, mu),
-
-    where ``N ~ Poisson(mu)``. Smaller values indicate a stronger
-    (positive) excess.
-
-    Parameters
-    ----------
-    n_events : int or array-like of int
-        Observed event count(s).
-    mu : float or array-like
-        Expected count(s) under the null.
-
-    Returns
-    -------
-    float or numpy.ndarray
-        Upper-tail probability/probabilities; broadcasts over inputs.
-    """
-    n_events = np.asarray(n_events, dtype=float)
-    mu = np.asarray(mu, dtype=float)
-
-    return scp.poisson.sf(n_events - 1, mu)
 
 # --------------------------------------------------------------------------------
 # Utilities
@@ -603,4 +579,3 @@ def empirical_p_values(null_estimators: np.ndarray, estimators: np.ndarray) -> n
     counts = np.searchsorted(null_sorted, estimators, side="right")
 
     return counts / len(null_sorted)
-

@@ -13,7 +13,7 @@ The package exposes:
     Event-level data containers and flare generators.
 - ``RNGManager``
     Reproducible, named random-number streams.
-- ``lambda_*`` / ``spatial_estimator`` / ``empirical_p_values``
+- ``lambda_*`` / ``lambda_estimator`` / ``empirical_p_values``
     Anisotropy estimators and their distributions.
 
 Recommended usage
@@ -45,7 +45,6 @@ from .statistics import (
     lambda_marginal_pvalue_and_sigma,
     lambda_marginal_rvs,
     lambda_estimator,
-    spatial_estimator,
     empirical_p_values,
     plot_lambda_joint_heatmap,
     pvalue_to_sigma,
@@ -76,7 +75,6 @@ __all__ = [
     "lambda_marginal_pvalue_and_sigma",
     "lambda_marginal_rvs",
     "lambda_estimator",
-    "spatial_estimator",
     "empirical_p_values",
     "plot_lambda_joint_heatmap",
     "pvalue_to_sigma",

@@ -23,7 +23,7 @@ class Flare:
 
     Parameters
     ----------
-    n_events : int
+    n_flare : int
         Number of flare events to generate. Must be ``>= 1``: zero-event
         flares are forbidden by construction (filter at the caller, e.g.
         ``if n > 0: Flare(n, ...)``).
@@ -42,7 +42,7 @@ class Flare:
 
     Notes
     -----
-    Generated arrays (``RA``, ``Dec``, ``time``, ``exposure``) are
+    Generated arrays (``ra``, ``dec``, ``time``, ``exposure``) are
     initialised to ``None`` and populated by the ``generate_*`` /
     ``compute_directional_exposure`` methods, or in one go by
     :meth:`generate_in_window`.
@@ -50,7 +50,7 @@ class Flare:
 
     def __init__(
         self,
-        n_events: int,
+        n_flare: int,
         duration: Quantity,
         t0: Time,
         tf: Time,
@@ -59,14 +59,14 @@ class Flare:
         rng: np.random.Generator,
     ):
         
-        if not isinstance(n_events, int) or isinstance(n_events, bool):
-            raise TypeError("n_events must be a positive integer.")
-        if n_events < 1:
+        if not isinstance(n_flare, int) or isinstance(n_flare, bool):
+            raise TypeError("n_flare must be a positive integer.")
+        if n_flare < 1:
             # Zero-event flares carry no signal and force every downstream
             # consumer to handle a degenerate case (NaN exposures, empty
             # arrays, ambiguous `has_flare` semantics, etc.). They should be
             # filtered out by the caller, e.g. `if n > 0: Flare(n, ...)`.
-            raise ValueError("n_events must be >= 1; do not construct a Flare with 0 events.")
+            raise ValueError("n_flare must be >= 1; do not construct a Flare with 0 events.")
 
         if not isinstance(duration, u.Quantity):
             raise TypeError(
@@ -111,7 +111,7 @@ class Flare:
 
         self.rng = rng
 
-        self.n_events = int(n_events)
+        self.n_flare = int(n_flare)
         self.duration = float(duration_sec)  # seconds
 
         self.t0 = t0
@@ -123,8 +123,8 @@ class Flare:
         self.time_profile: str | None = None
 
         # Generated data
-        self.RA: np.ndarray | None = None
-        self.Dec: np.ndarray | None = None
+        self.ra: np.ndarray | None = None
+        self.dec: np.ndarray | None = None
         self.time: Time | None = None
         self.exposure: np.ndarray | None = None
 
@@ -135,7 +135,7 @@ class Flare:
     @property
     def has_coordinates(self) -> bool:
         """Return True if flare coordinates have been generated."""
-        return self.RA is not None and self.Dec is not None
+        return self.ra is not None and self.dec is not None
 
     # -------------------------------------------------------------------------
     # Low-level sampling / evaluation methods
@@ -159,23 +159,23 @@ class Flare:
 
     def _sample_gaussian_cluster(
         self,
-        n_events: int,
+        n_flare: int,
         sigma: float,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Sample `n_events` equatorial coordinates from a Gaussian cluster
+        Sample `n_flare` equatorial coordinates from a Gaussian cluster
         on the sphere around `self.centre`.
 
         Parameters
         ----------
-        n_events : int
+        n_flare : int
             Number of coordinates to draw.
         sigma : float
             Width of the cluster in degrees.
 
         Returns
         -------
-        RA, Dec : tuple[np.ndarray, np.ndarray]
+        ra, dec : tuple[np.ndarray, np.ndarray]
             Arrays of right ascension and declination in degrees.
         """
 
@@ -185,18 +185,18 @@ class Flare:
             frame="icrs",
         )
 
-        local_theta = self.rng.rayleigh(scale=sigma, size=n_events) * u.deg
-        local_azimuth = self.rng.uniform(0.0, 2.0 * np.pi, size=n_events) * u.rad
+        local_theta = self.rng.rayleigh(scale=sigma, size=n_flare) * u.deg
+        local_azimuth = self.rng.uniform(0.0, 2.0 * np.pi, size=n_flare) * u.rad
 
         event_coords = center.directional_offset_by(local_azimuth, local_theta)
 
-        RA = event_coords.ra.deg.astype(float, copy=False)
-        Dec = event_coords.dec.deg.astype(float, copy=False)
-        return RA, Dec
+        ra = event_coords.ra.deg.astype(float, copy=False)
+        dec = event_coords.dec.deg.astype(float, copy=False)
+        return ra, dec
     
-    def _sample_uniform_times(self, n_events: int, start: Time | None = None) -> Time:
+    def _sample_uniform_times(self, n_flare: int, start: Time | None = None) -> Time:
         """
-        Sample `n_events` times uniformly inside one flare interval.
+        Sample `n_flare` times uniformly inside one flare interval.
 
         If `start` is not given, a flare start is drawn uniformly in
         [self.t0, self.tf - self.duration].
@@ -205,7 +205,7 @@ class Flare:
             start = self._draw_flare_start()
 
         # Draw time offsets inside the flare duration
-        offsets_sec = self.rng.uniform(0.0, self.duration, size=n_events)
+        offsets_sec = self.rng.uniform(0.0, self.duration, size=n_flare)
 
         # Convert offsets into absolute event times
         return start + TimeDelta(offsets_sec, format="sec")
@@ -281,7 +281,7 @@ class Flare:
            c. draw uniform candidate times within the flare interval,
            d. apply Bernoulli detection thinning via
               :meth:`ExposureModel.acceptance_mask`,
-        3. accumulate accepted events until exactly ``self.n_events`` are
+        3. accumulate accepted events until exactly ``self.n_flare`` are
            reached, then trim,
         4. compute directional exposure values for the kept times via
            :meth:`compute_directional_exposure` evaluated at ``window.centre``.
@@ -308,13 +308,13 @@ class Flare:
         ValueError
             If ``sigma <= 0``.
         RuntimeError
-            If the rejection loop cannot reach ``self.n_events`` accepted
-            events within ``1000 * self.n_events`` candidate draws (e.g.
+            If the rejection loop cannot reach ``self.n_flare`` accepted
+            events within ``1000 * self.n_flare`` candidate draws (e.g.
             very small window combined with very low acceptance).
 
         Notes
         -----
-        Sets ``self.RA``, ``self.Dec``, ``self.time``, ``self.exposure``
+        Sets ``self.ra``, ``self.dec``, ``self.time``, ``self.exposure``
         and tags ``self.spatial_profile = "gaussian_spherical"``,
         ``self.time_profile = "uniform_thinned"``.
         """
@@ -324,7 +324,7 @@ class Flare:
         if sigma <= 0:
             raise ValueError("sigma must be > 0.")
 
-        target = self.n_events
+        target = self.n_flare
 
         ra_acc: list[np.ndarray] = []
         dec_acc: list[np.ndarray] = []
@@ -346,7 +346,7 @@ class Flare:
             if n_drawn > max_draws:
                 raise RuntimeError(
                     "Could not generate enough events inside the window before "
-                    "reaching max_draws = 1000 * self.n_events."
+                    "reaching max_draws = 1000 * self.n_flare."
                 )
 
             # --- Step 1: Spatial Sampling ---
@@ -381,8 +381,8 @@ class Flare:
 
 
         # Clean up and slice to exact target
-        self.RA = np.concatenate(ra_acc)[:target]
-        self.Dec = np.concatenate(dec_acc)[:target]
+        self.ra = np.concatenate(ra_acc)[:target]
+        self.dec = np.concatenate(dec_acc)[:target]
         self.time = Time(
             np.concatenate([t.jd for t in time_acc])[:target],
             format="jd",

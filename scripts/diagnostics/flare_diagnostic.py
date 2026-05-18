@@ -1,3 +1,16 @@
+"""
+Flare visual / inspection diagnostic.
+
+Generates one ``Flare`` realisation inside a sky window, prints a text
+summary, saves the underlying arrays to ``.npz`` and produces a small
+collection of quick-look plots (sky heatmap, time histogram, exposure
+distribution).
+
+This script does NOT assert correctness — it is intended for human
+inspection.  Pass/fail checks of the Flare contract live in
+``tests/test_flare.py``.
+"""
+
 from pathlib import Path
 
 import numpy as np
@@ -6,20 +19,25 @@ from astropy.time import Time
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 
-from spacetimecorr import Flare
-from spacetimecorr import SkyWindow
-from spacetimecorr import ExposureModel
-from spacetimecorr import RNGManager
-from spacetimecorr import Observatory
+from spacetimecorr import (
+    ExposureModel,
+    Flare,
+    Observatory,
+    RNGManager,
+    SkyWindow,
+)
+
 
 def build_output_dir() -> Path:
-    # ------------------------------------------------------------------
-    # Output directory
-    # ------------------------------------------------------------------
     project_root = Path(__file__).resolve().parents[2]
     outdir = project_root / "output" / "diagnostics" / "flare"
     outdir.mkdir(parents=True, exist_ok=True)
     return outdir
+
+
+# -------------------------------------------------------------------------
+# Text summary
+# -------------------------------------------------------------------------
 
 
 def flare_summary_text(flare: Flare, window: SkyWindow, max_rows: int = 10) -> str:
@@ -29,17 +47,19 @@ def flare_summary_text(flare: Flare, window: SkyWindow, max_rows: int = 10) -> s
     lines.append("FLARE DIAGNOSTIC SUMMARY")
     lines.append("=" * 70)
 
-    lines.append(f"n_events stored          : {flare.n_events}")
+    lines.append(f"n_flare                  : {flare.n_flare}")
     lines.append(f"spatial_profile          : {flare.spatial_profile}")
     lines.append(f"time_profile             : {flare.time_profile}")
+    lines.append(f"flare_type               : {flare.flare_type}")
     lines.append(f"centre [RA, Dec] deg     : {flare.centre}")
     lines.append(f"duration [s]             : {flare.duration}")
     lines.append(f"window centre [RA, Dec]  : {window.centre}")
+    lines.append(f"window radius [deg]      : {window.radius}")
 
     lengths = {
-        "RA": None if flare.RA is None else len(flare.RA),
-        "Dec": None if flare.Dec is None else len(flare.Dec),
-        "time": None if flare.time is None else len(flare.time),
+        "ra":       None if flare.ra       is None else len(flare.ra),
+        "dec":      None if flare.dec      is None else len(flare.dec),
+        "time":     None if flare.time     is None else len(flare.time),
         "exposure": None if flare.exposure is None else len(flare.exposure),
     }
 
@@ -48,19 +68,19 @@ def flare_summary_text(flare: Flare, window: SkyWindow, max_rows: int = 10) -> s
     for k, v in lengths.items():
         lines.append(f"  {k:12s}: {v}")
 
-    if flare.RA is None or flare.Dec is None or flare.time is None:
+    if flare.ra is None or flare.dec is None or flare.time is None:
         lines.append("")
         lines.append("Flare is not fully populated.")
         return "\n".join(lines)
 
-    inside = window.contains(flare.RA, flare.Dec)
+    inside = window.contains(flare.ra, flare.dec)
     lines.append("")
     lines.append(f"All events inside window?: {bool(np.all(inside))}")
-    lines.append(f"Events inside window     : {np.count_nonzero(inside)} / {len(inside)}")
+    lines.append(f"Events inside window     : {int(np.count_nonzero(inside))} / {len(inside)}")
 
     tmin = flare.time.min()
     tmax = flare.time.max()
-    dt_sec = (tmax - tmin).to_value(u.s) if len(flare.time) > 0 else 0.0
+    dt_sec = (tmax - tmin).to_value(u.s)
     in_obs = bool(np.all((flare.time >= flare.t0) & (flare.time <= flare.tf)))
 
     lines.append("")
@@ -78,19 +98,19 @@ def flare_summary_text(flare: Flare, window: SkyWindow, max_rows: int = 10) -> s
         lines.append(f"  max                    : {np.max(flare.exposure):.6g}")
         lines.append(f"  mean                   : {np.mean(flare.exposure):.6g}")
 
-    nshow = min(max_rows, len(flare.RA))
+    nshow = min(max_rows, len(flare.ra))
     lines.append("")
     lines.append(f"First {nshow} events:")
     lines.append(" idx |      RA [deg] |     Dec [deg] | time | exposure")
     lines.append("-" * 90)
 
     for i in range(nshow):
-        exp_i = None if flare.exposure is None else flare.exposure[i]
+        exp_i = None if flare.exposure is None else float(flare.exposure[i])
         exp_txt = "None" if exp_i is None else f"{exp_i:.6g}"
         lines.append(
             f"{i:4d} | "
-            f"{flare.RA[i]:13.6f} | "
-            f"{flare.Dec[i]:13.6f} | "
+            f"{flare.ra[i]:13.6f} | "
+            f"{flare.dec[i]:13.6f} | "
             f"{flare.time[i].isot} | "
             f"{exp_txt}"
         )
@@ -98,19 +118,23 @@ def flare_summary_text(flare: Flare, window: SkyWindow, max_rows: int = 10) -> s
     return "\n".join(lines)
 
 
+# -------------------------------------------------------------------------
+# Save arrays
+# -------------------------------------------------------------------------
+
+
 def save_flare_arrays(flare: Flare, outdir: Path, stem: str = "flare") -> Path:
-    """Save flare arrays to a compressed NumPy file."""
     path = outdir / f"{stem}_arrays.npz"
 
     np.savez_compressed(
         path,
-        RA=np.array([]) if flare.RA is None else flare.RA,
-        Dec=np.array([]) if flare.Dec is None else flare.Dec,
+        ra=np.array([]) if flare.ra is None else flare.ra,
+        dec=np.array([]) if flare.dec is None else flare.dec,
         time_isot=np.array([]) if flare.time is None else np.array(flare.time.isot),
         time_jd=np.array([]) if flare.time is None else flare.time.jd,
         exposure=np.array([]) if flare.exposure is None else flare.exposure,
         centre=flare.centre,
-        n_events=flare.n_events,
+        n_flare=flare.n_flare,
         duration_sec=flare.duration,
         spatial_profile="" if flare.spatial_profile is None else flare.spatial_profile,
         time_profile="" if flare.time_profile is None else flare.time_profile,
@@ -118,16 +142,20 @@ def save_flare_arrays(flare: Flare, outdir: Path, stem: str = "flare") -> Path:
     return path
 
 
-def save_flare_plots(flare: Flare, window: SkyWindow, outdir: Path, stem: str = "flare") -> list[Path]:
-    """Save quick-look diagnostic plots."""
-    if flare.RA is None or flare.Dec is None or flare.time is None:
+# -------------------------------------------------------------------------
+# Plots
+# -------------------------------------------------------------------------
+
+
+def save_flare_plots(flare: Flare, window: SkyWindow, outdir: Path) -> list[Path]:
+    if flare.ra is None or flare.dec is None or flare.time is None:
         raise ValueError("Flare must be generated before plotting.")
 
     saved = []
 
-    # Sky positions
-    ra = np.asarray(flare.RA)
-    dec = np.asarray(flare.Dec)
+    # Sky positions (KDE heatmap)
+    ra = np.asarray(flare.ra)
+    dec = np.asarray(flare.dec)
     fig, ax = plt.subplots(figsize=(6, 5))
     xmin, xmax = ra.min(), ra.max()
     ymin, ymax = dec.min(), dec.max()
@@ -153,21 +181,21 @@ def save_flare_plots(flare: Flare, window: SkyWindow, outdir: Path, stem: str = 
     ax.set_aspect("equal", adjustable="box")
     ax.legend()
     fig.tight_layout()
-    p = outdir / f"sky_heatmap.png"
+    p = outdir / "sky_heatmap.png"
     fig.savefig(p, dpi=150, bbox_inches="tight")
     plt.close(fig)
     saved.append(p)
 
     # Time histogram
     plt.figure(figsize=(6, 4))
-    t0 = flare.time.min()
-    offsets = (flare.time - t0).to_value(u.h)
+    t_ref = flare.time.min()
+    offsets = (flare.time - t_ref).to_value(u.h)
     plt.hist(offsets, bins="fd", alpha=0.8, edgecolor="black", linewidth=0.8)
     plt.xlabel("Time offset from first accepted event [h]")
     plt.ylabel("Counts")
     plt.title("Accepted event times")
     plt.tight_layout()
-    p = outdir / f"time_hist.png"
+    p = outdir / "time_hist.png"
     plt.savefig(p, dpi=150, bbox_inches="tight")
     plt.close()
     saved.append(p)
@@ -180,12 +208,12 @@ def save_flare_plots(flare: Flare, window: SkyWindow, outdir: Path, stem: str = 
         plt.ylabel("Counts")
         plt.title("Accepted event exposure")
         plt.tight_layout()
-        p = outdir / f"exposure_hist.png"
+        p = outdir / "exposure_hist.png"
         plt.savefig(p, dpi=150, bbox_inches="tight")
         plt.close()
         saved.append(p)
 
-        # Exposure vs time
+        # Exposure vs time (point density)
         plt.figure(figsize=(6, 4))
         x = np.asarray(offsets)
         y = np.asarray(flare.exposure)
@@ -195,16 +223,21 @@ def save_flare_plots(flare: Flare, window: SkyWindow, outdir: Path, stem: str = 
         x, y, z = x[idx], y[idx], z[idx]
         sc = plt.scatter(x, y, c=z, s=20, alpha=0.8)
         plt.colorbar(sc, label="Point density")
-        plt.xlabel("Time offset from first accepted event [s]")
+        plt.xlabel("Time offset from first accepted event [h]")
         plt.ylabel("Directional exposure")
         plt.title("Accepted events exposure vs time")
         plt.tight_layout()
-        p = outdir / f"exposure_vs_time.png"
+        p = outdir / "exposure_vs_time.png"
         plt.savefig(p, dpi=150, bbox_inches="tight")
         plt.close()
         saved.append(p)
 
     return saved
+
+
+# -------------------------------------------------------------------------
+# Runner
+# -------------------------------------------------------------------------
 
 
 def run_flare_diagnostic(
@@ -215,9 +248,6 @@ def run_flare_diagnostic(
     max_rows: int = 10,
     stem: str = "flare",
 ) -> None:
-    """
-    Generate one flare realization, print diagnostics, and save outputs.
-    """
     outdir = build_output_dir()
 
     flare.generate_in_window(window=window, sigma=sigma, efficiency=efficiency)
@@ -229,7 +259,7 @@ def run_flare_diagnostic(
     summary_path.write_text(summary, encoding="utf-8")
 
     arrays_path = save_flare_arrays(flare, outdir=outdir, stem=stem)
-    plot_paths = save_flare_plots(flare, window=window, outdir=outdir, stem=stem)
+    plot_paths = save_flare_plots(flare, window=window, outdir=outdir)
 
     print("\nSaved diagnostic files:")
     print(f"  Summary : {summary_path}")
@@ -238,9 +268,10 @@ def run_flare_diagnostic(
         print(f"  Plot    : {p}")
 
 
-# ------------------------------------------------------------------
-# EXAMPLE USAGE
-# ------------------------------------------------------------------
+# -------------------------------------------------------------------------
+# Example usage
+# -------------------------------------------------------------------------
+
 
 if __name__ == "__main__":
 
@@ -248,43 +279,25 @@ if __name__ == "__main__":
     rng_flare = rng_manager.get("flare")
     rng_exposure = rng_manager.get("exposure")
 
-    # Observation interval
     t0 = Time("2025-01-01T00:00:00")
     tf = Time("2025-01-14T00:00:00")
 
-    # Flare parameters
-    duration = 3 * u.day               # 1 day
-    n_events = 100000
-    sigma = 1.5                        # deg
+    duration = 3 * u.day
+    n_flare = 10000
+    sigma = 1.5  # deg
 
-    # Sky window parameters (RA [deg], Dec [deg], radius [deg])
     centre = np.array([30.0, 0.0])
     radius = 2.0
 
-    # Pierre Auger Observatory coordinates
-    latitude_pa = -35.15
-    longitude_pa = -69.15
-    altitude_pa = 1425
-
-    window = SkyWindow(
-        centre=centre,
-        radius=radius,
-    )
-
-    observatory = Observatory(
-        latitude=latitude_pa,
-        longitude=longitude_pa,
-        altitude=altitude_pa,
-    )
+    # Pierre Auger Observatory
+    observatory = Observatory(latitude=-35.15, longitude=-69.15, altitude=1425.0)
+    window = SkyWindow(centre=centre, radius=radius)
     exposure_model = ExposureModel(
-        observatory=observatory,
-        t0=t0,
-        tf=tf,
-        rng=rng_exposure,
+        observatory=observatory, t0=t0, tf=tf, rng=rng_exposure,
     )
 
     flare = Flare(
-        n_events=n_events,
+        n_flare=n_flare,
         duration=duration,
         t0=t0,
         tf=tf,

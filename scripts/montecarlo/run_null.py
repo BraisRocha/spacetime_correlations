@@ -2,40 +2,44 @@
 Run null-hypothesis (pure isotropy) simulations.
 
 This script:
-    - generates isotropic event samples within a sky window,
+    - generates isotropic event samples directly inside a sky window via
+      ``EventSample.in_window``,
     - computes the Lambda estimator,
-    - computes p-values using two different methods:
+    - computes p-values using two methods:
         - p-value(x | n),
         - p-value(x),
-    - computes the spatial estimator.
+    - computes the spatial p-value from the realised in-window count.
+
+Pipeline note
+-------------
+Each trial draws ``n_sample ~ Poisson(expected_n)`` directly inside the
+window (exposure-weighted), so the spatial p-value
+``Poisson.sf(n_sample - 1, expected_n)`` is uniform on ``[0, 1]`` by
+construction (Poisson-SF of a Poisson-drawn count).
 """
 
 from pathlib import Path
 
 import astropy.units as u
 import numpy as np
-from astropy.time import Time
-from tqdm import tqdm
 import scipy.stats as scp
 import time
+
+from astropy.time import Time
+from tqdm import tqdm
 
 import spacetimecorr as stc
 from spacetimecorr.io import setup_logger, make_run_dir, write_metadata
 
-def main(seed: int) -> None:
-    """
-    Generate isotropic event samples and compute statistical parameters.
 
-    Failed simulation attempts are logged and replaced by fresh random
-    attempts until n_simulations successful runs are collected, or until
-    max_attempts is reached.
-    """
+def main(seed: int) -> None:
+    """Generate background-only in-window samples and compute Lambda + p-values."""
     start_time = time.time()
 
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_events = int(1e5)
+    n_total = int(1e5)
     n_simulations = int(1e4)
     max_attempts = int(3 * n_simulations)
 
@@ -68,10 +72,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Logger and metadata
     # ------------------------------------------------------------------
-    logger = setup_logger(
-        log_path=outdir / "run.log",
-        name="null",
-    )
+    logger = setup_logger(log_path=outdir / "run.log", name="null")
 
     logger.info("Starting null run")
     logger.info("Simulation ID: %s", sim_ID)
@@ -86,74 +87,64 @@ def main(seed: int) -> None:
     rng_exposure = rng_manager.get("exposure")
 
     window = stc.SkyWindow(centre=centre, radius=radius)
-
     observatory = stc.Observatory(
-        latitude=latitude_pa,
-        longitude=longitude_pa,
-        altitude=altitude_pa,
+        latitude=latitude_pa, longitude=longitude_pa, altitude=altitude_pa,
+    )
+    exposure_model = stc.ExposureModel(
+        observatory=observatory, t0=t0, tf=tf, rng=rng_exposure,
     )
 
-    exposure_model = stc.ExposureModel(
-        observatory=observatory,
-        t0=t0,
-        tf=tf,
-        rng=rng_exposure,
-    )
+    # Exposure-weighted expected count in the window. Fixed across trials.
+    expected_n = window.expected_n_in_window(n_total, exposure_model)
 
     # ------------------------------------------------------------------
     # Storage
     # ------------------------------------------------------------------
     lambda_mc = []
-
-    n_events_window = []
-
-    expected_n = window.expected_n_in_window(n_events)
+    n_sample_window = []
 
     n_success = 0
     n_failures = 0
     attempt = 0
 
-    # Progress bar tracks successful simulations, not attempts
     pbar = tqdm(total=n_simulations, desc="Successful simulations")
 
     # ------------------------------------------------------------------
     # Main simulation loop
     # ------------------------------------------------------------------
+    # Only stochastic-rejection failures (RuntimeError) are retried;
+    # configuration/contract violations (ValueError) propagate and crash
+    # the run so the operator notices.
     while n_success < n_simulations and attempt < max_attempts:
         attempt += 1
 
         try:
-            parent_sample = stc.EventSample(
-                n_events=n_events,
+            sample = stc.EventSample.in_window(
+                window=window,
+                n_total=n_total,
+                exposure_model=exposure_model,
                 t0=t0,
                 tf=tf,
                 rng=rng_events,
             )
-            parent_sample.assign_coordinates()
-
-            subsample = parent_sample.select_subsample(window=window)
-            subsample.assign_directional_exposure(
-                window=window,
-                exposure_model=exposure_model,
+            sample.assign_directional_exposure(
+                window=window, exposure_model=exposure_model,
             )
 
-            # Monte Carlo lambda estimator
-            lambda_stat_mc = stc.lambda_estimator(sample=subsample)
-            n_events_window.append(subsample.n_events)
+            lambda_stat_mc = stc.lambda_estimator(sample=sample)
 
             lambda_mc.append(lambda_stat_mc)
+            n_sample_window.append(sample.n_sample)
 
             n_success += 1
             pbar.update(1)
 
-        except Exception:
+        except RuntimeError:
             n_failures += 1
             logger.exception(
                 "Simulation attempt %d failed "
                 "(successes=%d, failures=%d)",
-                attempt,
-                n_success,
-                n_failures,
+                attempt, n_success, n_failures,
             )
             continue
 
@@ -161,9 +152,7 @@ def main(seed: int) -> None:
 
     logger.info(
         "Run finished: attempts=%d, successes=%d, failures=%d",
-        attempt,
-        n_success,
-        n_failures,
+        attempt, n_success, n_failures,
     )
 
     # ------------------------------------------------------------------
@@ -171,8 +160,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     if n_success == 0:
         raise RuntimeError(
-            "All simulation attempts failed. "
-            f"See log file: {outdir / 'run.log'}"
+            f"All simulation attempts failed. See log file: {outdir / 'run.log'}"
         )
 
     if n_success < n_simulations:
@@ -189,11 +177,11 @@ def main(seed: int) -> None:
     # Convert to arrays and compute parameters
     # ------------------------------------------------------------------
     lambda_mc = np.array(lambda_mc)
-    n_events_window = np.array(n_events_window)
+    n_sample_window = np.array(n_sample_window)
 
-    p_values_conditional = stc.lambda_conditional_sf(lambda_mc, n_events_window)
+    p_values_conditional = stc.lambda_conditional_sf(lambda_mc, n_sample_window)
     p_values_marginal = stc.lambda_marginal_sf(lambda_mc, expected_n)
-    p_values_spatial = scp.poisson.sf(n_events_window -1, expected_n)
+    p_values_spatial = scp.poisson.sf(n_sample_window - 1, expected_n)
 
     # ------------------------------------------------------------------
     # Save outputs and metadata
@@ -204,7 +192,7 @@ def main(seed: int) -> None:
         p_values_conditional=p_values_conditional,
         p_values_marginal=p_values_marginal,
         p_values_spatial=p_values_spatial,
-        n_events_window=n_events_window,
+        n_sample_window=n_sample_window,
     )
 
     write_metadata(
@@ -213,7 +201,7 @@ def main(seed: int) -> None:
             "script": Path(__file__).name,
             "run_code": "null",
             "seed": seed,
-            "n_events": n_events,
+            "n_total": n_total,
             "expected_n": expected_n,
             "n_simulations_requested": n_simulations,
             "n_simulations_successful": n_success,
@@ -230,10 +218,9 @@ def main(seed: int) -> None:
     )
 
     logger.info("Saved results to %s", outdir / "results.npz")
-
-    end_time = time.time()
-    elapsed = end_time - start_time
+    elapsed = time.time() - start_time
     logger.info(f"Simulation finished in {elapsed:.2f} seconds")
+
 
 if __name__ == "__main__":
     seed = 42

@@ -5,10 +5,10 @@ grid from run_grid_p50.py.
 Color encodes the Gaussian-equivalent significance (in sigma) of the
 median (50th percentile) test statistic stored per grid cell.
 
-Left panel  - Poisson counting test: significance of n_events_window_p50
-              under N ~ Poisson(mu_window).
+Left panel  - Poisson counting test: significance of n_sample_window_p50
+              under N ~ Poisson(expected_n).
 Right panel - Lambda test: significance of lambda_flare_p50 under the
-              marginal Lambda distribution with background mu_window.
+              marginal Lambda distribution with background expected_n.
 """
 import json
 from pathlib import Path
@@ -35,16 +35,16 @@ if RC_FILE.exists():
 # Significance computations
 # ------------------------------------------------------------------
 
-def _sigma_poisson(n_p50: np.ndarray, mu_window: float) -> np.ndarray:
-    """Significance (sigma) of observing >= n_p50 under Poisson(mu_window)."""
-    p = scp.poisson.sf(np.asarray(n_p50) - 1, mu_window)
+def _sigma_poisson(n_p50: np.ndarray, expected_n: float) -> np.ndarray:
+    """Significance (sigma) of observing >= n_p50 under Poisson(expected_n)."""
+    p = scp.poisson.sf(np.asarray(n_p50) - 1, expected_n)
     return pvalue_to_sigma(p)
 
 
-def _sigma_lambda(lambda_p50: np.ndarray, mu_window: float) -> np.ndarray:
-    """Significance (sigma) of lambda_p50 under marginal Lambda(mu_window)."""
+def _sigma_lambda(lambda_p50: np.ndarray, expected_n: float) -> np.ndarray:
+    """Significance (sigma) of lambda_p50 under marginal Lambda(expected_n)."""
     flat = np.asarray(lambda_p50, dtype=float).ravel()
-    out = np.array([lambda_marginal_sigma(float(x), mu_window) for x in flat])
+    out = np.array([lambda_marginal_sigma(float(x), expected_n) for x in flat])
     return out.reshape(np.asarray(lambda_p50).shape)
 
 
@@ -58,10 +58,10 @@ def _load(run_dir: Path) -> tuple:
     Returns
     -------
     lam_grid       : (n_intensities, n_durations) median Lambda
-    n_grid         : (n_intensities, n_durations) median n_events in window
+    n_grid         : (n_intensities, n_durations) median n_sample in window
     intensities_pct: (n_intensities,) flare intensity in percent
     x_log          : (n_durations,) log10(duration_days / T_obs_days)
-    mu_window      : float, expected background events in window
+    expected_n     : float, expected background events in window
     T_obs_years    : float
     """
     data_dir = run_dir / "data" if (run_dir / "data").exists() else run_dir
@@ -69,7 +69,7 @@ def _load(run_dir: Path) -> tuple:
 
     with (data_dir / "metadata_job0.json").open() as fh:
         meta = json.load(fh)
-    mu_window = float(meta["mu_window"])
+    expected_n = float(meta["expected_n"])
     T_obs_days = float(meta["time"]["T_obs_days"])
     T_obs_years = T_obs_days / 365.25
 
@@ -86,12 +86,12 @@ def _load(run_dir: Path) -> tuple:
         j = np.searchsorted(durations, d)
         i = np.searchsorted(intensities, f)
         lam_grid[i, j] = data["lambda_flare_p50"][idx]
-        n_grid[i, j] = data["n_events_window_p50"][idx]
+        n_grid[i, j] = data["n_sample_window_p50"][idx]
 
     x_log = np.log10(durations / T_obs_days)
     intensities_pct = intensities * 100.0
 
-    return lam_grid, n_grid, intensities_pct, x_log, mu_window, T_obs_years
+    return lam_grid, n_grid, intensities_pct, x_log, expected_n, T_obs_years
 
 
 # ------------------------------------------------------------------
@@ -151,12 +151,12 @@ def main(run_dir: str | Path, output_dir: str | Path) -> None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    lam_grid, n_grid, intensities_pct, x_log, mu_window, T_obs_years = (
+    lam_grid, n_grid, intensities_pct, x_log, expected_n, T_obs_years = (
         _load(run_dir)
     )
 
-    sig_lam_grid = _sigma_lambda(lam_grid, mu_window)
-    sig_poi_grid = _sigma_poisson(n_grid, mu_window)
+    sig_lam_grid = _sigma_lambda(lam_grid, expected_n)
+    sig_poi_grid = _sigma_poisson(n_grid, expected_n)
 
     # Cell edges for pcolormesh: midpoints between centres, with
     # outer edges extended by half a cell.
@@ -248,7 +248,7 @@ def main(run_dir: str | Path, output_dir: str | Path) -> None:
     cbar.ax.tick_params(direction="out")
 
     fig.suptitle(
-        rf"$\mu = {mu_window:.0f}$ events, "
+        rf"$\mu = {expected_n:.0f}$ events, "
         rf"$T_{{\rm obs}} = {int(T_obs_years)}\,$years"
     )
 

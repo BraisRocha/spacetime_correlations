@@ -109,7 +109,7 @@ def _load_run(run_dir: Path) -> dict:
     Load ``results.npz`` and ``metadata.json`` from a single run directory.
 
     Returns a dict with keys: ``lambda_bkg``, ``lambda_flare``,
-    ``intensities``, ``duration_days``, ``mu_window``, ``T_obs_days``.
+    ``intensities``, ``duration_days``, ``expected_n``, ``T_obs_days``.
     """
     run_dir = Path(run_dir)
     results = np.load(run_dir / "results.npz")
@@ -121,7 +121,7 @@ def _load_run(run_dir: Path) -> dict:
         "lambda_flare": results["lambda_flare"],
         "intensities": np.asarray(meta["flare"]["intensity"], dtype=float),
         "duration_days": float(meta["flare"]["duration_days"]),
-        "mu_window": float(meta["mu_window"]),
+        "expected_n": float(meta["expected_n"]),
         "T_obs_days": float(meta["time"]["T_obs_days"]),
     }
 
@@ -170,12 +170,12 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
                 f"{intensities} vs {r['intensities']}."
             )
 
-    mu_window = runs[0]["mu_window"]
+    expected_n = runs[0]["expected_n"]
     T_obs_days = runs[0]["T_obs_days"]
     for r in runs[1:]:
-        if not np.isclose(r["mu_window"], mu_window):
+        if not np.isclose(r["expected_n"], expected_n):
             raise ValueError(
-                f"Runs have different mu_window: {mu_window} vs {r['mu_window']}."
+                f"Runs have different expected_n: {expected_n} vs {r['expected_n']}."
             )
         if not np.isclose(r["T_obs_days"], T_obs_days):
             raise ValueError(
@@ -229,8 +229,8 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
 
     axes[0].set_ylabel("Prob. density")
 
-    lam_3sigma = lambda_marginal_isigma(3, mu_window)
-    lam_5sigma = lambda_marginal_isigma(5, mu_window)
+    lam_3sigma = lambda_marginal_isigma(3, expected_n)
+    lam_5sigma = lambda_marginal_isigma(5, expected_n)
     for ax in axes:
         ax.axvline(lam_3sigma, color="0.3", linewidth=0.8, linestyle=":")
         ax.axvline(lam_5sigma, color="0.3", linewidth=0.8, linestyle="-.")
@@ -271,7 +271,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
     cbar.ax.tick_params(direction="out")
 
     fig.suptitle(
-        rf"$\mu = {mu_window:.1f}$ events, "
+        rf"$\mu = {expected_n:.1f}$ events, "
         rf"$T_{{\rm obs}} = {int(T_obs_years)}\,$years"
     )
 
