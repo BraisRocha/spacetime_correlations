@@ -629,13 +629,30 @@ class EventSample:
 
     def inject_flare(self, flare: "Flare") -> None:
         """
-        Inject a fully-generated flare into the current sample in place.
+        Inject a fully-generated flare into the current sample, in place.
 
-        ``flare.n_flare`` event slots are chosen uniformly at random
-        (without replacement) from the existing events; their ``ra``,
-        ``dec`` and ``exposure`` are overwritten by the flare values, and
-        a boolean ``flare_mask`` is recorded so that downstream code can
-        identify the injected events.
+        The flare events are **appended** to the sample while a
+        Poisson-distributed number of existing background events are
+        removed.  This reproduces the statistics of the legacy
+        "full-sky → carve window" pipeline in the new per-window
+        pipeline: when a flare overwrote ``n_flare`` random slots in a
+        full-sky parent of size ``n_total``, on average
+        ``p * n_flare`` of them landed inside the window and effectively
+        masked existing in-window background events.  The probability
+        that one event lies inside the window is::
+
+            p = expected_n / n_total
+
+        and the number of background events stochastically masked by
+        the flare follows::
+
+            n_removed ~ Poisson(p * n_flare)
+
+        clipped at ``n_sample`` (one cannot remove more background than
+        is present).  After injection::
+
+            n_sample_after = n_sample_before - n_removed + n_flare
+            flare_mask[-n_flare:] = True       # flare events at the tail
 
         Parameters
         ----------
@@ -651,15 +668,23 @@ class EventSample:
             If the sample already contains an injected flare.
         ValueError
             If ``self`` has no coordinates, ``flare`` is not fully
-            generated, or ``flare.n_flare`` exceeds ``self.n_sample``.
+            generated, ``expected_n`` is unset, or ``n_total <= 0``.
 
         Notes
         -----
-        - If ``self.exposure`` is ``None`` it is allocated as ``NaN`` and
-          only the flare slots are filled. The caller is responsible for
-          subsequently calling :meth:`assign_directional_exposure` to fill
-          the remaining background slots.
-        - Sample size (``self.n_sample``) is preserved by construction.
+        - If ``self.exposure`` is ``None`` it is allocated as ``NaN`` for
+          the surviving background slots and filled with
+          ``flare.exposure`` at the flare slots. The caller is
+          responsible for a subsequent
+          :meth:`assign_directional_exposure` to populate the background
+          slots.
+        - If ``self.exposure`` was already populated, the surviving
+          background entries keep their exposure values and the flare
+          exposure is appended unchanged.
+        - The Poisson model for ``n_removed`` is the small-``p`` /
+          large-``n_flare`` approximation of the underlying
+          Hypergeometric draw.  It is accurate when the window covers
+          a small fraction of the sky, which is the regime of interest.
         """
         from .flare import Flare
 
@@ -678,25 +703,58 @@ class EventSample:
                 "Coordinates and exposure must be computed before injection."
             )
 
-        if flare.n_flare > self.n_sample:
+        if self.expected_n is None:
             raise ValueError(
-                "Cannot inject flare: flare has more events than the sample."
+                "Sample expected_n is not set; cannot determine the "
+                "background-overlap probability used for flare thinning."
             )
 
-        idx = self.rng.choice(self.n_sample, size=flare.n_flare, replace=False)
+        if self.n_total <= 0:
+            raise ValueError(
+                "Sample n_total must be > 0 for flare injection."
+            )
 
-        self.ra[idx] = flare.ra
-        self.dec[idx] = flare.dec
+        # Probability that a single full-sky event lies inside the window.
+        p_in_window = float(self.expected_n) / float(self.n_total)
 
-        # Check if an exposure array already exists
+        # Number of existing in-window background events the flare would
+        # have stochastically masked in the legacy full-sky pipeline.
+        # Clipped at n_sample (cannot remove more events than exist).
+        mu_removed = p_in_window * flare.n_flare
+        n_removed = int(self.rng.poisson(mu_removed))
+        n_removed = min(n_removed, self.n_sample)
+
+        if n_removed > 0:
+            remove_idx = self.rng.choice(
+                self.n_sample, size=n_removed, replace=False,
+            )
+            keep_mask = np.ones(self.n_sample, dtype=bool)
+            keep_mask[remove_idx] = False
+        else:
+            keep_mask = np.ones(self.n_sample, dtype=bool)
+
+        # Surviving background + appended flare events
+        new_ra = np.concatenate([self.ra[keep_mask], flare.ra])
+        new_dec = np.concatenate([self.dec[keep_mask], flare.dec])
+
         if self.exposure is None:
-            self.exposure = np.full(self.n_sample, np.nan, dtype=float)
+            new_exposure = np.full(new_ra.size, np.nan, dtype=float)
+            new_exposure[-flare.n_flare:] = flare.exposure
+        else:
+            new_exposure = np.concatenate(
+                [self.exposure[keep_mask], flare.exposure]
+            )
 
-        self.exposure[idx] = flare.exposure
+        # Flare mask: True for the appended flare events at the tail.
+        new_flare_mask = np.zeros(new_ra.size, dtype=bool)
+        new_flare_mask[-flare.n_flare:] = True
 
-        self.flare_mask = np.zeros(self.n_sample, dtype=bool)
-        self.flare_mask[idx] = True
+        self.ra = new_ra
+        self.dec = new_dec
+        self.exposure = new_exposure
+        self.flare_mask = new_flare_mask
         self.flare_type = flare.flare_type
+        self.n_sample = int(new_ra.size)
 
     # -------------------------------------------------------------------------
     # Public skymap / visualization interface

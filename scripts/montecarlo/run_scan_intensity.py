@@ -36,12 +36,12 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_total = int(1e5)
+    n_total = int(2e5)
     n_simulations = int(1e4)
     max_attempts = int(3 * n_simulations)
 
     # Observation interval
-    T_obs = 10 * u.year
+    T_obs = 1 * u.year
     t0 = Time("2013-01-01T00:00:00", scale="utc")
     tf = t0 + T_obs
 
@@ -55,7 +55,7 @@ def main(seed: int) -> None:
     altitude_pa = 1425
 
     # Flare parameters
-    flare_duration = 30 * u.day
+    flare_duration = 1 * u.day
     flare_sigma = 1.0  # deg
     flare_intensity = np.array([0.1, 0.2, 0.3, 0.4, 0.5])  # S/N ratio
 

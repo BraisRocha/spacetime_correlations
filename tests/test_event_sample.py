@@ -358,14 +358,103 @@ def generated_flare(window, exposure_model, t0, tf, rng_manager):
     return flare
 
 
-def test_inject_flare_preserves_n_sample(window, exposure_model, t0, tf, rng, generated_flare):
+def test_inject_flare_grows_n_sample(window, exposure_model, t0, tf, rng, generated_flare):
+    """n_sample = n_before - n_removed + n_flare; with small window and small
+    flare, n_removed is typically 0 or 1 so n_sample almost always grows."""
     s = EventSample.in_window(
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
     n_before = s.n_sample
     s.inject_flare(generated_flare)
-    assert s.n_sample == n_before
+    # n_sample_after = n_before - n_removed + n_flare with n_removed in
+    # [0, n_before]: bounded between n_flare and n_before + n_flare.
+    assert generated_flare.n_flare <= s.n_sample <= n_before + generated_flare.n_flare
+
+
+def test_inject_flare_array_lengths_consistent(window, exposure_model, t0, tf, rng, generated_flare):
+    s = EventSample.in_window(
+        window=window, n_total=20_000, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng,
+    )
+    s.inject_flare(generated_flare)
+    assert s.n_sample == len(s.ra) == len(s.dec) == len(s.exposure) == len(s.flare_mask)
+
+
+def test_inject_flare_appends_at_tail(window, exposure_model, t0, tf, rng, generated_flare):
+    """The new semantics put the flare events at the end of the arrays."""
+    s = EventSample.in_window(
+        window=window, n_total=20_000, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng,
+    )
+    s.inject_flare(generated_flare)
+    tail = slice(-generated_flare.n_flare, None)
+    np.testing.assert_array_equal(s.ra[tail], generated_flare.ra)
+    np.testing.assert_array_equal(s.dec[tail], generated_flare.dec)
+    np.testing.assert_array_equal(s.exposure[tail], generated_flare.exposure)
+    assert s.flare_mask[tail].all() and not s.flare_mask[:-generated_flare.n_flare].any()
+
+
+def test_inject_flare_large_flare_now_allowed(window, exposure_model, t0, tf, rng_manager):
+    """Flares larger than n_sample used to raise; the new appending
+    semantics allow any flare size."""
+    import astropy.units as u
+    s = EventSample.full_sky(n_total=5, t0=t0, tf=tf, rng=rng_manager.get("sample"))
+    big_flare = Flare(
+        n_flare=10, duration=1.0 * u.day,
+        t0=t0, tf=tf, centre=window.centre,
+        exposure_model=exposure_model, rng=rng_manager.get("flare"),
+    )
+    big_flare.generate_in_window(window=window, sigma=2.0)
+    s.inject_flare(big_flare)  # must not raise
+    assert s.n_sample >= big_flare.n_flare
+
+
+def test_inject_flare_requires_expected_n(window, exposure_model, t0, tf, rng_manager, generated_flare):
+    """The Poisson thinning needs ``expected_n / n_total``; a bare-constructor
+    sample with coordinates but no expected_n must raise."""
+    s = EventSample(n_sample=200, n_total=20_000, t0=t0, tf=tf, rng=rng_manager.get("sample"))
+    s.ra = np.zeros(s.n_sample)
+    s.dec = np.zeros(s.n_sample)
+    assert s.expected_n is None
+    with pytest.raises(ValueError):
+        s.inject_flare(generated_flare)
+
+
+def test_inject_flare_mean_n_removed_matches_poisson(window, exposure_model, t0, tf, rng_manager):
+    """Average over many trials: E[n_removed] = p_in_window * n_flare."""
+    import astropy.units as u
+
+    n_total = 100_000
+    n_flare = 200
+    expected_n = window.expected_n_in_window(n_total, exposure_model)
+    p_in_window = expected_n / n_total
+    mu_removed_expected = p_in_window * n_flare
+
+    n_trials = 500
+    n_removed_samples = np.empty(n_trials, dtype=int)
+    sample_rng = rng_manager.get("sample")
+    flare_rng = rng_manager.get("flare")
+
+    for i in range(n_trials):
+        s = EventSample.in_window(
+            window=window, n_total=n_total, exposure_model=exposure_model,
+            t0=t0, tf=tf, rng=sample_rng,
+        )
+        n_before = s.n_sample
+        flare = Flare(
+            n_flare=n_flare, duration=1.0 * u.day,
+            t0=t0, tf=tf, centre=window.centre,
+            exposure_model=exposure_model, rng=flare_rng,
+        )
+        flare.generate_in_window(window=window, sigma=2.0)
+        s.inject_flare(flare)
+        n_removed_samples[i] = n_before - (s.n_sample - n_flare)
+
+    mean_n_removed = float(np.mean(n_removed_samples))
+    # Tolerance ~ 3 * std(Poisson) / sqrt(n_trials)
+    tol = 3.0 * np.sqrt(mu_removed_expected) / np.sqrt(n_trials)
+    assert abs(mean_n_removed - mu_removed_expected) < max(tol, 0.5)
 
 
 def test_inject_flare_mask_count(window, exposure_model, t0, tf, rng, generated_flare):
@@ -415,19 +504,6 @@ def test_inject_flare_double_injection_raises(window, exposure_model, t0, tf, rn
     s.inject_flare(generated_flare)
     with pytest.raises(RuntimeError):
         s.inject_flare(generated_flare)
-
-
-def test_inject_flare_too_large_raises(window, exposure_model, t0, tf, rng_manager):
-    import astropy.units as u
-    s = EventSample.full_sky(n_total=5, t0=t0, tf=tf, rng=rng_manager.get("sample"))
-    big_flare = Flare(
-        n_flare=10, duration=1.0 * u.day,
-        t0=t0, tf=tf, centre=window.centre,
-        exposure_model=exposure_model, rng=rng_manager.get("flare"),
-    )
-    big_flare.generate_in_window(window=window, sigma=2.0)
-    with pytest.raises(ValueError):
-        s.inject_flare(big_flare)
 
 
 def test_inject_flare_not_a_flare_raises(window, exposure_model, t0, tf, rng):

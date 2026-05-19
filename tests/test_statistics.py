@@ -137,6 +137,26 @@ def test_marginal_logsf_requires_positive_mu():
         lambda_marginal_logsf(np.array([1.0]), mu=0.0)
 
 
+@pytest.mark.parametrize("mu", [3.0, 10.0, 50.0, 200.0])
+@pytest.mark.parametrize("sigma_target", [1.0, 3.0, 5.0, 7.0])
+def test_marginal_logsf_truncation_converged(mu, sigma_target):
+    """The truncation index in lambda_marginal_logsf must be large enough
+    that extending it barely changes the result, even for the small tail
+    probabilities (high sigma) that matter for sensitivity studies.
+
+    Criterion: compute sf at default nmax and at default nmax + delta and
+    verify |Delta sf / sf| << 1. In log space this is
+    |Delta logsf| << 1; we require strict convergence at the 1e-10 level.
+    """
+    x = lambda_marginal_isigma(sigma_target, mu)
+    default_nmax = max(50, int(np.ceil(mu + 10.0 * np.sqrt(mu + 1.0) + 50.0)))
+
+    logsf_a = lambda_marginal_logsf(x, mu, nmax=default_nmax)
+    logsf_b = lambda_marginal_logsf(x, mu, nmax=default_nmax + 10)
+
+    assert abs(logsf_b - logsf_a) < 1e-10
+
+
 def test_marginal_rvs_shape():
     samples = lambda_marginal_rvs(mu=5.0, size=200, random_state=0)
     assert np.asarray(samples).shape == (200,)

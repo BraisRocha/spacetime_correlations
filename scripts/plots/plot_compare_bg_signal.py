@@ -228,6 +228,6 @@ def main(results_dir: str | Path) -> None:
 
 if __name__ == "__main__":
     # Change this path to the run you want to plot
-    run_dir = Path("/home/brais/PhD/dev/stc_project/output/scripts/compare_bg_signal")
-    sim_id = "20260505_162754_seed42"
+    run_dir = Path("/lustre/Auger/brais.rocha/spacetime_correlations/output/scripts/compare_bg_signal")
+    sim_id = "20260519_094028_seed42"
     main(run_dir/sim_id)

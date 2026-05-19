@@ -1,10 +1,23 @@
 """
-Paper-quality plots for the intensity scan.
+Paper-quality plots for the T_obs scan.
 
-Combines two ``run_scan_intensity.py`` runs (one per flare
-duration) into a single two-panel figure of Lambda distributions vs
-flare intensity. Each run contributes one panel; the isotropy null is
-pooled across both runs to maximise statistics.
+Combines two ``run_scan_intensity.py`` runs (one per observation
+duration, same flare duration) into a single two-panel figure of
+Lambda distributions vs flare intensity. Each run contributes one
+panel; the isotropy null is pooled across both runs to maximise
+statistics.
+
+The two panels share flare duration and ``expected_n``; what differs
+is ``T_obs``.  The trials penalty (a shorter ``T_obs`` divides any
+realistic observation campaign into N independent windows, so any
+p-value reported for one window must be multiplied by N) is folded
+into the 3-sigma / 5-sigma threshold lines:
+
+    sigma_corrected(panel) = norm.isf(norm.sf(sigma) / trials_factor),
+    trials_factor          = T_obs_longest / T_obs_panel.
+
+The longest-T_obs panel has ``trials_factor = 1`` (no penalty); the
+shorter-T_obs panel(s) get higher thresholds.
 """
 import json
 from pathlib import Path
@@ -13,6 +26,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
+import scipy.stats as scp
 
 from spacetimecorr.statistics import lambda_marginal_isigma
 
@@ -126,15 +140,53 @@ def _load_run(run_dir: Path) -> dict:
     }
 
 
+def _format_T_obs(days: float) -> str:
+    """Return a LaTeX-friendly label for an observation interval in days."""
+    years = days / 365.25
+    if np.isclose(years, 1.0, atol=0.05):
+        return r"$T_{\rm obs} = 1\,$year"
+    if np.isclose(years, round(years), atol=0.05) and years >= 1.0:
+        return rf"$T_{{\rm obs}} = {int(round(years))}\,$years"
+    if days >= 30.0:
+        months = days / 30.0
+        return rf"$T_{{\rm obs}} \approx {months:g}\,$months"
+    return rf"$T_{{\rm obs}} = {days:g}\,$days"
+
+
 def _format_duration(days: float) -> str:
     """Return a LaTeX-friendly label for a flare duration in days."""
     if np.isclose(days, 1.0):
-        return r"$\Delta t_{\rm flare} = 1\,$day"
+        return r"\Delta t_{\rm flare} = 1\,\mathrm{day}"
     if np.isclose(days, 30.0):
-        return r"$\Delta t_{\rm flare} = 1\,$month"
+        return r"\Delta t_{\rm flare} = 1\,\mathrm{month}"
     if days < 1.0:
-        return rf"$\Delta t_{{\rm flare}} = {days:g}\,$day"
-    return rf"$\Delta t_{{\rm flare}} = {days:g}\,$days"
+        return rf"\Delta t_{{\rm flare}} = {days:g}\,\mathrm{{day}}"
+    return rf"\Delta t_{{\rm flare}} = {days:g}\,\mathrm{{days}}"
+
+
+# ----------------------------------------------------------------------
+# Trials-corrected sigma threshold
+# ----------------------------------------------------------------------
+def _trials_corrected_lambda_threshold(
+    sigma_target: float,
+    expected_n: float,
+    trials_factor: float,
+) -> float:
+    """
+    Lambda value that, after trials-correcting its marginal p-value by
+    ``trials_factor``, gives a Gaussian-equivalent significance of
+    ``sigma_target``.
+
+    Concretely::
+
+        p_corr = trials_factor * p_uncorr  ->  p_uncorr = p_target / trials_factor
+        sigma_uncorr = norm.isf(p_target / trials_factor)
+        Lambda = lambda_marginal_isigma(sigma_uncorr, expected_n)
+    """
+    p_target = scp.norm.sf(sigma_target)
+    p_uncorr = p_target / trials_factor
+    sigma_uncorr = scp.norm.isf(p_uncorr)
+    return lambda_marginal_isigma(sigma_uncorr, expected_n)
 
 
 # ----------------------------------------------------------------------
@@ -142,12 +194,18 @@ def _format_duration(days: float) -> str:
 # ----------------------------------------------------------------------
 def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
     """
-    Build the flare-intensity study figure from two MC runs.
+    Build the T_obs-scan figure from two MC runs.
 
     ``run_dirs`` must contain exactly two paths, each pointing to a
-    ``run_scan_intensity.py`` output directory (one per flare
-    duration). The two panels of the resulting figure correspond to
-    the two runs, in the order given.
+    ``run_scan_intensity.py`` output directory.  The two runs must
+    share the flare duration and ``expected_n`` (i.e. the same window
+    geometry) but differ in ``T_obs``.  The two panels of the
+    resulting figure correspond to the two runs, in the order given.
+
+    The 3-sigma / 5-sigma threshold lines drawn in each panel include
+    a trials-penalty correction: the longest-T_obs panel is treated as
+    the reference (no penalty); shorter-T_obs panels get
+    ``trials_factor = T_obs_longest / T_obs_panel``.
     """
     if len(run_dirs) != 2:
         raise ValueError(
@@ -171,25 +229,29 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
             )
 
     expected_n = runs[0]["expected_n"]
-    T_obs_days = runs[0]["T_obs_days"]
+    duration_days = runs[0]["duration_days"]
     for r in runs[1:]:
         if not np.isclose(r["expected_n"], expected_n):
             raise ValueError(
                 f"Runs have different expected_n: {expected_n} vs {r['expected_n']}."
             )
-        if not np.isclose(r["T_obs_days"], T_obs_days):
+        if not np.isclose(r["duration_days"], duration_days):
             raise ValueError(
-                f"Runs have different T_obs_days: {T_obs_days} vs {r['T_obs_days']}."
+                "Runs have different flare durations: "
+                f"{duration_days} vs {r['duration_days']} days."
             )
 
     # Pool the isotropy null across both runs (independent draws of the
     # same distribution -> more statistics for the dashed line).
     lambda_bkg = np.concatenate([r["lambda_bkg"] for r in runs])
 
-    T_obs_years = T_obs_days / 365.25
+    # Trials factors: longest T_obs is the reference (factor 1.0); each
+    # panel's factor scales the others up.
+    T_obs_max = max(r["T_obs_days"] for r in runs)
+    trials_factors = [T_obs_max / r["T_obs_days"] for r in runs]
 
     # ------------------------------------------------------------------
-    # Lambda distributions vs flare intensity (panels = flare durations)
+    # Lambda distributions vs flare intensity (panels = T_obs values)
     # ------------------------------------------------------------------
     bins = np.linspace(0, 350, 70)
     cmap = mpl.colors.LinearSegmentedColormap.from_list(
@@ -209,7 +271,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
 
     ax0 = fig.add_subplot(gs[0])
     ax1 = fig.add_subplot(gs[1], sharey=ax0, sharex=ax0)
-    ax1.tick_params(labelleft=False) # Remove labels from the right subplot
+    ax1.tick_params(labelleft=False)  # Remove labels from the right subplot
     cax = fig.add_subplot(gs[2])  # dedicated colorbar axis
 
     axes = [ax0, ax1]
@@ -223,26 +285,48 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
             bins=bins,
             cmap=cmap,
             norm=norm,
-            panel_title=_format_duration(run["duration_days"]),
+            panel_title=_format_T_obs(run["T_obs_days"]),
         )
         ax.set_ylim(1e-5, 1e0)
 
     axes[0].set_ylabel("Prob. density")
 
-    lam_3sigma = lambda_marginal_isigma(3, expected_n)
-    lam_5sigma = lambda_marginal_isigma(5, expected_n)
-    for ax in axes:
-        ax.axvline(lam_3sigma, color="0.3", linewidth=0.8, linestyle=":")
-        ax.axvline(lam_5sigma, color="0.3", linewidth=0.8, linestyle="-.")
+    # ------------------------------------------------------------------
+    # 3-sigma / 5-sigma threshold lines, trials-corrected per panel
+    # ------------------------------------------------------------------
+    # Uncorrected reference (trials_factor = 1): same for every panel, depends
+    # only on the marginal Lambda PDF at this expected_n.
+    lam_3_uncorr = _trials_corrected_lambda_threshold(3.0, expected_n, 1.0)
+    lam_5_uncorr = _trials_corrected_lambda_threshold(5.0, expected_n, 1.0)
+    print(
+        f"Lambda thresholds (mu = expected_n = {expected_n:.2f}):\n"
+        f"  uncorrected (single-trial reference): "
+        f"Lambda(3 sigma) = {lam_3_uncorr:8.3f}, "
+        f"Lambda(5 sigma) = {lam_5_uncorr:8.3f}"
+    )
+    for ax, factor, run in zip(axes, trials_factors, runs):
+        lam_3 = _trials_corrected_lambda_threshold(3.0, expected_n, factor)
+        lam_5 = _trials_corrected_lambda_threshold(5.0, expected_n, factor)
+        T_obs_years = run["T_obs_days"] / 365.25
+        print(
+            f"  T_obs = {T_obs_years:6.2f} yr "
+            f"(trials_factor = {factor:5.2f}): "
+            f"Lambda(3 sigma) = {lam_3:8.3f} "
+            f"(+{lam_3 - lam_3_uncorr:5.3f}), "
+            f"Lambda(5 sigma) = {lam_5:8.3f} "
+            f"(+{lam_5 - lam_5_uncorr:5.3f})"
+        )
+        ax.axvline(lam_3, color="0.3", linewidth=0.8, linestyle=":")
+        ax.axvline(lam_5, color="0.3", linewidth=0.8, linestyle="-.")
         trans = mpl.transforms.blended_transform_factory(ax.transData, ax.transAxes)
-        ax.text(lam_3sigma, 0.97, r"$3\sigma$", transform=trans,
+        ax.text(lam_3, 0.97, r"$3\sigma$", transform=trans,
                 va="top", ha="right", fontsize=6, color="0.3")
-        ax.text(lam_5sigma, 0.97, r"$5\sigma$", transform=trans,
+        ax.text(lam_5, 0.97, r"$5\sigma$", transform=trans,
                 va="top", ha="right", fontsize=6, color="0.3")
 
+    # ------------------------------------------------------------------
     # Discrete colorbar over the intensity grid (displayed in percent).
-    # Ticks are centred in their bin: bounds straddle each intensity by
-    # ±step/2 so e.g. for [10,20,30,40,50] the bins are [5-15, 15-25, ...].
+    # ------------------------------------------------------------------
     intensities_pct = intensities * 100.0
     step_pct = (
         float(np.median(np.diff(intensities_pct)))
@@ -272,7 +356,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
 
     fig.suptitle(
         rf"$\mu = {expected_n:.1f}$ events, "
-        rf"$T_{{\rm obs}} = {int(T_obs_years)}\,$years"
+        rf"${_format_duration(duration_days)}$"
     )
 
     fig.subplots_adjust(
@@ -282,17 +366,19 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
         top=0.85,
         wspace=0.05
     )
-    fig.savefig(output_dir / "lambda_vs_flare_intensity.png",
+    fig.savefig(output_dir / "lambda_vs_T_obs.png",
                 dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
 if __name__ == "__main__":
     # Edit these paths to point at the two runs you want to combine
-    base = Path("/lustre/Auger/brais.rocha/spacetime_correlations/output/scripts/scan_intensity")
+    base = Path(
+        "/lustre/Auger/brais.rocha/spacetime_correlations/output/scripts/scan_intensity"
+    )
     run_dirs = [
-        base / "20260519_094747_seed42", # run 1 day
-        base / "20260519_094815_seed42", # run 1 month
+        base / "20260519_095850_seed42",  # T_obs = 10 years (reference)
+        base / "20260519_100251_seed42",  # T_obs = 1 year
     ]
     output_dir = base / "figures"
     main(run_dirs=run_dirs, output_dir=output_dir)

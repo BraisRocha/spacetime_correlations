@@ -39,7 +39,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_total = int(1e5)
+    n_total = int(2e5)
     n_simulations = int(1e3)
     max_attempts = int(3 * n_simulations)
 
@@ -60,7 +60,7 @@ def main(seed: int) -> None:
     # Flare parameters
     flare_duration = 1 * u.day
     flare_sigma = 1.0  # deg
-    flare_intensity = 0.1  # n_flare / expected_n
+    flare_intensity = 0.  # n_flare / expected_n
 
     # ------------------------------------------------------------------
     # Output directory
