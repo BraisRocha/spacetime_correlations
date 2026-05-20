@@ -104,8 +104,9 @@ spacetime_correlations/
 ## Quick start
 
 A minimal end-to-end example: generate background events inside a sky
-window with the correct directional exposure, and evaluate the Lambda
-anisotropy estimator on the resulting sample.
+window with the correct directional exposure, overlay a synthetic
+flare, and evaluate the Lambda anisotropy estimator on both the
+background-only and flare-injected samples.
 
 ```python
 import numpy as np
@@ -118,6 +119,7 @@ from spacetimecorr import (
     SkyWindow,
     Observatory,
     ExposureModel,
+    Flare,
     lambda_estimator,
 )
 
@@ -130,12 +132,13 @@ tf = t0 + 1 * u.week
 rngm = RNGManager(seed=42)
 rng_events = rngm.get("events")
 rng_exposure = rngm.get("exposure")
+rng_flare = rngm.get("flare")
 
 # Detector geometry and directional exposure
 obs = Observatory(latitude=-35.15, longitude=-69.2, altitude=1425)
 exposure_model = ExposureModel(observatory=obs, t0=t0, tf=tf, rng=rng_exposure)
 
-# Sky window and per-window event sample (events drawn directly inside the cap)
+# Sky window and per-window background sample
 window = SkyWindow(centre=np.array([30.0, 0.0]), radius=2.0)
 sample = EventSample.in_window(
     window=window,
@@ -145,16 +148,31 @@ sample = EventSample.in_window(
     tf=tf,
     rng=rng_events,
 )
-
-# Directional exposure values for each event (input to the Lambda estimator)
 sample.assign_directional_exposure(window=window, exposure_model=exposure_model)
 
-# Lambda anisotropy estimator
-lam = lambda_estimator(sample=sample)
+lam_bkg = lambda_estimator(sample=sample)
+
+# Synthetic flare overlaid on the sample (overdensity injection)
+flare = Flare(
+    n_flare=20,
+    duration=1 * u.day,
+    t0=t0,
+    tf=tf,
+    centre=window.centre,
+    exposure_model=exposure_model,
+    rng=rng_flare,
+)
+flare.generate_in_window(window=window, sigma=1.0)  # sigma in degrees
+
+sample.inject_flare(flare=flare, mode="overdensity")
+sample.assign_directional_exposure(window=window, exposure_model=exposure_model)
+
+lam_flare = lambda_estimator(sample=sample)
 
 print(f"Events in window: {sample.n_sample}")
 print(f"Expected events:  {sample.expected_n:.2f}")
-print(f"Lambda:           {lam:.3f}")
+print(f"Lambda (bkg):     {lam_bkg:.3f}")
+print(f"Lambda (+flare):  {lam_flare:.3f}")
 ```
 
 ## Script naming convention

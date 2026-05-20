@@ -96,7 +96,7 @@ class EventSample:
         rng: np.random.Generator,
     ):
         # ---- Input validation ------------------------------------------------
-        if not isinstance(n_sample, int) or isinstance(n_sampleO, bool):
+        if not isinstance(n_sample, int) or isinstance(n_sample, bool):
             raise TypeError("n_sample must be an integer.")
         if n_sample < 0:
             raise ValueError("n_sample must be non-negative.")
