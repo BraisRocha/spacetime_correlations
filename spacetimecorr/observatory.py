@@ -1,3 +1,18 @@
+"""
+Ground-based observatory location.
+
+Defines :class:`Observatory`, a frozen dataclass holding the geodetic
+position (latitude, longitude, altitude) of the detector and caching
+the corresponding :class:`astropy.coordinates.EarthLocation`. This is
+the single source of truth for the observatory geometry consumed by
+:class:`~spacetimecorr.exposure.ExposureModel` when computing zenith
+angles and directional exposure.
+
+Latitudes are stored in degrees in ``[-90, 90]``, longitudes in degrees
+in ``[-180, 180]``, altitude in metres (non-negative). Instances are
+immutable.
+"""
+
 from astropy.coordinates import EarthLocation
 import astropy.units as u
 from dataclasses import dataclass, field

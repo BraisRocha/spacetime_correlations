@@ -1,3 +1,21 @@
+"""
+Reproducible, independent random-number streams by name.
+
+Defines :class:`RNGManager`, the single entry point used across the
+package to obtain ``numpy.random.Generator`` instances. Each logical
+consumer (events, flare, exposure, …) requests a generator by name and
+gets a deterministic child stream derived from
+``(master_seed, blake2b(name))``.
+
+Two properties matter for Monte-Carlo reproducibility:
+
+- The same ``(seed, name)`` pair always yields the same stream, so a
+  run is fully determined by the master seed.
+- Streams for different names are independent of each other and of the
+  order in which they are first requested, so adding or reordering
+  consumers does not perturb existing streams.
+"""
+
 import numpy as np
 import hashlib
 

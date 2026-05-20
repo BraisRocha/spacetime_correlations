@@ -501,7 +501,7 @@ def run_flare_injection_diagnostic(
 
     # After injection
     after = clone_event_sample(parent_sample)
-    after.inject_flare(flare)
+    after.inject_flare(flare, mode="overdensity")
 
     after_dir = outdir / "sample_after_injection"
     after_dir.mkdir(parents=True, exist_ok=True)

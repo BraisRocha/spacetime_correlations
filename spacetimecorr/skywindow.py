@@ -1,3 +1,25 @@
+"""
+Spherical-cap windows on the celestial sphere.
+
+Defines :class:`SkyWindow`, a frozen geometry-only dataclass representing
+a circular window (spherical cap) parameterised by a centre
+``[RA_deg, Dec_deg]`` and an angular radius in degrees. The class
+provides:
+
+- containment masks (which events fall inside the cap),
+- the spherical-cap sky fraction,
+- uniform sampling within the cap (used by per-window event factories),
+- the exposure-weighted expected event count
+  (:meth:`expected_n_in_window`), which folds the directional exposure
+  at the window centre into the bare sky-fraction expectation.
+
+No exposure or event-generation state is held here — those live on
+:class:`~spacetimecorr.exposure.ExposureModel` and
+:class:`~spacetimecorr.event_sample.EventSample` respectively. The
+window is treated as small enough that the exposure at its centre is a
+good proxy for the exposure across the cap.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

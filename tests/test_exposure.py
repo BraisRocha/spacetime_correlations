@@ -243,25 +243,19 @@ def test_sample_directional_exposure_invalid_rate_raises(exposure_model):
         )
 
 
-def test_sample_directional_exposure_negative_n_raises(exposure_model):
+def test_sample_directional_exposure_nonpositive_n_raises(exposure_model):
+    for n in (-1, 0):
+        with pytest.raises(ValueError):
+            exposure_model.sample_directional_exposure(
+                n_events=n, expected_exposure_rate=1.0, max_dir_exposure=1.0,
+            )
+
+
+def test_sample_directional_exposure_max_zero_raises(exposure_model):
     with pytest.raises(ValueError):
         exposure_model.sample_directional_exposure(
-            n_events=-1, expected_exposure_rate=1.0, max_dir_exposure=1.0,
+            n_events=10, expected_exposure_rate=1.0, max_dir_exposure=0.0,
         )
-
-
-def test_sample_directional_exposure_max_zero_returns_empty(exposure_model):
-    sample, _ = exposure_model.sample_directional_exposure(
-        n_events=10, expected_exposure_rate=1.0, max_dir_exposure=0.0,
-    )
-    assert sample.size == 0
-
-
-def test_sample_directional_exposure_zero_events_returns_empty(exposure_model):
-    sample, _ = exposure_model.sample_directional_exposure(
-        n_events=0, expected_exposure_rate=1.0, max_dir_exposure=100.0,
-    )
-    assert sample.size == 0
 
 
 def test_sample_directional_exposure_mean_gap(exposure_model):

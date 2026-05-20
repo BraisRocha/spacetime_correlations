@@ -194,7 +194,7 @@ def test_generate_times_inside_observation(generated_flare):
 
 def test_generate_time_span_lte_duration(generated_flare):
     span = (generated_flare.time.max() - generated_flare.time.min()).to_value("sec")
-    assert span <= generated_flare.duration + 1e-6
+    assert span <= generated_flare.duration_sec + 1e-6
 
 
 def test_generate_has_coordinates_true(generated_flare):

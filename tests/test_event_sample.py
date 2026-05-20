@@ -366,7 +366,7 @@ def test_inject_flare_grows_n_sample(window, exposure_model, t0, tf, rng, genera
         t0=t0, tf=tf, rng=rng,
     )
     n_before = s.n_sample
-    s.inject_flare(generated_flare)
+    s.inject_flare(generated_flare, mode="overdensity")
     # n_sample_after = n_before - n_removed + n_flare with n_removed in
     # [0, n_before]: bounded between n_flare and n_before + n_flare.
     assert generated_flare.n_flare <= s.n_sample <= n_before + generated_flare.n_flare
@@ -377,7 +377,7 @@ def test_inject_flare_array_lengths_consistent(window, exposure_model, t0, tf, r
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.inject_flare(generated_flare)
+    s.inject_flare(generated_flare, mode="overdensity")
     assert s.n_sample == len(s.ra) == len(s.dec) == len(s.exposure) == len(s.flare_mask)
 
 
@@ -387,7 +387,7 @@ def test_inject_flare_appends_at_tail(window, exposure_model, t0, tf, rng, gener
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.inject_flare(generated_flare)
+    s.inject_flare(generated_flare, mode="overdensity")
     tail = slice(-generated_flare.n_flare, None)
     np.testing.assert_array_equal(s.ra[tail], generated_flare.ra)
     np.testing.assert_array_equal(s.dec[tail], generated_flare.dec)
@@ -395,9 +395,33 @@ def test_inject_flare_appends_at_tail(window, exposure_model, t0, tf, rng, gener
     assert s.flare_mask[tail].all() and not s.flare_mask[:-generated_flare.n_flare].any()
 
 
-def test_inject_flare_large_flare_now_allowed(window, exposure_model, t0, tf, rng_manager):
-    """Flares larger than n_sample used to raise; the new appending
-    semantics allow any flare size."""
+def test_inject_flare_overdensity_n_flare_greater_than_n_sample_ok(
+    window, exposure_model, t0, tf, rng_manager,
+):
+    """In overdensity mode, n_flare may exceed n_sample (the array grows by
+    appending the tail) as long as it does not exceed n_total."""
+    import astropy.units as u
+    # n_sample ~ Poisson(expected_n) is typically much smaller than n_total.
+    s = EventSample.in_window(
+        window=window, n_total=20_000, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng_manager.get("sample"),
+    )
+    flare = Flare(
+        n_flare=s.n_sample + 50, duration=1.0 * u.day,
+        t0=t0, tf=tf, centre=window.centre,
+        exposure_model=exposure_model, rng=rng_manager.get("flare"),
+    )
+    flare.generate_in_window(window=window, sigma=2.0)
+    s.inject_flare(flare, mode="overdensity")  # must not raise
+    assert s.n_sample >= flare.n_flare
+
+
+def test_inject_flare_overdensity_n_flare_exceeds_n_total_raises(
+    window, exposure_model, t0, tf, rng_manager,
+):
+    """In overdensity mode, n_flare > n_total is incoherent (the flare is
+    notionally drawn from a hypothetical full-sky sample of size n_total),
+    and must raise."""
     import astropy.units as u
     s = EventSample.full_sky(n_total=5, t0=t0, tf=tf, rng=rng_manager.get("sample"))
     big_flare = Flare(
@@ -406,8 +430,8 @@ def test_inject_flare_large_flare_now_allowed(window, exposure_model, t0, tf, rn
         exposure_model=exposure_model, rng=rng_manager.get("flare"),
     )
     big_flare.generate_in_window(window=window, sigma=2.0)
-    s.inject_flare(big_flare)  # must not raise
-    assert s.n_sample >= big_flare.n_flare
+    with pytest.raises(ValueError):
+        s.inject_flare(big_flare, mode="overdensity")
 
 
 def test_inject_flare_requires_expected_n(window, exposure_model, t0, tf, rng_manager, generated_flare):
@@ -418,7 +442,7 @@ def test_inject_flare_requires_expected_n(window, exposure_model, t0, tf, rng_ma
     s.dec = np.zeros(s.n_sample)
     assert s.expected_n is None
     with pytest.raises(ValueError):
-        s.inject_flare(generated_flare)
+        s.inject_flare(generated_flare, mode="overdensity")
 
 
 def test_inject_flare_mean_n_removed_matches_poisson(window, exposure_model, t0, tf, rng_manager):
@@ -448,7 +472,7 @@ def test_inject_flare_mean_n_removed_matches_poisson(window, exposure_model, t0,
             exposure_model=exposure_model, rng=flare_rng,
         )
         flare.generate_in_window(window=window, sigma=2.0)
-        s.inject_flare(flare)
+        s.inject_flare(flare, mode="overdensity")
         n_removed_samples[i] = n_before - (s.n_sample - n_flare)
 
     mean_n_removed = float(np.mean(n_removed_samples))
@@ -462,7 +486,7 @@ def test_inject_flare_mask_count(window, exposure_model, t0, tf, rng, generated_
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.inject_flare(generated_flare)
+    s.inject_flare(generated_flare, mode="overdensity")
     assert int(np.count_nonzero(s.flare_mask)) == generated_flare.n_flare
 
 
@@ -471,7 +495,7 @@ def test_inject_flare_sets_has_flare(window, exposure_model, t0, tf, rng, genera
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.inject_flare(generated_flare)
+    s.inject_flare(generated_flare, mode="overdensity")
     assert s.has_flare
 
 
@@ -480,7 +504,7 @@ def test_inject_flare_sets_flare_type(window, exposure_model, t0, tf, rng, gener
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.inject_flare(generated_flare)
+    s.inject_flare(generated_flare, mode="overdensity")
     assert s.flare_type == generated_flare.flare_type
 
 
@@ -489,7 +513,7 @@ def test_inject_flare_overwrites_flare_slots(window, exposure_model, t0, tf, rng
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.inject_flare(generated_flare)
+    s.inject_flare(generated_flare, mode="overdensity")
     np.testing.assert_array_equal(
         np.sort(s.ra[s.flare_mask]),
         np.sort(generated_flare.ra),
@@ -501,9 +525,9 @@ def test_inject_flare_double_injection_raises(window, exposure_model, t0, tf, rn
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.inject_flare(generated_flare)
+    s.inject_flare(generated_flare, mode="overdensity")
     with pytest.raises(RuntimeError):
-        s.inject_flare(generated_flare)
+        s.inject_flare(generated_flare, mode="overdensity")
 
 
 def test_inject_flare_not_a_flare_raises(window, exposure_model, t0, tf, rng):
@@ -512,10 +536,121 @@ def test_inject_flare_not_a_flare_raises(window, exposure_model, t0, tf, rng):
         t0=t0, tf=tf, rng=rng,
     )
     with pytest.raises(TypeError):
-        s.inject_flare("not a flare")
+        s.inject_flare("not a flare", mode="overdensity")
 
 
 def test_inject_flare_no_coordinates_raises(t0, tf, rng, generated_flare):
     s = EventSample(n_sample=200, n_total=200, t0=t0, tf=tf, rng=rng)
     with pytest.raises(ValueError):
+        s.inject_flare(generated_flare, mode="overdensity")
+
+
+# -------------------------------------------------------------------------
+# inject_flare — mode dispatch
+# -------------------------------------------------------------------------
+
+
+def test_inject_flare_mode_is_required(window, exposure_model, t0, tf, rng, generated_flare):
+    """Omitting the keyword-only ``mode`` argument must raise."""
+    s = EventSample.in_window(
+        window=window, n_total=20_000, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng,
+    )
+    with pytest.raises(TypeError):
         s.inject_flare(generated_flare)
+
+
+def test_inject_flare_invalid_mode_raises(window, exposure_model, t0, tf, rng, generated_flare):
+    s = EventSample.in_window(
+        window=window, n_total=20_000, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng,
+    )
+    with pytest.raises(ValueError):
+        s.inject_flare(generated_flare, mode="bogus")
+
+
+# -------------------------------------------------------------------------
+# inject_flare — no_overdensity mode
+# -------------------------------------------------------------------------
+
+
+def test_inject_flare_no_overdensity_preserves_n_sample(
+    window, exposure_model, t0, tf, rng, generated_flare,
+):
+    s = EventSample.in_window(
+        window=window, n_total=20_000, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng,
+    )
+    n_before = s.n_sample
+    s.inject_flare(generated_flare, mode="no_overdensity")
+    assert s.n_sample == n_before
+
+
+def test_inject_flare_no_overdensity_array_lengths_consistent(
+    window, exposure_model, t0, tf, rng, generated_flare,
+):
+    s = EventSample.in_window(
+        window=window, n_total=20_000, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng,
+    )
+    s.inject_flare(generated_flare, mode="no_overdensity")
+    assert s.n_sample == len(s.ra) == len(s.dec) == len(s.exposure) == len(s.flare_mask)
+
+
+def test_inject_flare_no_overdensity_mask_count(
+    window, exposure_model, t0, tf, rng, generated_flare,
+):
+    s = EventSample.in_window(
+        window=window, n_total=20_000, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng,
+    )
+    s.inject_flare(generated_flare, mode="no_overdensity")
+    assert int(np.count_nonzero(s.flare_mask)) == generated_flare.n_flare
+
+
+def test_inject_flare_no_overdensity_appends_at_tail(
+    window, exposure_model, t0, tf, rng, generated_flare,
+):
+    s = EventSample.in_window(
+        window=window, n_total=20_000, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng,
+    )
+    s.inject_flare(generated_flare, mode="no_overdensity")
+    tail = slice(-generated_flare.n_flare, None)
+    np.testing.assert_array_equal(s.ra[tail], generated_flare.ra)
+    np.testing.assert_array_equal(s.dec[tail], generated_flare.dec)
+    np.testing.assert_array_equal(s.exposure[tail], generated_flare.exposure)
+
+
+def test_inject_flare_no_overdensity_does_not_require_expected_n(
+    window, exposure_model, t0, tf, rng_manager, generated_flare,
+):
+    """``no_overdensity`` does not consult ``expected_n`` / ``n_total``;
+    a bare-constructor sample with coordinates but no expected_n must
+    accept the injection."""
+    s = EventSample(
+        n_sample=200, n_total=20_000, t0=t0, tf=tf, rng=rng_manager.get("sample"),
+    )
+    # Manually populate coordinates / exposure so we bypass the in_window
+    # factory (which would set expected_n).
+    s.ra = np.zeros(s.n_sample)
+    s.dec = np.zeros(s.n_sample)
+    s.exposure = np.zeros(s.n_sample)
+    assert s.expected_n is None
+    s.inject_flare(generated_flare, mode="no_overdensity")  # must not raise
+    assert s.n_sample == 200
+
+
+def test_inject_flare_no_overdensity_n_flare_exceeds_n_sample_raises(
+    window, exposure_model, t0, tf, rng_manager,
+):
+    import astropy.units as u
+    s = EventSample.full_sky(n_total=5, t0=t0, tf=tf, rng=rng_manager.get("sample"))
+    big_flare = Flare(
+        n_flare=10, duration=1.0 * u.day,
+        t0=t0, tf=tf, centre=window.centre,
+        exposure_model=exposure_model, rng=rng_manager.get("flare"),
+    )
+    big_flare.generate_in_window(window=window, sigma=2.0)
+    with pytest.raises(ValueError):
+        s.inject_flare(big_flare, mode="no_overdensity")

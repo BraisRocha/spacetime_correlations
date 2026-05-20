@@ -1,3 +1,25 @@
+"""
+Directional exposure for a fixed source direction.
+
+Defines :class:`ExposureModel`, which encodes how the ground-based
+detector sees a single sky direction (RA, Dec) over an observation
+interval ``[t0, tf]``. From the observatory latitude and the source
+declination, the model produces:
+
+- the instantaneous geometric acceptance ``a(t) = max(0, cos theta(t))``,
+  also usable as a per-time detection probability,
+- the cumulative directional exposure ``epsilon(t)`` and its inverse,
+- helpers for sampling event times under the directional-exposure
+  distribution (used by :class:`~spacetimecorr.flare.Flare` and by
+  :class:`~spacetimecorr.event_sample.EventSample` when assigning
+  exposures).
+
+Events whose zenith angle exceeds ``theta_max_deg`` are rejected
+(``a = 0``); the default 60° matches the Auger SD standard analysis cut.
+Time-dependent effective-area effects (bad periods, array growth) are
+not modelled here — see ``TODO.md``.
+"""
+
 from __future__ import annotations
 
 import math
@@ -641,8 +663,8 @@ class ExposureModel:
         
         if not isinstance(n_events, int) or isinstance(n_events, bool):
             raise TypeError("n_events must be an integer.")
-        if n_events < 0:
-            raise ValueError("n_events must be non-negative.")
+        if n_events <= 0:
+            raise ValueError("n_events must be > 0.")
         if not isinstance(factor, int) or isinstance(factor, bool):
             raise TypeError("factor must be an integer.")
         if factor <= 0:
@@ -658,18 +680,19 @@ class ExposureModel:
         if not isinstance(max_dir_exposure, (int, float)) or isinstance(max_dir_exposure, bool):
             raise TypeError("max_dir_exposure must be numeric.")
         if max_dir_exposure <= 0:
-            # Zero (or negative) maximum directional exposure means the
-            # source never enters the acceptance cone (A + B <= c).
-            # Pipelines should be able to call this method without
-            # special-casing that geometry, so we silently return an empty
-            # sample.
-            return np.empty(0, dtype=float), "free_maximum_exposure_method"
+            raise ValueError(
+                "max_dir_exposure must be > 0. A value of 0 means the source never "
+                "enters the FoV (out of acceptance); a negative value is unphysical."
+            )
 
         mu = float(factor) * float(expected_exposure_rate) * float(max_dir_exposure)
         mu_expanded = int(math.floor(mu))
 
-        if mu_expanded<= 0 or n_events == 0:
-            return np.empty(0, dtype=float), "free_maximum_exposure_method"
+        if mu_expanded == 0:
+            raise ValueError(
+                "mu_expanded is 0 (factor * expected_exposure_rate * max_dir_exposure < 1). "
+                "Increase factor or check that the exposure product is meaningful."
+            )
 
         # Exposure interval length used for uniform sampling
         exposure_expanded = mu_expanded / float(expected_exposure_rate)

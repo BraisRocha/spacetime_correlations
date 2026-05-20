@@ -1,3 +1,29 @@
+"""
+Lambda anisotropy estimator and its sampling distributions.
+
+This module bundles the statistical machinery used by the pipeline:
+
+- The Lambda test statistic itself (:func:`lambda_estimator`), computed
+  from the spacings of sorted per-event directional-exposure values on
+  an :class:`~spacetimecorr.event_sample.EventSample`.
+- The **conditional** distribution of Lambda at fixed event count,
+  ``Lambda | n ~ Gamma(n - 1, 1)``: PDF, CDF, survival function and
+  Gaussian-equivalent significance
+  (``lambda_conditional_*``).
+- The **marginal** distribution of Lambda under
+  ``N ~ Poisson(mu)`` truncated to ``N >= 2``: PDF, log-survival,
+  significance, inverse-significance and sampler
+  (``lambda_marginal_*``).
+- Monte-Carlo helpers: :func:`empirical_p_values` for empirical
+  one-sided p-values against a null sample, and the visualisation
+  helper :func:`plot_lambda_joint_heatmap`.
+- Conversion utilities :func:`pvalue_to_sigma` /
+  :func:`sigma_to_pvalue`.
+
+All p-values follow the upper-tail convention: more anisotropic samples
+produce larger Lambda values, so the p-value is ``P(Lambda >= x)``.
+"""
+
 from __future__ import annotations
 
 from typing import Tuple

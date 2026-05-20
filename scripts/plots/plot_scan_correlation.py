@@ -40,10 +40,10 @@ def main(results_dir: str | Path) -> None:
     lambda_T = data["lambda_T"]
     lambda_S = data["lambda_S"]
 
-    n_events_bkg = data["n_events_bkg"]
-    n_events_ST = data ["n_events_ST"]
-    n_events_T = data ["n_events_T"]
-    n_events_S = data ["n_events_S"]
+    n_sample_bkg = data["n_sample_bkg"]
+    n_sample_ST = data["n_sample_ST"]
+    n_sample_T = data["n_sample_T"]
+    n_sample_S = data["n_sample_S"]
 
     p_values_bkg = data["p_values_bkg"]
     p_values_ST = data["p_values_ST"]
@@ -53,7 +53,7 @@ def main(results_dir: str | Path) -> None:
     # metadata from `metadata.json`
     expected_n = metadata["expected_n"]
     n_sim = metadata["n_simulations_successful"]
-    T_obs_days = metadata["T_obs_days"]
+    T_obs_days = metadata["time"]["T_obs_days"]
 
     # Scientific notation for the plots
     def sci_label(n: int) -> str:
@@ -180,34 +180,34 @@ def main(results_dir: str | Path) -> None:
 
     # Compute global min/max across all samples
     n_min = min(
-        np.min(n_events_bkg),
-        np.min(n_events_ST),
-        np.min(n_events_T),
-        np.min(n_events_S),
+        np.min(n_sample_bkg),
+        np.min(n_sample_ST),
+        np.min(n_sample_T),
+        np.min(n_sample_S),
     )
 
     n_max = max(
-        np.max(n_events_bkg),
-        np.max(n_events_ST),
-        np.max(n_events_T),
-        np.max(n_events_S),
+        np.max(n_sample_bkg),
+        np.max(n_sample_ST),
+        np.max(n_sample_T),
+        np.max(n_sample_S),
     )
 
     # Integer-centered bins of width 1
     bin_edges = np.arange(n_min - 0.5, n_max + 1.5, 1)
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(n_events_bkg, 
+    ax.hist(n_sample_bkg, 
             bins=bin_edges, 
             density=False, alpha=0.7, linewidth=1.5, label="Isotropy")
     ax.axvline(expected_n, color="black", linestyle="--", linewidth=1.5, label=fr"$\mu={expected_n:.2f}$")
-    ax.hist(n_events_ST, 
+    ax.hist(n_sample_ST, 
             bins=bin_edges, 
             density=False, alpha=0.7, linewidth=1.5, label="Space-Time")
-    ax.hist(n_events_T, 
+    ax.hist(n_sample_T, 
             bins=bin_edges, 
             density=False, histtype="step", linewidth=2, label="Time Only")
-    ax.hist(n_events_S, 
+    ax.hist(n_sample_S, 
             bins=bin_edges, 
             density=False, histtype="step", linewidth=2, label="Space Only")
 
@@ -233,7 +233,7 @@ def main(results_dir: str | Path) -> None:
     )
 
     fig.tight_layout()
-    fig.savefig(results_dir/ "n_events.png", dpi=300, bbox_inches="tight")
+    fig.savefig(results_dir/ "n_sample.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     # ------------------------------------------------------------------

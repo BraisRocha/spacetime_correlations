@@ -1,13 +1,20 @@
 # Spacetime Correlations (`spacetimecorr`)
 
-`spacetimecorr` is a Python package for simulating and analyzing **spatiotemporal correlations** in ultra-high-energy cosmic ray (UHECR) arrival directions.
+`spacetimecorr` is a Python package for simulating and analysing **spatiotemporal
+correlations** in ultra-high-energy cosmic-ray (UHECR) arrival directions.
 
-Current functionality includes:
-- isotropic event simulation in equatorial coordinates,
-- circular sky-window event selection,
-- observatory-based directional exposure modeling,
-- Monte Carlo scripts for isotropy, flare-injection, and sensitivity studies,
-- diagnostic plotting helpers.
+The package is built around a small number of composable primitives:
+an `Observatory` and an `ExposureModel` define the detector geometry and
+directional exposure; a `SkyWindow` selects a region of the sky; an
+`EventSample` is drawn directly inside that window with the right
+exposure weighting; and a `Flare` can be optionally overlaid on top of
+the background to study localised signals. The Lambda anisotropy
+estimator and its conditional / marginal distributions live in
+`spacetimecorr.statistics` and are evaluated on an `EventSample`.
+
+Reproducibility is enforced through `RNGManager`, which provides
+deterministic, named, independent random streams derived from a single
+master seed.
 
 ## Installation
 
@@ -58,48 +65,47 @@ spacetime_correlations/
 ├── pyproject.toml
 ├── README.md
 ├── TODO.md
-├── scripts/                          # Python scripts (backend-agnostic)
-│   ├── diagnostics/
-│   │   ├── exposure_diagnostic.py
-│   │   ├── flare_diagnostic.py
-│   │   └── sampling_diagnostic.py
-│   ├── montecarlo/
-│   │   ├── run_null.py               # null hypothesis (pure isotropy)
-│   │   ├── run_compare_bg_signal.py  # fixed injection vs background diagnostic
-│   │   ├── run_scan_intensity.py     # 1-D scan over flare S/N ratio
-│   │   ├── run_scan_correlation.py   # 1-D scan over correlation type
-│   │   └── run_grid_p50.py          # 2-D (duration, intensity) grid; one Condor job per point
-│   └── plots/
-│       ├── plot_null.py
-│       ├── plot_compare_bg_signal.py
-│       ├── plot_scan_intensity.py
-│       └── plot_scan_correlation.py
-├── jobs/                             # Submission layer (local and HTCondor)
-│   ├── condor/                       # HTCondor submit files and wrappers
-│   │   ├── grid_p50.sub              # condor_submit file
-│   │   ├── grid_p50_params.txt       # parameter grid (shared with local)
-│   │   └── run_grid_p50.sh           # bash wrapper executed by Condor
-│   └── local/                        # Local launchers (iterate over same grids)
+├── scripts/                            # Python scripts (backend-agnostic)
+│   ├── diagnostics/                    # Standalone sanity-check scripts
+│   ├── montecarlo/                     # Monte-Carlo runners (one process = one run)
+│   │   ├── run_null.py                 # null hypothesis (pure isotropy)
+│   │   ├── run_compare_bg_signal.py    # fixed injection vs background diagnostic
+│   │   ├── run_scan_intensity.py       # 1-D scan over flare S/N ratio
+│   │   ├── run_scan_correlation.py     # 1-D scan over correlation type
+│   │   └── run_grid_p50.py             # 2-D (duration, intensity) grid; one Condor job per point
+│   └── plots/                          # Plotting helpers for Monte-Carlo outputs
+├── jobs/                               # Submission layer (local and HTCondor)
+│   ├── condor/                         # HTCondor submit files and wrappers
+│   │   └── grid_p50/
+│   │       ├── grid_p50.sub            # condor_submit file
+│   │       ├── grid_p50_params.txt     # parameter grid (shared with local)
+│   │       ├── run_grid_p50.sh         # bash wrapper executed by Condor
+│   │       └── submit_grid_p50.sh      # convenience submit script
+│   └── local/                          # Local launchers (iterate over the same grids)
 │       └── run_grid_p50.sh
 ├── logs/
-│   └── condor/                       # HTCondor stdout/stderr (gitignored)
-├── output/                           # Scientific results (gitignored)
-└── spacetimecorr/                    # Python package
+│   └── condor/                         # HTCondor stdout/stderr (gitignored)
+├── output/                             # Scientific results (gitignored)
+└── spacetimecorr/                      # Python package
     ├── __init__.py
-    ├── event_sample.py
-    ├── exposure.py
-    ├── flare.py
-    ├── observatory.py
-    ├── rng.py
-    ├── skywindow.py
-    ├── statistics.py
-    └── io/
+    ├── observatory.py                  # Observatory location (lat/lon/alt)
+    ├── exposure.py                     # Directional exposure model
+    ├── skywindow.py                    # Circular sky windows (spherical caps)
+    ├── event_sample.py                 # Event container + full-sky / in-window factories
+    ├── flare.py                        # Synthetic flare component (signal injection)
+    ├── statistics.py                   # Lambda estimator and its distributions
+    ├── rng.py                          # Reproducible named RNG streams
+    └── io/                             # Logging and run-output helpers
         ├── __init__.py
         ├── logs.py
         └── output.py
 ```
 
 ## Quick start
+
+A minimal end-to-end example: generate background events inside a sky
+window with the correct directional exposure, and evaluate the Lambda
+anisotropy estimator on the resulting sample.
 
 ```python
 import numpy as np
@@ -112,10 +118,11 @@ from spacetimecorr import (
     SkyWindow,
     Observatory,
     ExposureModel,
+    lambda_estimator,
 )
 
 # Observation interval
-n_events = int(1e5)
+n_total = int(1e5)                                  # equivalent full-sky population
 t0 = Time("2026-01-01T00:00:00", scale="utc")
 tf = t0 + 1 * u.week
 
@@ -124,29 +131,35 @@ rngm = RNGManager(seed=42)
 rng_events = rngm.get("events")
 rng_exposure = rngm.get("exposure")
 
-# Simulated full sample
-sample = EventSample(n_events=n_events, t0=t0, tf=tf, rng=rng_events)
-
-# Sky-window selection
-window = SkyWindow(centre=np.array([30.0, 0.0]), radius=2.0)
-subsample = sample.select_subsample(window)
-
-# Directional exposure model
+# Detector geometry and directional exposure
 obs = Observatory(latitude=-35.15, longitude=-69.2, altitude=1425)
-exposure = ExposureModel(observatory=obs, t0=t0, tf=tf, rng=rng_exposure)
+exposure_model = ExposureModel(observatory=obs, t0=t0, tf=tf, rng=rng_exposure)
 
-subsample.assign_directional_exposure(
+# Sky window and per-window event sample (events drawn directly inside the cap)
+window = SkyWindow(centre=np.array([30.0, 0.0]), radius=2.0)
+sample = EventSample.in_window(
     window=window,
-    exposure_model=exposure,
+    n_total=n_total,
+    exposure_model=exposure_model,
+    t0=t0,
+    tf=tf,
+    rng=rng_events,
 )
 
-print("Selected events:", subsample.n_events)
-print("Has exposure:", subsample.has_exposure)
+# Directional exposure values for each event (input to the Lambda estimator)
+sample.assign_directional_exposure(window=window, exposure_model=exposure_model)
+
+# Lambda anisotropy estimator
+lam = lambda_estimator(sample=sample)
+
+print(f"Events in window: {sample.n_sample}")
+print(f"Expected events:  {sample.expected_n:.2f}")
+print(f"Lambda:           {lam:.3f}")
 ```
 
 ## Script naming convention
 
-Monte Carlo scripts follow a two-part scheme: `<mode>_<what_varies>.py`.
+Monte-Carlo scripts follow a two-part scheme: `<mode>_<what_varies>.py`.
 
 | Prefix | Meaning |
 |--------|---------|
@@ -159,21 +172,10 @@ Plot scripts mirror the same root name (`plot_null.py`, `plot_scan_intensity.py`
 Job files in `jobs/` follow the same root without the `run_`/`plot_` prefix
 (`grid_p50.sub`, `run_grid_p50.sh`).
 
-## Diagnostics and Monte Carlo scripts
-
-```bash
-python scripts/diagnostics/sampling_diagnostic.py
-python scripts/diagnostics/exposure_diagnostic.py
-python scripts/diagnostics/flare_diagnostic.py
-python scripts/montecarlo/run_null.py
-python scripts/montecarlo/run_compare_bg_signal.py
-python scripts/montecarlo/run_scan_intensity.py
-python scripts/montecarlo/run_scan_correlation.py
-```
-
-Plotting helpers for the Monte Carlo outputs live in `scripts/plots/`.
-
-Outputs are written under `output/` (created by helper utilities/scripts).
+The scripts under `scripts/` are provided as worked examples of the
+analysis workflows the package supports; new studies are expected to
+add their own scripts following the same conventions. Outputs are
+written under `output/` (created automatically by the helper utilities).
 
 ## Notes
 

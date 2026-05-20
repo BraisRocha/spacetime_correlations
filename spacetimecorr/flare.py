@@ -1,3 +1,29 @@
+"""
+Synthetic flare component for signal-injection studies.
+
+Defines :class:`Flare`, a compact spatial + temporal cluster of cosmic-ray
+events used to overlay a localised signal on an isotropic background.
+
+Parameters carried on the instance:
+
+- ``n_flare`` — number of flare events to inject (``>= 1``),
+- ``duration`` — temporal length of the flare; the flare's start time is
+  drawn uniformly in ``[t0, tf - duration]`` at generation time,
+- ``centre`` — sky position ``[RA_deg, Dec_deg]`` of the flare,
+- ``exposure_model`` — the same :class:`~spacetimecorr.exposure.ExposureModel`
+  used for the background, providing the Bernoulli detection thinning and
+  directional-exposure evaluation.
+
+The spatial spread (``sigma``, Rayleigh radius of the Gaussian cluster in
+the tangent plane) is supplied at generation time to
+:meth:`Flare.generate_in_window`, not at construction.
+
+The class is constructed independently of an
+:class:`~spacetimecorr.event_sample.EventSample`. Use
+:meth:`Flare.generate_in_window` to populate the flare's own arrays,
+and :meth:`EventSample.inject_flare` to overlay it on a sample.
+"""
+
 from __future__ import annotations
 
 import numpy as np
@@ -59,7 +85,7 @@ class Flare:
         rng: np.random.Generator,
     ):
         
-        if not isinstance(n_flare, int) or isinstance(n_flare, bool):
+        if not isinstance(n_flare, (int, np.integer)) or isinstance(n_flare, bool):
             raise TypeError("n_flare must be a positive integer.")
         if n_flare < 1:
             # Zero-event flares carry no signal and force every downstream
@@ -112,7 +138,8 @@ class Flare:
         self.rng = rng
 
         self.n_flare = int(n_flare)
-        self.duration = float(duration_sec)  # seconds
+        self.duration = duration.to(u.s)         # Quantity, preserved unit
+        self.duration_sec = float(duration_sec)  # cached float for hot paths
 
         self.t0 = t0
         self.tf = tf
@@ -152,7 +179,7 @@ class Flare:
         time collapses to ``t0`` deterministically. This is the intended
         behaviour for that regime.
         """
-        latest_start = self._T_obs_sec - self.duration
+        latest_start = self._T_obs_sec - self.duration_sec
         start_offset_sec = self.rng.uniform(0.0, latest_start)
         return self.t0 + TimeDelta(start_offset_sec, format="sec")
 
@@ -199,13 +226,13 @@ class Flare:
         Sample `n_flare` times uniformly inside one flare interval.
 
         If `start` is not given, a flare start is drawn uniformly in
-        [self.t0, self.tf - self.duration].
+        [self.t0, self.tf - self.duration_sec].
         """
         if start is None:
             start = self._draw_flare_start()
 
         # Draw time offsets inside the flare duration
-        offsets_sec = self.rng.uniform(0.0, self.duration, size=n_flare)
+        offsets_sec = self.rng.uniform(0.0, self.duration_sec, size=n_flare)
 
         # Convert offsets into absolute event times
         return start + TimeDelta(offsets_sec, format="sec")
@@ -317,6 +344,14 @@ class Flare:
         Sets ``self.ra``, ``self.dec``, ``self.time``, ``self.exposure``
         and tags ``self.spatial_profile = "gaussian_spherical"``,
         ``self.time_profile = "uniform_thinned"``.
+
+        Directional exposure for each generated event is evaluated at
+        ``window.centre`` rather than at the event's own ``(ra, dec)``.
+        This matches the convention used by
+        :meth:`EventSample.assign_directional_exposure` for in-window
+        samples: every event inside the cap is treated as having the
+        same directional exposure as the cap centre, which is a good
+        approximation for the small radii relevant to this analysis.
         """
 
         if not isinstance(window, SkyWindow):

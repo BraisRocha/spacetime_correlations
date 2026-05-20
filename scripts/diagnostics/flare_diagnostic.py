@@ -52,7 +52,7 @@ def flare_summary_text(flare: Flare, window: SkyWindow, max_rows: int = 10) -> s
     lines.append(f"time_profile             : {flare.time_profile}")
     lines.append(f"flare_type               : {flare.flare_type}")
     lines.append(f"centre [RA, Dec] deg     : {flare.centre}")
-    lines.append(f"duration [s]             : {flare.duration}")
+    lines.append(f"duration [s]             : {flare.duration_sec}")
     lines.append(f"window centre [RA, Dec]  : {window.centre}")
     lines.append(f"window radius [deg]      : {window.radius}")
 
@@ -88,7 +88,7 @@ def flare_summary_text(flare: Flare, window: SkyWindow, max_rows: int = 10) -> s
     lines.append(f"  earliest event         : {tmin.isot}")
     lines.append(f"  latest event           : {tmax.isot}")
     lines.append(f"  span [s]               : {dt_sec:.3f}")
-    lines.append(f"  flare duration [s]     : {flare.duration:.3f}")
+    lines.append(f"  flare duration [s]     : {flare.duration_sec:.3f}")
     lines.append(f"  inside [t0, tf]?       : {in_obs}")
 
     if flare.exposure is not None and len(flare.exposure) > 0:
@@ -135,7 +135,7 @@ def save_flare_arrays(flare: Flare, outdir: Path, stem: str = "flare") -> Path:
         exposure=np.array([]) if flare.exposure is None else flare.exposure,
         centre=flare.centre,
         n_flare=flare.n_flare,
-        duration_sec=flare.duration,
+        duration_sec=flare.duration_sec,
         spatial_profile="" if flare.spatial_profile is None else flare.spatial_profile,
         time_profile="" if flare.time_profile is None else flare.time_profile,
     )

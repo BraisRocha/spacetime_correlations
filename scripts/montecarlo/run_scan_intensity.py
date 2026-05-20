@@ -161,7 +161,7 @@ def main(seed: int) -> None:
                     flare.generate_in_window(window=window, sigma=flare_sigma)
 
                     sample = copy.deepcopy(bkg_sample)
-                    sample.inject_flare(flare=flare)
+                    sample.inject_flare(flare=flare, mode="overdensity")
                     sample.assign_directional_exposure(
                         window=window, exposure_model=exposure_model,
                     )

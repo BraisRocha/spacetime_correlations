@@ -1,3 +1,27 @@
+"""
+Event-level data container and sampling factories.
+
+Defines :class:`EventSample`, the main container for a set of cosmic-ray
+events used throughout the pipeline. Each sample stores per-event arrival
+directions (RA/Dec, in degrees), optional directional-exposure values,
+and the exposure-weighted full-sky population (``n_total``) the sample
+was derived from. Per-event arrival times are also carried but are not
+consumed by the current analysis: the Lambda estimator operates on
+directional-exposure spacings, not on times. The time arrays are kept
+for future extensions.
+
+End-user code constructs samples through the factory classmethods rather
+than ``__init__``:
+
+- :meth:`EventSample.full_sky` — isotropic background over the full sky.
+- :meth:`EventSample.in_window` — Poisson-drawn events restricted to a
+  :class:`~spacetimecorr.skywindow.SkyWindow`, with exposure weighting
+  threaded through.
+
+Flare injection (:meth:`EventSample.inject_flare`) and exposure
+assignment (``assign_*``) operate in place on an existing sample.
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -72,7 +96,7 @@ class EventSample:
         rng: np.random.Generator,
     ):
         # ---- Input validation ------------------------------------------------
-        if not isinstance(n_sample, int) or isinstance(n_sample, bool):
+        if not isinstance(n_sample, int) or isinstance(n_sampleO, bool):
             raise TypeError("n_sample must be an integer.")
         if n_sample < 0:
             raise ValueError("n_sample must be non-negative.")
@@ -358,7 +382,13 @@ class EventSample:
 
     @property
     def has_exposure(self) -> bool:
-        """Return True if exposure values have been assigned."""
+        """Return True if the exposure array has been allocated (structural check only).
+
+        A True value does not imply all entries are finite — after
+        ``inject_flare()`` the array exists but background slots remain NaN
+        until a subsequent ``assign_directional_exposure()`` is called.
+        Finite-value validity is enforced separately by ``lambda_estimator``.
+        """
         return self.exposure is not None
 
     @property
@@ -627,38 +657,58 @@ class EventSample:
     # Public flare manipulation
     # -------------------------------------------------------------------------
 
-    def inject_flare(self, flare: "Flare") -> None:
+    def inject_flare(self, flare: "Flare", *, mode: str) -> None:
         """
         Inject a fully-generated flare into the current sample, in place.
 
-        The flare events are **appended** to the sample while a
-        Poisson-distributed number of existing background events are
-        removed.  This reproduces the statistics of the legacy
-        "full-sky → carve window" pipeline in the new per-window
-        pipeline: when a flare overwrote ``n_flare`` random slots in a
-        full-sky parent of size ``n_total``, on average
-        ``p * n_flare`` of them landed inside the window and effectively
-        masked existing in-window background events.  The probability
-        that one event lies inside the window is::
+        Two modes are supported and the caller must pick one explicitly
+        (the keyword-only ``mode`` argument has no default).  Both modes
+        place the flare events at the **tail** of the sample arrays
+        (indices ``[-n_flare:]``) and set ``flare_mask`` ``True`` there;
+        they differ only in how many existing background events are
+        removed to make room.
 
-            p = expected_n / n_total
+        ``mode="overdensity"``
+            Appends ``n_flare`` flare events to the sample after
+            removing a Poisson-distributed number of existing
+            background events.  Net count grows.  Reproduces the
+            legacy "full-sky → carve window" pipeline in the
+            per-window pipeline: a flare would overwrite
+            ``n_flare`` random slots in a hypothetical full-sky parent
+            of size ``n_total``; on average ``p * n_flare`` of those
+            slots happened to lie inside the window (where
+            ``p = expected_n / n_total``), and those events are no
+            longer in the in-window sample::
 
-        and the number of background events stochastically masked by
-        the flare follows::
+                n_removed ~ Poisson(p * n_flare)        # clipped at n_sample
+                n_sample_after = n_sample_before - n_removed + n_flare
 
-            n_removed ~ Poisson(p * n_flare)
+            Tests both spatial and temporal anisotropy: the window
+            count goes up *and* the flare events cluster in time.
 
-        clipped at ``n_sample`` (one cannot remove more background than
-        is present).  After injection::
+        ``mode="no_overdensity"``
+            Removes exactly ``n_flare`` random background events and
+            appends the ``n_flare`` flare events.  Net count
+            preserved.  This is the semantics of the legacy full-sky
+            pipeline before any window cut: the flare replaces
+            ``n_flare`` events of the parent ``n_total``-event sample
+            without changing the sample size.  Useful for testing
+            temporal-only signals (no spatial overdensity at the
+            window-count level)::
 
-            n_sample_after = n_sample_before - n_removed + n_flare
-            flare_mask[-n_flare:] = True       # flare events at the tail
+                n_removed      = n_flare
+                n_sample_after = n_sample_before
 
         Parameters
         ----------
         flare : Flare
-            Flare with ``ra``, ``dec`` and ``exposure`` already populated
-            (typically via :meth:`Flare.generate_in_window`).
+            Flare with ``ra``, ``dec`` and ``exposure`` already
+            populated (typically via :meth:`Flare.generate_in_window`).
+        mode : {"overdensity", "no_overdensity"}
+            Required keyword.  Selects the injection semantics
+            described above.  There is no default — the caller must
+            pick one so it is always obvious what kind of injection
+            took place.
 
         Raises
         ------
@@ -667,29 +717,40 @@ class EventSample:
         RuntimeError
             If the sample already contains an injected flare.
         ValueError
-            If ``self`` has no coordinates, ``flare`` is not fully
-            generated, ``expected_n`` is unset, or ``n_total <= 0``.
+            - If ``mode`` is not one of the two accepted strings.
+            - If coordinates have not been assigned.
+            - If the flare has not been fully generated.
+            - In ``"overdensity"`` mode: if ``expected_n`` is unset,
+              ``n_total <= 0``, or ``n_flare > n_total``.
+            - In ``"no_overdensity"`` mode: if ``n_flare > n_sample``.
 
         Notes
         -----
-        - If ``self.exposure`` is ``None`` it is allocated as ``NaN`` for
-          the surviving background slots and filled with
-          ``flare.exposure`` at the flare slots. The caller is
+        - If ``self.exposure`` is ``None`` it is allocated as ``NaN``
+          for the surviving background slots and filled with
+          ``flare.exposure`` at the appended tail.  The caller is
           responsible for a subsequent
-          :meth:`assign_directional_exposure` to populate the background
-          slots.
-        - If ``self.exposure`` was already populated, the surviving
+          :meth:`assign_directional_exposure` to populate the
+          background slots.
+        - If ``self.exposure`` was already populated, surviving
           background entries keep their exposure values and the flare
           exposure is appended unchanged.
-        - The Poisson model for ``n_removed`` is the small-``p`` /
-          large-``n_flare`` approximation of the underlying
-          Hypergeometric draw.  It is accurate when the window covers
-          a small fraction of the sky, which is the regime of interest.
+        - The Poisson model for ``n_removed`` in ``"overdensity"``
+          mode is the small-``p`` / large-``n_flare`` approximation of
+          the underlying Hypergeometric draw; accurate when the
+          window covers a small fraction of the sky, which is the
+          regime of interest.
         """
         from .flare import Flare
 
+        # ---- Common validation ------------------------------------------
         if not isinstance(flare, Flare):
             raise TypeError("flare must be an instance of Flare.")
+
+        if mode not in ("overdensity", "no_overdensity"):
+            raise ValueError(
+                f"mode must be 'overdensity' or 'no_overdensity'; got {mode!r}."
+            )
 
         if self.has_flare:
             raise RuntimeError("This sample already contains an injected flare.")
@@ -703,37 +764,45 @@ class EventSample:
                 "Coordinates and exposure must be computed before injection."
             )
 
-        if self.expected_n is None:
-            raise ValueError(
-                "Sample expected_n is not set; cannot determine the "
-                "background-overlap probability used for flare thinning."
-            )
+        # ---- Mode-specific n_removed ------------------------------------
+        if mode == "overdensity":
+            if self.expected_n is None:
+                raise ValueError(
+                    "Sample expected_n is not set; cannot determine the "
+                    "background-overlap probability used for overdensity-mode "
+                    "flare thinning."
+                )
+            if self.n_total <= 0:
+                raise ValueError(
+                    "Sample n_total must be > 0 for flare injection."
+                )
+            if flare.n_flare > self.n_total:
+                raise ValueError(
+                    f"In overdensity mode, n_flare ({flare.n_flare}) cannot "
+                    f"exceed n_total ({self.n_total}): the flare is drawn "
+                    f"from a hypothetical full-sky sample of that size."
+                )
+            p_in_window = float(self.expected_n) / float(self.n_total)
+            mu_removed = p_in_window * flare.n_flare
+            n_removed = int(self.rng.poisson(mu_removed))
+            n_removed = min(n_removed, self.n_sample)
+        else:  # mode == "no_overdensity"
+            if flare.n_flare > self.n_sample:
+                raise ValueError(
+                    f"In no_overdensity mode, n_flare ({flare.n_flare}) "
+                    f"cannot exceed n_sample ({self.n_sample}): there are "
+                    f"not enough slots to replace."
+                )
+            n_removed = flare.n_flare
 
-        if self.n_total <= 0:
-            raise ValueError(
-                "Sample n_total must be > 0 for flare injection."
-            )
-
-        # Probability that a single full-sky event lies inside the window.
-        p_in_window = float(self.expected_n) / float(self.n_total)
-
-        # Number of existing in-window background events the flare would
-        # have stochastically masked in the legacy full-sky pipeline.
-        # Clipped at n_sample (cannot remove more events than exist).
-        mu_removed = p_in_window * flare.n_flare
-        n_removed = int(self.rng.poisson(mu_removed))
-        n_removed = min(n_removed, self.n_sample)
-
+        # ---- Common removal + tail append -------------------------------
+        keep_mask = np.ones(self.n_sample, dtype=bool)
         if n_removed > 0:
             remove_idx = self.rng.choice(
                 self.n_sample, size=n_removed, replace=False,
             )
-            keep_mask = np.ones(self.n_sample, dtype=bool)
             keep_mask[remove_idx] = False
-        else:
-            keep_mask = np.ones(self.n_sample, dtype=bool)
 
-        # Surviving background + appended flare events
         new_ra = np.concatenate([self.ra[keep_mask], flare.ra])
         new_dec = np.concatenate([self.dec[keep_mask], flare.dec])
 
@@ -745,7 +814,6 @@ class EventSample:
                 [self.exposure[keep_mask], flare.exposure]
             )
 
-        # Flare mask: True for the appended flare events at the tail.
         new_flare_mask = np.zeros(new_ra.size, dtype=bool)
         new_flare_mask[-flare.n_flare:] = True
 
