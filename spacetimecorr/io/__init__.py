@@ -6,5 +6,4 @@ writing metadata files, and configuring per-run loggers.
 """
 
 from .logs import setup_logger
-from .merge import merge_results
 from .output import make_run_dir, write_metadata

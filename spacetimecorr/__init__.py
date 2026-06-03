@@ -15,6 +15,8 @@ The package exposes:
     Reproducible, named random-number streams.
 - ``lambda_*`` / ``lambda_estimator`` / ``empirical_p_values``
     Anisotropy estimators and their distributions.
+- ``poisson_mid_p_sigma`` / ``pvalue_to_sigma`` / ``sigma_to_pvalue``
+    Significance conversion utilities.
 
 Recommended usage
 -----------------
@@ -43,12 +45,15 @@ from .statistics import (
     lambda_marginal_sigma,
     lambda_marginal_pvalue,
     lambda_marginal_pvalue_and_sigma,
+    lambda_marginal_isigma,
     lambda_marginal_rvs,
     lambda_estimator,
     empirical_p_values,
     plot_lambda_joint_heatmap,
     pvalue_to_sigma,
     sigma_to_pvalue,
+    poisson_mid_p_value,
+    poisson_mid_p_sigma,
 )
 from .rng import RNGManager
 
@@ -79,4 +84,7 @@ __all__ = [
     "plot_lambda_joint_heatmap",
     "pvalue_to_sigma",
     "sigma_to_pvalue",
+    "poisson_mid_p_value",
+    "poisson_mid_p_sigma",
+    "lambda_marginal_isigma",
 ]

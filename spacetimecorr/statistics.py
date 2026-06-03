@@ -233,9 +233,9 @@ def lambda_marginal_logsf(x, mu, nmax=None):
     # log Poisson weights: log[e^{-mu} mu^n / n!]
     logw = -mu + n * np.log(mu) - scs.gammaln(n + 1.0)
 
-    # Vectorised over x: gamma.logsf broadcasts x[..., None] against a[None, :].
-    x_arr = np.atleast_1d(x)
-    logQ = scp.gamma.logsf(x_arr[:, None], a=a[None, :], loc=0.0, scale=1.0)
+    # Vectorised over x: flatten so broadcasting works for any input shape.
+    x_flat = np.atleast_1d(x).ravel()
+    logQ = scp.gamma.logsf(x_flat[:, None], a=a[None, :], loc=0.0, scale=1.0)
     out = scs.logsumexp(logw[None, :] + logQ, axis=1)
 
     if np.ndim(x) == 0:
@@ -433,6 +433,54 @@ def sigma_to_pvalue(sigma):
     """
     sigma = np.asarray(sigma, dtype=float)
     return scp.norm.sf(sigma)
+
+def poisson_mid_p_value(n_obs: np.ndarray, mu: float) -> np.ndarray:
+    """Right-tail mid-p value from a Poisson counting test.
+
+    p_mid = P(N > n_obs) + 0.5 * P(N = n_obs)  under N ~ Poisson(mu).
+
+    Parameters
+    ----------
+    n_obs : float or array-like
+        Observed count(s).
+    mu : float
+        Poisson mean parameter under the null hypothesis.
+
+    Returns
+    -------
+    p_mid : float or ndarray
+        Mid-p value(s).
+    """
+    n_obs = np.asarray(n_obs, dtype=float)
+    return scp.poisson.sf(n_obs, mu) + 0.5 * scp.poisson.pmf(n_obs, mu)
+
+def poisson_mid_p_sigma(n_obs: np.ndarray, mu: float) -> np.ndarray:
+    """Gaussian-equivalent significance from a Poisson counting test.
+
+    The p-value is computed using the mid-p prescription for the
+    right-tail probability under N ~ Poisson(mu):
+
+        p_mid = P(N > n_obs) + 0.5 * P(N = n_obs)
+
+    This reduces the conservatism of the exact discrete Poisson test
+    and yields smoother significance behaviour at low counts.
+
+    Parameters
+    ----------
+    n_obs : float or array-like
+        Observed count(s).
+    mu : float
+        Poisson mean parameter under the null hypothesis.
+
+    Returns
+    -------
+    sigma : float or ndarray
+        Gaussian-equivalent significance(s).
+    """
+    n_obs = np.asarray(n_obs, dtype=float)
+    pmf = scp.poisson.pmf(n_obs, mu)
+    p_mid = scp.poisson.sf(n_obs, mu) + 0.5 * pmf
+    return pvalue_to_sigma(p_mid)
 
 def plot_lambda_joint_heatmap(
     mu,

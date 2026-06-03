@@ -5,6 +5,15 @@ into a single ``results_merged.npz`` file.
 Each per-job file is expected to contain the same set of keys. The merged
 file holds, for every key, a 1D array of length ``n_jobs`` where index ``i``
 corresponds to ``job_id == i`` (jobs are sorted numerically by their id).
+
+Usage (from the repo root, with the package importable in the active env)::
+
+    python -m spacetimecorr.io.merge <submission_dir>
+    python -m spacetimecorr.io.merge <submission_dir> --output-name custom.npz
+
+``<submission_dir>`` may contain the per-job files directly or inside a
+``data/`` subdirectory; both layouts are auto-detected. Job ids must be
+contiguous from 0 (``results_job0.npz``, ``results_job1.npz``, ...).
 """
 
 from __future__ import annotations

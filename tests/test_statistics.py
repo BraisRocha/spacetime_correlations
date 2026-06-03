@@ -144,9 +144,13 @@ def test_marginal_logsf_truncation_converged(mu, sigma_target):
     that extending it barely changes the result, even for the small tail
     probabilities (high sigma) that matter for sensitivity studies.
 
-    Criterion: compute sf at default nmax and at default nmax + delta and
-    verify |Delta sf / sf| << 1. In log space this is
-    |Delta logsf| << 1; we require strict convergence at the 1e-10 level.
+    Criterion: compare results using the default truncation index and a
+    larger truncation index. Stability is assessed in log space via
+
+        |logsf_b - logsf_a|
+
+    which approximates the relative change in sf for small differences.
+    We require convergence at the 1e-10 level.
     """
     x = lambda_marginal_isigma(sigma_target, mu)
     default_nmax = max(50, int(np.ceil(mu + 10.0 * np.sqrt(mu + 1.0) + 50.0)))

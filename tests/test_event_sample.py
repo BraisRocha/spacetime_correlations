@@ -2,9 +2,11 @@
 
 import numpy as np
 import pytest
+import scipy.stats as scp
 from astropy.time import Time
 
 from spacetimecorr import EventSample, Flare, SkyWindow
+from spacetimecorr.statistics import lambda_estimator, lambda_marginal_sf
 
 
 # -------------------------------------------------------------------------
@@ -654,3 +656,75 @@ def test_inject_flare_no_overdensity_n_flare_exceeds_n_sample_raises(
     big_flare.generate_in_window(window=window, sigma=2.0)
     with pytest.raises(ValueError):
         s.inject_flare(big_flare, mode="no_overdensity")
+
+
+# -------------------------------------------------------------------------
+# Statistical validation under H0 (background-only)
+# -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dec_centre", [-50.0, -30.0, -10.0])
+def test_in_window_realised_n_matches_expected_across_declinations(
+    dec_centre, exposure_model, t0, tf, seed,
+):
+    """Realised ``n_sample`` averaged over trials must match
+    ``SkyWindow.expected_n_in_window`` to Poisson tolerance.
+
+    Closes the loop between the analytic exposure-weighted expectation and
+    the actual Poisson draw performed by ``EventSample.in_window``.  The
+    existing ``test_in_window_expected_n_matches_window_formula`` only
+    checks that the stored ``expected_n`` attribute equals the formula, so
+    a regression that broke the sampler (e.g. forgetting ``omega``,
+    applying it twice, or using the wrong declination) would slip through.
+    Sweeping the window centre across declinations exercises the range
+    over which ``omega(delta_centre)`` actually varies.
+    """
+    n_trials = 200
+    n_total = 20_000
+    window = SkyWindow(centre=[180.0, dec_centre], radius=15.0)
+    expected = window.expected_n_in_window(n_total, exposure_model)
+
+    rng = np.random.default_rng(seed)
+    counts = np.empty(n_trials, dtype=int)
+    for i in range(n_trials):
+        s = EventSample.in_window(
+            window=window, n_total=n_total, exposure_model=exposure_model,
+            t0=t0, tf=tf, rng=rng,
+        )
+        counts[i] = s.n_sample
+
+    # SE of the mean for N Poisson(expected) trials is sqrt(expected/N).
+    # 4-sigma is a loose regression guard.
+    se = np.sqrt(expected / n_trials)
+    assert abs(counts.mean() - expected) < 4.0 * se
+
+
+def test_in_window_pvalue_uniform_under_h0(
+    window, exposure_model, t0, tf, seed,
+):
+    """Background-only realisations must yield p-values uniform on [0, 1].
+
+    For each trial: draw a per-window background sample, assign
+    directional exposure, compute the Lambda statistic, convert to a
+    p-value through the marginal Lambda survival function evaluated at
+    ``mu = expected_n``.  Under H0 the resulting p-values should be
+    ``Uniform(0, 1)``; a one-sample KS test guards against bias in any
+    stage of the pipeline (sampler, exposure assignment, or reference
+    distribution).
+    """
+    n_trials = 200
+    n_total = 20_000
+
+    rng = np.random.default_rng(seed)
+    lambdas = np.empty(n_trials)
+    for i in range(n_trials):
+        s = EventSample.in_window(
+            window=window, n_total=n_total, exposure_model=exposure_model,
+            t0=t0, tf=tf, rng=rng,
+        )
+        s.assign_directional_exposure(window, exposure_model)
+        lambdas[i] = lambda_estimator(s)
+
+    pvals = lambda_marginal_sf(lambdas, mu=float(s.expected_n))
+    ks_p = float(scp.kstest(pvals, "uniform").pvalue)
+    assert ks_p > 0.01

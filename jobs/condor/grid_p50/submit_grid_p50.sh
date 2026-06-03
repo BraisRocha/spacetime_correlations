@@ -18,7 +18,7 @@ import numpy as np
 
 durations = 3650 * 10**np.arange(-3.9, 0.0001, 0.1)
 
-# intensity from 0.1 to 0.5 in steps of 0.025
+# intensity from 0.025 to 0.5 in steps of 0.025
 intensities = np.arange(0.025, 0.5001, 0.025)
 
 seed = ${seed}

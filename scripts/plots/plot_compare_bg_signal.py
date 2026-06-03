@@ -177,9 +177,23 @@ def main(results_dir: str | Path) -> None:
     # p-value plot
     # ------------------------------------------------------------------
 
+    pvalues_nbkg = stc.poisson_mid_p_value(n_sample_bkg, expected_n)
+    pvalues_nflare = stc.poisson_mid_p_value(n_sample_flare, expected_n)
+
+    # Shared constant-width binning over [0, 1] for both methods so the
+    # density and ratio plots are comparable on the same support.
+    p_edges = np.linspace(0.0, 1.0, 30)
+
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(pvalues_bkg, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Isotropy")
-    ax.hist(pvalues_flare, bins="sqrt", density=True, histtype="step", linewidth=1.5, label="Flare")
+    ax.hist(pvalues_bkg, bins=p_edges, density=True,
+            histtype="step", linewidth=1.5, label=fr"$\Lambda$ bkg")
+    ax.hist(pvalues_flare, bins=p_edges, density=True,
+            histtype="step", linewidth=1.5, label=fr"$\Lambda$ bkg+flare")
+    ax.hist(pvalues_nbkg, bins=p_edges, density=True,
+            histtype="step", linewidth=1.5, linestyle="--", label="n bkg")
+    ax.hist(pvalues_nflare, bins=p_edges, density=True,
+            histtype="step", linewidth=1.5, linestyle="--", label="n bkg+flare")
+
 
     ax.set_xlabel("p-value")
     ax.set_ylabel("Density")
@@ -190,6 +204,39 @@ def main(results_dir: str | Path) -> None:
 
     fig.tight_layout()
     fig.savefig(results_dir/ "p_values.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # ------------------------------------------------------------------
+    # Lambda / n ratio of p-value distributions
+    # ------------------------------------------------------------------
+    # Same constant-width bins as the p-value plot above, so the ratios
+    # are computed on the same support and can be overlaid directly.
+    lam_bkg_counts, _ = np.histogram(pvalues_bkg, bins=p_edges)
+    lam_flare_counts, _ = np.histogram(pvalues_flare, bins=p_edges)
+    poi_bkg_counts, _ = np.histogram(pvalues_nbkg, bins=p_edges)
+    poi_flare_counts, _ = np.histogram(pvalues_nflare, bins=p_edges)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bkg_ratio = np.where(poi_bkg_counts > 0,
+                             lam_bkg_counts / poi_bkg_counts, np.nan)
+        flare_ratio = np.where(poi_flare_counts > 0,
+                               lam_flare_counts / poi_flare_counts, np.nan)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.stairs(bkg_ratio, p_edges, linewidth=1.5,
+              label=r"$\Lambda$ bkg / n bkg")
+    ax.stairs(flare_ratio, p_edges, linewidth=1.5, linestyle="--",
+              label=r"$\Lambda$ flare / n flare")
+    ax.axhline(1.0, color="black", linewidth=0.8, linestyle=":")
+
+    ax.set_xlabel("p-value")
+    ax.set_ylabel(r"$\Lambda$ / n ratio")
+    ax.set_title(r"Ratio of p-value distributions ($\Lambda$ / n)")
+    ax.set_yscale("log")
+    ax.legend()
+
+    fig.tight_layout()
+    fig.savefig(results_dir / "p_values_ratio.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     # ------------------------------------------------------------------
@@ -229,5 +276,5 @@ def main(results_dir: str | Path) -> None:
 if __name__ == "__main__":
     # Change this path to the run you want to plot
     run_dir = Path("/lustre/Auger/brais.rocha/spacetime_correlations/output/scripts/compare_bg_signal")
-    sim_id = "20260519_094028_seed42"
+    sim_id = "20260525_152201_seed42"
     main(run_dir/sim_id)

@@ -91,7 +91,7 @@ def main(
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_total = int(1e5)
+    n_total = int(5e5)
     n_simulations = int(1e4)
     max_attempts = int(3 * n_simulations)
 

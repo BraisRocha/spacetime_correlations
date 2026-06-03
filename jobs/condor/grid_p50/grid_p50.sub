@@ -9,6 +9,6 @@ should_transfer_files   = Yes
 when_to_transfer_output = ON_EXIT
 +flavour                = "xshort"
 arguments               = $(flare_duration) $(flare_intensity) $(seed) $(Process) $(submission_id)
-request_memory          = 2G
+request_memory          = 1G
 
 queue flare_duration, flare_intensity, seed from /lustre/Auger/brais.rocha/spacetime_correlations/jobs/condor/grid_p50/grid_p50_params.txt

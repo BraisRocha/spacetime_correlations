@@ -15,29 +15,12 @@ fix right now, but which should be revisited.
 
 ## Code quality
 
-- **Statistical-validation tests** (not yet in `tests/`)
-  The deterministic / contract part of the test suite is in place under
-  `tests/` (see `test_skywindow.py`, `test_event_sample.py`,
-  `test_flare.py`, `test_exposure.py`, `test_statistics.py`,
-  `test_observatory.py`).  Three statistical validations remain to be
-  added as proper pass/fail tests, with seeded RNG + a numeric tolerance.
-  Visual versions of (some of) these already exist as Monte-Carlo
-  diagnostics; the pytest versions will assert on a statistic rather than
-  produce a plot.
-
-  - **Per-window isotropy validation** — with `EventSample.in_window`
-    generating background-only events, verify that the realised
-    p-value distribution is uniform on `[0, 1]` (KS test against
-    `Uniform(0, 1)`).  Also resolve whether a Poisson or a binomial
-    draw is more appropriate given the absence of sampling bias.
-  - **Exposure-weighted end-to-end check** — now that
-    `SkyWindow.expected_n_in_window` folds in `omega(delta_centre)` and
-    `EventSample.in_window` threads `exposure_model` through, verify
-    that the realised event count vs. declination tracks the expected
-    count within Poisson tolerance.
-  - **Effect of the significance-function cut** — add a test that
-    quantifies whether the cut in the significance function affects
-    the result.
+- **Poisson vs. binomial draw in `EventSample.in_window`** — open
+  question, separated from the now-resolved statistical-validation tests.
+  The per-window sampler currently uses a Poisson draw with mean
+  ``expected_n_in_window``.  Whether a binomial draw on the parent
+  full-sky population is more appropriate given the absence of sampling
+  bias is still to be settled.
 
 ## Ideas for the future
 

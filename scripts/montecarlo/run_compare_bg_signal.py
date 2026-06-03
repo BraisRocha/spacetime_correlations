@@ -39,8 +39,8 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_total = int(2e5)
-    n_simulations = int(1e3)
+    n_total = int(5e5)
+    n_simulations = int(1e4)
     max_attempts = int(3 * n_simulations)
 
     # Observation interval
@@ -58,9 +58,9 @@ def main(seed: int) -> None:
     altitude_pa = 1425
 
     # Flare parameters
-    flare_duration = 1 * u.day
+    flare_duration = 10 * u.year
     flare_sigma = 1.0  # deg
-    flare_intensity = 0.  # n_flare / expected_n
+    flare_intensity = 0.2  # n_flare / expected_n
 
     # ------------------------------------------------------------------
     # Output directory
