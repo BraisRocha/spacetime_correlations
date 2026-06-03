@@ -12,12 +12,8 @@ axes.linewidth: .5
 axes.labelsize: 8
 
 # tick marks
-# Active settings: ticks on all four sides, pointing inward
-xtick.top : True
-ytick.right : True
-# Previous settings (ticks only on bottom/left, pointing outward):
-# xtick.top : False
-# ytick.right : False
+xtick.top : False
+ytick.right : False
 # xtick.direction : out
 # ytick.direction : out
 

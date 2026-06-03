@@ -243,7 +243,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
     # Discrete colorbar over the intensity grid (displayed in percent).
     # Ticks are centred in their bin: bounds straddle each intensity by
     # ±step/2 so e.g. for [10,20,30,40,50] the bins are [5-15, 15-25, ...].
-    intensities_pct = intensities * 100.0
+    intensities_pct = intensities
     step_pct = (
         float(np.median(np.diff(intensities_pct)))
         if len(intensities_pct) > 1 else 10.0
@@ -266,7 +266,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
         spacing="proportional",
     )
     cbar.ax.minorticks_off()
-    cbar.set_label(r"$f\,(\%)$")
+    cbar.set_label(r"Signal-to-noise ratio")
     cbar.outline.set_linewidth(0.5)
     cbar.ax.tick_params(direction="out")
 
@@ -289,10 +289,10 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
 
 if __name__ == "__main__":
     # Edit these paths to point at the two runs you want to combine
-    base = Path("/lustre/Auger/brais.rocha/spacetime_correlations/output/scripts/scan_intensity")
+    base = Path("output/scripts/scan_intensity")
     run_dirs = [
-        base / "20260519_094747_seed42", # run 1 day
-        base / "20260519_094815_seed42", # run 1 month
+        base / "20260603_150233_seed42", # run 1 day
+        base / "20260603_150700_seed42", # run 1 month
     ]
     output_dir = base / "figures"
     main(run_dirs=run_dirs, output_dir=output_dir)

@@ -19,6 +19,7 @@ the Condor submit file. Outputs are written to
 
 import argparse
 import os
+import pickle
 import sys
 import time
 from pathlib import Path
@@ -169,7 +170,7 @@ def main(
     )
 
     expected_n = window.expected_n_in_window(n_total, exposure_model)
-    mu_flare = flare_intensity * expected_n
+    mu_flare = flare_intensity * np.sqrt(expected_n) # Signal-to-Noise Ratio
 
     # ------------------------------------------------------------------
     # Storage
@@ -287,11 +288,33 @@ def main(
 
     np.savez_compressed(
         data_dir / f"results{job_suffix}.npz",
-        lambda_flare_p50=lambda_flare_p50,
-        n_sample_window_p50=n_sample_window_p50,
+        lambda_flare=lambda_flare,
+        n_sample_window=n_sample_window,
         flare_duration_days=flare_duration.to_value(u.day),
         flare_intensity=flare_intensity,
     )
+
+    # ------------------------------------------------------------------
+    # Per-simulation p-values, shaped (1, 1, n_sims) for grid merging.
+    # ------------------------------------------------------------------
+    pvalues_lambda = np.asarray(
+        stc.lambda_marginal_sf(lambda_flare, expected_n), dtype=float,
+    )
+    pvalues_poisson = np.asarray(
+        stc.poisson_mid_p_value(n_sample_window, expected_n), dtype=float,
+    )
+
+    durations_arr = np.array([flare_duration.to_value(u.day)], dtype=float)
+    intensities_arr = np.array([flare_intensity], dtype=float)
+    pvalues_lambda_3d = pvalues_lambda[np.newaxis, np.newaxis, :]
+    pvalues_poisson_3d = pvalues_poisson[np.newaxis, np.newaxis, :]
+
+    pvalues_lambda_path = data_dir / f"pvalues_lambda{job_suffix}.pkl"
+    pvalues_poisson_path = data_dir / f"pvalues_poisson{job_suffix}.pkl"
+    with pvalues_lambda_path.open("wb") as fh:
+        pickle.dump((durations_arr, intensities_arr, pvalues_lambda_3d), fh)
+    with pvalues_poisson_path.open("wb") as fh:
+        pickle.dump((durations_arr, intensities_arr, pvalues_poisson_3d), fh)
 
     elapsed = time.time() - start_time
 
@@ -337,6 +360,8 @@ def main(
     )
 
     logger.info("Saved results to %s", data_dir / f"results{job_suffix}.npz")
+    logger.info("Saved Lambda p-values to %s", pvalues_lambda_path)
+    logger.info("Saved Poisson p-values to %s", pvalues_poisson_path)
     logger.info("Simulation finished in %.2f seconds", elapsed)
 
 
