@@ -18,6 +18,8 @@ p-value of the median statistic, so this reproduces the legacy
 Left panel  - Poisson counting test.
 Right panel - Lambda test.
 """
+from __future__ import annotations
+
 import json
 import pickle
 import warnings

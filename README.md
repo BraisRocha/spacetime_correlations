@@ -286,3 +286,37 @@ written under `output/` (created automatically by the helper utilities).
 - APIs are still evolving and may change between versions.
 - `spacetimecorr` can be imported without `healpy`; `healpy` is loaded only when calling HEALPix map/plot methods.
 - See `TODO.md` for known issues and follow-up work that has been deferred.
+
+## Python 3.9 compatibility
+
+The package targets **Python >= 3.9** (see `requires-python` in `pyproject.toml`).
+The natural minimum would be 3.10, because the code makes heavy use of two
+Python 3.10+ features. To support the 3.9 interpreters found on some clusters,
+the following accommodations were made:
+
+1. **PEP 604 union annotations (`X | Y`).** Used throughout the type hints.
+   Natively this requires 3.10. It is made 3.9-safe by adding
+   `from __future__ import annotations` at the top of every module that uses
+   it, which defers annotation evaluation (the hints become strings and are
+   never evaluated at runtime).
+2. **`@dataclass(slots=True)`.** The `slots=` parameter is a runtime feature of
+   3.10+ and cannot be deferred. It was removed from the two affected
+   dataclasses (`Observatory` in `spacetimecorr/observatory.py` and `SkyWindow`
+   in `spacetimecorr/skywindow.py`), losing only a minor memory optimisation;
+   behaviour is otherwise identical. These lines are marked with a
+   `# NOTE: no slots=True (requires Python >= 3.10)` comment.
+
+### Reverting to Python >= 3.10 only
+
+If 3.9 support is no longer needed, undo the above:
+
+- Set `requires-python = ">=3.10"` in `pyproject.toml`.
+- Restore `slots=True` on the two dataclasses (search for the
+  `# NOTE: no slots=True` comments and change `@dataclass(frozen=True)` back to
+  `@dataclass(frozen=True, slots=True)`).
+- Optionally remove the `from __future__ import annotations` lines (harmless to
+  keep, but unnecessary on 3.10+).
+
+Compatibility was verified with [`vermin`](https://github.com/netromdk/vermin):
+`vermin --eval-annotations spacetimecorr scripts tests` reports a minimum
+required version of 3.9.

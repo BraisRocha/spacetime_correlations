@@ -1,6 +1,8 @@
 """
 Load saved bg-vs-signal comparison outputs and make plots.
 """
+from __future__ import annotations
+
 import json
 from pathlib import Path
 

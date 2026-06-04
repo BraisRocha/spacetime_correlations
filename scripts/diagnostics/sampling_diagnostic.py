@@ -20,6 +20,8 @@ No assertions — pass/fail checks for these contracts live in
 ``tests/test_event_sample.py``.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 
 import numpy as np

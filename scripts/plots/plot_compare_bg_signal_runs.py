@@ -6,6 +6,8 @@ and overlays their Lambda, n_sample and p-value distributions on the
 same axes. Background distributions across runs are expected to coincide
 (isotropy is the same); the flare distributions are what should differ.
 """
+from __future__ import annotations
+
 import json
 from pathlib import Path
 

@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 if TYPE_CHECKING:
     from .exposure import ExposureModel
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)  # NOTE: no slots=True (requires Python >= 3.10)
 class SkyWindow:
     """A circular window (spherical cap) on the celestial sphere.
 

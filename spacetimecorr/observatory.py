@@ -18,7 +18,7 @@ import astropy.units as u
 from dataclasses import dataclass, field
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)  # NOTE: no slots=True (requires Python >= 3.10)
 class Observatory:
     """
     Define the position of an observatory.

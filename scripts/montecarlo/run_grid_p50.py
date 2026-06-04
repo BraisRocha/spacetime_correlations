@@ -21,6 +21,8 @@ the Condor submit file. Outputs are written to
 ``output/scripts/grid_p50/<run_name>/``.
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import pickle

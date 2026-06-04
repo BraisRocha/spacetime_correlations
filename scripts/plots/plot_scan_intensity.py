@@ -6,6 +6,8 @@ duration) into a single two-panel figure of Lambda distributions vs
 flare intensity. Each run contributes one panel; the isotropy null is
 pooled across both runs to maximise statistics.
 """
+from __future__ import annotations
+
 import json
 from pathlib import Path
 

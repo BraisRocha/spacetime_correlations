@@ -19,6 +19,8 @@ into the 3-sigma / 5-sigma threshold lines:
 The longest-T_obs panel has ``trials_factor = 1`` (no penalty); the
 shorter-T_obs panel(s) get higher thresholds.
 """
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
