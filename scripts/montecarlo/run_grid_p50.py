@@ -8,8 +8,12 @@ grid cell. Each job:
        ``EventSample.in_window``.
     2. Injects a flare of the requested duration and signal-to-noise
        ratio on top of each background sample (in-place replacement).
-    3. Saves only the 50th percentile of the flare-injected Lambda
-       distribution.
+    3. Saves the per-simulation Lambda and Poisson p-values as two
+       pickle files, each holding a tuple
+       ``(durations, intensities, pvalues)`` with ``pvalues`` shaped
+       ``(1, 1, n_simulations)`` so that ``merge_grid_pvalues`` can
+       assemble them into the full ``(n_durations, n_intensities,
+       n_simulations)`` grid.
 
 The ``flare_duration`` (in days), ``flare_intensity`` (S/N), ``seed``,
 and an optional ``job_id`` are passed in as command-line arguments by
@@ -286,14 +290,6 @@ def main(
     logger.info("lambda_flare p50: %.6e", lambda_flare_p50)
     logger.info("n_sample_window p50: %.1f", n_sample_window_p50)
 
-    np.savez_compressed(
-        data_dir / f"results{job_suffix}.npz",
-        lambda_flare=lambda_flare,
-        n_sample_window=n_sample_window,
-        flare_duration_days=flare_duration.to_value(u.day),
-        flare_intensity=flare_intensity,
-    )
-
     # ------------------------------------------------------------------
     # Per-simulation p-values, shaped (1, 1, n_sims) for grid merging.
     # ------------------------------------------------------------------
@@ -359,7 +355,6 @@ def main(
         },
     )
 
-    logger.info("Saved results to %s", data_dir / f"results{job_suffix}.npz")
     logger.info("Saved Lambda p-values to %s", pvalues_lambda_path)
     logger.info("Saved Poisson p-values to %s", pvalues_poisson_path)
     logger.info("Simulation finished in %.2f seconds", elapsed)

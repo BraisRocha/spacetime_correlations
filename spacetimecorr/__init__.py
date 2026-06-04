@@ -26,7 +26,7 @@ Import the package as ``stc`` in scripts and notebooks::
 """
 
 from .observatory import Observatory
-from .skywindow import SkyWindow
+from .skywindow import SkyWindow, SkyGrid
 from .exposure import ExposureModel
 from .event_sample import EventSample
 from .flare import Flare
@@ -60,6 +60,7 @@ from .rng import RNGManager
 __all__ = [
     "Observatory",
     "SkyWindow",
+    "SkyGrid",
     "ExposureModel",
     "EventSample",
     "Flare",

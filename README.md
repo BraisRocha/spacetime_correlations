@@ -175,6 +175,92 @@ print(f"Lambda (bkg):     {lam_bkg:.3f}")
 print(f"Lambda (+flare):  {lam_flare:.3f}")
 ```
 
+## Running the 2-D (duration, intensity) grid on HTCondor
+
+`run_grid_p50.py` evaluates the sensitivity of the Lambda and Poisson
+tests over a 2-D grid of flare **duration** × flare **intensity**, with
+**one Condor job per grid cell**. Each job injects a flare on top of
+`n_simulations` background realizations and stores the full
+per-simulation p-value distribution for both tests. The end-to-end
+workflow has three steps: **submit → merge → plot**.
+
+### 1. Submit the grid
+
+```bash
+bash jobs/condor/grid_p50/submit_grid_p50.sh
+```
+
+This script:
+1. Regenerates the parameter grid `jobs/condor/grid_p50/grid_p50_params.txt`
+   (durations × intensities × seed — edit the ranges at the top of the
+   script if needed).
+2. Builds a **submission ID** from the current timestamp
+   (e.g. `20260525_153127`) and submits all cells to HTCondor.
+
+The submission ID is printed to the terminal and is also the name of the
+output directory. **Write it down — you need it for the plot step.**
+
+Each job writes into `output/scripts/grid_p50/<ID>/data/` and produces
+four files (`N` = the job/process number):
+
+| File | Contents |
+|------|----------|
+| `run_job{N}.log` | Per-job run log |
+| `metadata_job{N}.json` | Per-job metadata (`expected_n`, `T_obs`, flare params, …) |
+| `pvalues_lambda_job{N}.pkl` | Lambda p-values for that cell, as `(durations, intensities, pvalues)` with `pvalues` of shape `(1, 1, n_simulations)` |
+| `pvalues_poisson_job{N}.pkl` | Poisson p-values for that cell, same layout |
+
+### 2. Merge the per-job pickles (from the terminal)
+
+Once all jobs have finished, collapse the per-cell pickles into one
+pickle per statistic:
+
+```bash
+python -m spacetimecorr.io.merge output/scripts/grid_p50/<ID> --mode grid-pvalues
+```
+
+Replace `<ID>` with your submission ID. The command auto-detects the
+`data/` subdirectory and writes, next to the per-job files:
+
+- `pvalues_lambda_merged.pkl`
+- `pvalues_poisson_merged.pkl`
+
+Each merged file holds a tuple `(durations, intensities, pvalues)` where
+`durations` and `intensities` are the sorted grid axes and `pvalues` has
+shape `(n_durations, n_intensities, n_simulations)`.
+
+> By default both statistics are merged (`--stat both`). Use
+> `--stat lambda` or `--stat poisson` to merge only one.
+
+### 3. Plot the results
+
+The percentile (median by default) is now computed **inside the plot
+script** from the merged p-value distributions, so you only need to point
+it at the run. Open `scripts/plots/plot_grid_p50.py` and edit the bottom
+`__main__` block to set **your submission ID** and the desired output
+path:
+
+```python
+if __name__ == "__main__":
+    run_dir = Path("output/scripts/grid_p50/<ID>")   # <- your submission ID
+    output_dir = run_dir / "figures"                 # <- where the PNGs go
+    main(run_dir=run_dir, output_dir=output_dir)
+```
+
+Then run it:
+
+```bash
+python scripts/plots/plot_grid_p50.py
+```
+
+**Finding the ID:** it is the name of the run directory, and it is also
+printed in every per-job log. Open any `output/scripts/grid_p50/<ID>/data/run_job*.log`
+and read the line:
+
+```text
+Simulation ID: 20260525_153127
+```
+
 ## Script naming convention
 
 Monte-Carlo scripts follow a two-part scheme: `<mode>_<what_varies>.py`.

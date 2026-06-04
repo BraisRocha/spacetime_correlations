@@ -18,11 +18,18 @@ No exposure or event-generation state is held here — those live on
 :class:`~spacetimecorr.event_sample.EventSample` respectively. The
 window is treated as small enough that the exposure at its centre is a
 good proxy for the exposure across the cap.
+
+This module also defines :class:`SkyGrid`, a container for ``N`` such
+windows stored struct-of-arrays (``centres`` of shape ``(N, 2)`` and
+``radii`` of shape ``(N,)``). Indexing a grid (``grid[i]``) materialises
+an ordinary :class:`SkyWindow`, so a multi-window analysis is just the
+single-window pipeline run in a loop, while leaving room to vectorise the
+deterministic per-window scalars behind that boundary.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterator
 
 from .event_sample import EventSample
 
@@ -265,3 +272,212 @@ class SkyWindow:
 
         weight = exposure_model.relative_exposure(self.centre)
         return float(n_events) * self._sky_fraction * weight
+
+
+class SkyGrid:
+    """A collection of ``N`` spherical-cap windows.
+
+    Parameters
+    ----------
+    centres : array-like of shape (N, 2)
+        One ``[RA_deg, Dec_deg]`` per window. RA in ``[0, 360)``,
+        Dec in ``[-90, 90]``.
+    radii : float or array-like of shape (N,)
+        Angular radius in degrees, in ``(0, 180]``. A scalar is
+        broadcast to all ``N`` windows (the common case for a uniform
+        tiling or a fixed search radius).
+
+    Notes
+    -----
+    Storage is *struct-of-arrays*: the grid keeps only the raw ``centres``
+    and ``radii`` arrays, never any :class:`SkyWindow` objects. This keeps
+    construction cheap for large grids, keeps memory flat across a long
+    loop (each window is freed once its iteration ends), and leaves the
+    door open to vectorising the deterministic per-window scalars
+    (sky fraction, expected counts, containment) behind this boundary
+    without changing the public API.
+
+    Usage mirrors indexing an array: ``grid[i]`` builds and returns a
+    fresh :class:`SkyWindow`, so a multi-window analysis is just the
+    existing single-window pipeline run in a loop::
+
+        grid = SkyGrid(centres, radii)
+        for window in grid:
+            sample = EventSample.in_window(window=window, ...)
+            sample.assign_directional_exposure(window=window, ...)
+            lam = lambda_estimator(sample)
+
+    Validation mirrors :class:`SkyWindow` so that a window obtained via
+    ``grid[i]`` is indistinguishable from one built directly.
+    """
+
+    # -------------------------------------------------------------------------
+    # Construction
+    # -------------------------------------------------------------------------
+
+    def __init__(self, centres: np.ndarray, radii: float | np.ndarray):
+        # --- coerce + validate centres ---
+        c = np.asarray(centres, dtype=float)
+        if c.ndim != 2 or c.shape[1] != 2:
+            raise ValueError(
+                f"centres must have shape (N, 2) -> [RA_deg, Dec_deg]; got {c.shape}."
+            )
+        n = c.shape[0]
+        if n == 0:
+            raise ValueError("centres must contain at least one window.")
+
+        ra = c[:, 0]
+        dec = c[:, 1]
+        if np.any((ra < 0.0) | (ra >= 360.0)):
+            raise ValueError("All RA values must be in [0, 360).")
+        if np.any((dec < -90.0) | (dec > 90.0)):
+            raise ValueError("All Dec values must be in [-90, 90].")
+
+        # --- coerce + validate radii (scalar broadcasts) ---
+        r = np.asarray(radii, dtype=float)
+        if r.ndim == 0:
+            r = np.full(n, float(r))
+        else:
+            r = r.reshape(-1)
+            if r.shape[0] != n:
+                raise ValueError(
+                    f"radii must be a scalar or have shape (N,) with N={n}; "
+                    f"got shape {r.shape}."
+                )
+        if np.any((r <= 0.0) | (r > 180.0)):
+            raise ValueError("All radii must be in (0, 180].")
+
+        self._centres = c
+        self._radii = r
+
+    @classmethod
+    def from_arrays(
+        cls,
+        centres: np.ndarray,
+        radii: float | np.ndarray,
+    ) -> "SkyGrid":
+        """
+        Build a grid from explicit centre and radius arrays.
+
+        Named factory parallel to the
+        :class:`~spacetimecorr.event_sample.EventSample` constructors;
+        presently equivalent to ``SkyGrid(centres, radii)`` and present so
+        that future construction routes (e.g. a HEALPix tiling) can sit
+        alongside it as sibling classmethods.
+
+        Parameters
+        ----------
+        centres : array-like of shape (N, 2)
+            One ``[RA_deg, Dec_deg]`` per window.
+        radii : float or array-like of shape (N,)
+            Angular radius/radii in degrees; a scalar broadcasts to all
+            windows.
+
+        Returns
+        -------
+        SkyGrid
+        """
+        return cls(centres=centres, radii=radii)
+
+    # -------------------------------------------------------------------------
+    # Container protocol
+    # -------------------------------------------------------------------------
+
+    def __len__(self) -> int:
+        return self._centres.shape[0]
+
+    def __getitem__(self, index: int | slice | np.ndarray) -> "SkyWindow | SkyGrid":
+        """
+        Index the grid like an array.
+
+        - An integer returns the corresponding :class:`SkyWindow`,
+          freshly built from the stored ``centres``/``radii`` and ready
+          to drop into the existing single-window pipeline.
+        - A slice or an array of indices returns a new :class:`SkyGrid`
+          sub-grid.
+
+        Notes
+        -----
+        The grid stores no window objects: each integer index builds and
+        returns a new :class:`SkyWindow`. Bind it once per iteration
+        (``for window in grid`` or ``window = grid[i]``) and reuse that
+        reference — passing the same ``window`` to several callers does
+        not rebuild it. Only re-indexing the grid (``grid[i]`` again)
+        constructs another instance. This keeps memory flat across a long
+        loop, since each window is freed once the iteration that built it
+        ends.
+        """
+        if isinstance(index, (int, np.integer)):
+            i = int(index)
+            if i < 0:
+                i += len(self)
+            if not (0 <= i < len(self)):
+                raise IndexError(
+                    f"window index {index} out of range for grid of size {len(self)}."
+                )
+            return SkyWindow(centre=self._centres[i], radius=float(self._radii[i]))
+
+        # slice / fancy index -> sub-grid
+        return SkyGrid(centres=self._centres[index], radii=self._radii[index])
+
+    def __iter__(self) -> Iterator["SkyWindow"]:
+        for i in range(len(self)):
+            yield self[i]  # type: ignore[misc]
+
+    def __repr__(self) -> str:
+        return f"SkyGrid(n_windows={len(self)})"
+
+    # -------------------------------------------------------------------------
+    # Array accessors
+    # -------------------------------------------------------------------------
+
+    @property
+    def centres(self) -> np.ndarray:
+        """Window centres, shape ``(N, 2)`` -> ``[RA_deg, Dec_deg]``."""
+        return self._centres
+
+    @property
+    def radii(self) -> np.ndarray:
+        """Window radii in degrees, shape ``(N,)``."""
+        return self._radii
+
+    # -------------------------------------------------------------------------
+    # Vectorised deterministic per-window scalars
+    # -------------------------------------------------------------------------
+
+    @property
+    def sky_fraction(self) -> np.ndarray:
+        """Per-window full-sky fraction (spherical cap), shape ``(N,)``.
+
+        Vectorised counterpart of :attr:`SkyWindow.sky_fraction`:
+        ``(1 - cos(radius)) / 2`` evaluated over all radii at once.
+        """
+        return (1.0 - np.cos(np.deg2rad(self._radii))) / 2.0
+
+    def expected_n_in_window(
+        self,
+        n_events: int | float,
+        exposure_model: "ExposureModel | None" = None,
+    ) -> np.ndarray:
+        """
+        Expected event count in each window, shape ``(N,)``.
+
+        Mirrors :meth:`SkyWindow.expected_n_in_window` for every window.
+        With no exposure model the result is ``n_events * sky_fraction``;
+        with one it is additionally weighted by the relative directional
+        exposure at each centre.
+
+        Notes
+        -----
+        Currently delegates per window (the exposure weight loops over
+        centres). It is exposed here as a single ``(N,)`` array so the
+        weighting can be vectorised later without changing callers.
+        """
+        if exposure_model is None:
+            return float(n_events) * self.sky_fraction
+
+        weights = np.array(
+            [exposure_model.relative_exposure(c) for c in self._centres],
+            dtype=float,
+        )
+        return float(n_events) * self.sky_fraction * weights

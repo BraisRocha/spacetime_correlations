@@ -3,14 +3,23 @@ Paper-quality 2D sensitivity map on the (flare duration, flare intensity)
 grid from run_grid_p50.py.
 
 Color encodes the Gaussian-equivalent significance (in sigma) of the
-median (50th percentile) test statistic stored per grid cell.
+median (``PERCENTILE``-th percentile) p-value across the per-cell
+simulation ensemble.
 
-Left panel  - Poisson counting test: significance of n_sample_window_p50
-              under N ~ Poisson(expected_n).
-Right panel - Lambda test: significance of lambda_flare_p50 under the
-              marginal Lambda distribution with background expected_n.
+Each grid cell stores, for both the Poisson and Lambda tests, the full
+per-simulation p-value distribution (assembled from the per-job pickles
+by ``merge_grid_pvalues``). For every cell this script takes the median
+p-value over the simulation axis and converts it to a one-sided
+Gaussian-equivalent significance. Because both test p-values are
+monotonic in their underlying statistic, the median p-value equals the
+p-value of the median statistic, so this reproduces the legacy
+"p50 of the statistic" map while keeping the full distribution available.
+
+Left panel  - Poisson counting test.
+Right panel - Lambda test.
 """
 import json
+import pickle
 import warnings
 from pathlib import Path
 
@@ -18,10 +27,10 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 
-from spacetimecorr.statistics import (
-    lambda_marginal_sigma,
-    poisson_mid_p_sigma,
-)
+from spacetimecorr.statistics import pvalue_to_sigma
+
+# Percentile of the per-cell p-value distribution used for the map.
+PERCENTILE = 50.0
 
 # ------------------------------------------------------------------
 # Style
@@ -32,67 +41,83 @@ if RC_FILE.exists():
 
 
 # ------------------------------------------------------------------
-# Significance computations
-# ------------------------------------------------------------------
-
-def _sigma_poisson(n_p50: np.ndarray, expected_n: float) -> np.ndarray:
-    """Significance (sigma) of n_p50 under N ~ Poisson(expected_n), mid-p."""
-    return poisson_mid_p_sigma(np.asarray(n_p50, dtype=float), expected_n)
-
-
-def _sigma_lambda(lambda_p50: np.ndarray, expected_n: float) -> np.ndarray:
-    """Significance (sigma) of lambda_p50 under marginal Lambda(expected_n)."""
-    return lambda_marginal_sigma(
-        np.asarray(lambda_p50, dtype=float),
-        expected_n,
-    )
-
-# ------------------------------------------------------------------
 # Data loading
 # ------------------------------------------------------------------
 
-def _load(run_dir: Path) -> tuple:
-    """Return grids and axes needed for plotting.
+def _load_merged_pvalues(path: Path) -> tuple:
+    """Load a merged ``(durations, intensities, pvalues)`` pickle.
+
+    ``pvalues`` has shape ``(n_durations, n_intensities, n_simulations)``.
+    """
+    with path.open("rb") as fh:
+        durations, intensities, pvalues = pickle.load(fh)
+    durations = np.asarray(durations, dtype=float)
+    intensities = np.asarray(intensities, dtype=float)
+    pvalues = np.asarray(pvalues, dtype=float)
+    return durations, intensities, pvalues
+
+
+def _read_expected_n_and_tobs(data_dir: Path) -> tuple[float, float]:
+    """Read ``expected_n`` and ``T_obs_days`` from any per-job metadata file.
+
+    Both quantities are identical across grid cells (they depend only on
+    the window, exposure and ``n_total``), so the first metadata file found
+    is sufficient.
+    """
+    meta_files = sorted(data_dir.glob("metadata_job*.json"))
+    if not meta_files:
+        meta_files = sorted(data_dir.glob("metadata*.json"))
+    if not meta_files:
+        raise FileNotFoundError(
+            f"No metadata_job*.json files found in {data_dir}"
+        )
+    with meta_files[0].open() as fh:
+        meta = json.load(fh)
+    return float(meta["expected_n"]), float(meta["time"]["T_obs_days"])
+
+
+def _load(run_dir: Path, percentile: float = PERCENTILE) -> tuple:
+    """Return significance grids and axes needed for plotting.
+
+    Reads the merged Lambda and Poisson p-value pickles, takes the
+    ``percentile``-th percentile of the p-value distribution in each cell
+    (over the simulation axis), and converts it to sigma.
 
     Returns
     -------
-    lam_grid       : (n_intensities, n_durations) median Lambda
-    n_grid         : (n_intensities, n_durations) median n_sample in window
+    sig_lam_grid   : (n_intensities, n_durations) significance of Lambda
+    sig_poi_grid   : (n_intensities, n_durations) significance of Poisson
     intensities_pct: (n_intensities,) flare intensity in percent
     x_log          : (n_durations,) log10(duration_days / T_obs_days)
     expected_n     : float, expected background events in window
     T_obs_years    : float
     """
     data_dir = run_dir / "data" if (run_dir / "data").exists() else run_dir
-    data = np.load(data_dir / "results_merged.npz")
 
-    with (data_dir / "metadata_job0.json").open() as fh:
-        meta = json.load(fh)
-    expected_n = float(meta["expected_n"])
-    T_obs_days = float(meta["time"]["T_obs_days"])
+    durations, intensities, pvals_lam = _load_merged_pvalues(
+        data_dir / "pvalues_lambda_merged.pkl"
+    )
+    durations_poi, intensities_poi, pvals_poi = _load_merged_pvalues(
+        data_dir / "pvalues_poisson_merged.pkl"
+    )
+
+    if not (np.array_equal(durations, durations_poi)
+            and np.array_equal(intensities, intensities_poi)):
+        raise ValueError(
+            "Lambda and Poisson merged pickles have mismatched grid axes."
+        )
+
+    expected_n, T_obs_days = _read_expected_n_and_tobs(data_dir)
     T_obs_years = T_obs_days / 365.25
 
-    durations = np.array(sorted(set(data["flare_duration_days"])))
-    intensities = np.array(sorted(set(data["flare_intensity"])))
+    # Median p-value per cell, then sigma. Arrays are (n_dur, n_int);
+    # transpose to (n_int, n_dur) for pcolormesh (y=intensity, x=duration).
+    median_p_lam = np.nanpercentile(pvals_lam, percentile, axis=2)
+    median_p_poi = np.nanpercentile(pvals_poi, percentile, axis=2)
+    sig_lam_grid = pvalue_to_sigma(median_p_lam).T
+    sig_poi_grid = pvalue_to_sigma(median_p_poi).T
 
-    nd, nf = len(durations), len(intensities)
-    lam_grid = np.full((nf, nd), np.nan)
-    n_grid = np.full((nf, nd), np.nan)
-
-    for idx in range(len(data["job_id"])):
-        d = data["flare_duration_days"][idx]
-        f = data["flare_intensity"][idx]
-        j = np.searchsorted(durations, d)
-        i = np.searchsorted(intensities, f)
-        if not np.isnan(lam_grid[i, j]):
-            raise ValueError(
-                f"Duplicate row for (intensity={f}, duration={d}) in "
-                "results_merged.npz; merge may include resubmitted jobs."
-            )
-        lam_grid[i, j] = data["lambda_flare_p50"][idx]
-        n_grid[i, j] = data["n_sample_window_p50"][idx]
-
-    n_missing = int(np.isnan(lam_grid).sum())
+    n_missing = int(np.isnan(sig_lam_grid).sum())
     if n_missing:
         warnings.warn(
             f"{n_missing} grid cells have no data and will render blank."
@@ -101,7 +126,10 @@ def _load(run_dir: Path) -> tuple:
     x_log = np.log10(durations / T_obs_days)
     intensities_pct = intensities * 100.0
 
-    return lam_grid, n_grid, intensities_pct, x_log, expected_n, T_obs_years
+    return (
+        sig_lam_grid, sig_poi_grid, intensities_pct, x_log,
+        expected_n, T_obs_years,
+    )
 
 
 # ------------------------------------------------------------------
@@ -288,6 +316,7 @@ def _plot_ratio(
 def main(
     run_dir: str | Path,
     output_dir: str | Path,
+    percentile: float = PERCENTILE,
     plot_ratio: bool = True,
     ratio_mark_unity: bool = True,
     ratio_unity_tol: float = 0.1,
@@ -296,6 +325,8 @@ def main(
 
     Parameters
     ----------
+    percentile : float
+        Percentile of the per-cell p-value distribution to map (default 50).
     plot_ratio : bool
         If True, also save a separate sigma_Lambda / sigma_Poisson figure.
     ratio_mark_unity : bool
@@ -307,12 +338,8 @@ def main(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    lam_grid, n_grid, intensities_pct, x_log, expected_n, T_obs_years = (
-        _load(run_dir)
-    )
-
-    sig_lam_grid = _sigma_lambda(lam_grid, expected_n)
-    sig_poi_grid = _sigma_poisson(n_grid, expected_n)
+    (sig_lam_grid, sig_poi_grid, intensities_pct, x_log,
+     expected_n, T_obs_years) = _load(run_dir, percentile=percentile)
 
     # Cell edges for pcolormesh: midpoints between centres, with
     # outer edges extended by half a cell.
