@@ -16,10 +16,10 @@ import numpy as np
 # dT = flare_duration / (10 years)
 # log10(dT) from -4 to 0
 
-durations = 3650 * 10**np.arange(-3.9, 0.0001, 0.1)
+durations = 3650 * 10**np.arange(-5.0, 0.0001, 0.1)
 
 # intensity from 0.025 to 0.5 in steps of 0.025
-intensities = np.arange(0.025, 0.5001, 0.025)
+intensities = np.arange(0.05, 2.0001, 0.05)
 
 seed = ${seed}
 

@@ -1,4 +1,3 @@
-getenv     = PATH,HOME,LD_LIBRARY_PATH,CONDA_PREFIX,CONDA_DEFAULT_ENV
 executable = /lustre/Auger/brais.rocha/spacetime_correlations/jobs/condor/grid_p50/run_grid_p50.sh
 
 output = /lustre/Auger/brais.rocha/spacetime_correlations/logs/condor/grid_p50/grid_p50_$(Process).out
