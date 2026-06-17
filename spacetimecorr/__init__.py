@@ -15,6 +15,8 @@ The package exposes:
     Reproducible, named random-number streams.
 - ``lambda_*`` / ``lambda_estimator`` / ``empirical_p_values``
     Anisotropy estimators and their distributions.
+- ``fisher_*``
+    Fisher's method for combining independent p-values.
 - ``poisson_mid_p_sigma`` / ``pvalue_to_sigma`` / ``sigma_to_pvalue``
     Significance conversion utilities.
 
@@ -48,6 +50,12 @@ from .statistics import (
     lambda_marginal_isigma,
     lambda_marginal_rvs,
     lambda_estimator,
+    fisher_statistic,
+    fisher_logsf,
+    fisher_sf,
+    fisher_sigma,
+    fisher_equal_pvalue,
+    fisher_equal_sigma,
     empirical_p_values,
     plot_lambda_joint_heatmap,
     pvalue_to_sigma,
@@ -81,6 +89,12 @@ __all__ = [
     "lambda_marginal_pvalue_and_sigma",
     "lambda_marginal_rvs",
     "lambda_estimator",
+    "fisher_statistic",
+    "fisher_logsf",
+    "fisher_sf",
+    "fisher_sigma",
+    "fisher_equal_pvalue",
+    "fisher_equal_sigma",
     "empirical_p_values",
     "plot_lambda_joint_heatmap",
     "pvalue_to_sigma",

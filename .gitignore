@@ -8,3 +8,4 @@ notebook.txt
 logs/condor/*.out
 logs/condor/*.err
 logs/condor/*.log
+inputs/*

@@ -392,8 +392,173 @@ def lambda_estimator(sample: EventSample) -> float:
     return lambda_stat
 
 # --------------------------------------------------------------------------------
+# Fisher's method 
+# --------------------------------------------------------------------------------
+
+def fisher_statistic(p_values: float | np.ndarray) -> float:
+    """
+    Fisher's combined test statistic from independent p-values.
+
+        X = -2 * sum_i ln(p_i)
+
+    Under the global null hypothesis (all p-values uniform on [0, 1] and
+    mutually independent), ``X`` follows a chi-squared distribution with
+    ``2 * k`` degrees of freedom, where ``k`` is the number of p-values.
+
+    Parameters
+    ----------
+    p_values : float or array-like
+        Independent one-sided p-values, each in ``[0, 1]``.
+
+    Returns
+    -------
+    float
+        The combined statistic ``X``.
+
+    Notes
+    -----
+    A p-value of exactly ``0`` yields ``X = +inf`` (and hence a combined
+    significance of infinity). This can happen with empirical p-values that
+    hit the resolution floor (see :func:`empirical_p_values`); treat such an
+    input as "smaller than the Monte-Carlo resolution", not as exact zero.
+    """
+    p = _validate_p_values(p_values)
+    return float(-2.0 * np.sum(np.log(p)))
+
+
+def fisher_logsf(p_values: float | np.ndarray) -> float:
+    """
+    Log of the combined upper-tail p-value from Fisher's method.
+
+        log P(X >= X_obs) = chi2.logsf(X_obs, df = 2 * k)
+
+    Working in log space avoids underflow when the combined p-value is tiny,
+    which is the regime of interest for a detection. Use :func:`fisher_sf`
+    if you need the p-value on a linear scale.
+    """
+    p = _validate_p_values(p_values)
+    X = float(-2.0 * np.sum(np.log(p)))
+    return float(scp.chi2.logsf(X, df=2 * p.size))
+
+
+def fisher_sf(p_values: float | np.ndarray) -> float:
+    """
+    Combined upper-tail p-value from Fisher's method, ``P(X >= X_obs)``.
+
+    Computed as ``exp(fisher_logsf(...))`` for numerical consistency. This
+    underflows to ``0.0`` for very significant combinations; prefer
+    :func:`fisher_logsf` or :func:`fisher_sigma` in that regime.
+    """
+    return float(np.exp(fisher_logsf(p_values)))
+
+
+def fisher_sigma(p_values: float | np.ndarray) -> float:
+    """
+    One-sided Gaussian-equivalent significance of Fisher's combined p-value.
+
+    The significance is derived from the log survival function via
+    ``scipy.special.ndtri_exp``, so it stays accurate deep into the tail
+    (well beyond where ``fisher_sf`` would underflow to zero).
+    """
+    logp = fisher_logsf(p_values)
+    return float(-scs.ndtri_exp(logp))
+
+
+def fisher_equal_pvalue(sigma: float | np.ndarray, n_trials: int) -> float | np.ndarray:
+    """
+    Common per-trial p-value that yields a target Fisher significance.
+
+    Inverts :func:`fisher_sigma` for the special case of ``n_trials`` equal
+    p-values. Using the Gaussian (large-df) approximation to the chi-squared
+    tail, the combined statistic at significance ``sigma`` is
+
+        X = -2 * sum_i ln(p_i) = 2 * n_trials + 2 * sigma * sqrt(n_trials),
+
+    so the product of the p-values is ``exp(-n_trials - sigma*sqrt(n_trials))``.
+    Setting all p-values equal (``prod p_i = p**n_trials``) gives
+
+        p = exp(-1 - sigma / sqrt(n_trials)).
+
+    Parameters
+    ----------
+    sigma : float or array-like
+        Target one-sided Gaussian-equivalent significance.
+    n_trials : int
+        Number of independent experiments (p-values) being combined; >= 1.
+
+    Returns
+    -------
+    float or numpy.ndarray
+        Per-trial p-value reproducing ``sigma`` when shared by all trials.
+
+    Notes
+    -----
+    This relies on the asymptotic normal approximation of the
+    ``chi2(2*n_trials)`` tail and is therefore approximate; it is meant for
+    quick sensitivity/threshold estimates rather than exact inversion. For an
+    exact common p-value, solve ``fisher_sigma([p]*n_trials) == sigma``
+    numerically.
+    """
+    if n_trials < 1:
+        raise ValueError("n_trials must be a positive integer.")
+
+    sigma = np.asarray(sigma, dtype=float)
+    p = np.exp(-1.0 - sigma / np.sqrt(n_trials))
+
+    return float(p) if p.ndim == 0 else p
+
+def fisher_equal_sigma(sigma: float | np.ndarray, n_trials: int) -> float | np.ndarray:
+    """
+    Common per-trial significance that yields a target Fisher significance.
+
+    Companion of :func:`fisher_equal_pvalue` expressed in Gaussian-equivalent
+    significance instead of p-value: it returns the one-sided significance
+    each of ``n_trials`` independent experiments must reach (assuming they all
+    share the same value) for their Fisher combination to reach the target
+    ``sigma``. It is simply ``pvalue_to_sigma(fisher_equal_pvalue(...))``.
+
+    Parameters
+    ----------
+    sigma : float or array-like
+        Target combined one-sided Gaussian-equivalent significance.
+    n_trials : int
+        Number of independent experiments (p-values) being combined; >= 1.
+
+    Returns
+    -------
+    float or numpy.ndarray
+        Per-trial significance reproducing the target ``sigma`` when shared by
+        all trials.
+
+    Notes
+    -----
+    Inherits the asymptotic normal approximation of the ``chi2(2*n_trials)``
+    tail used by :func:`fisher_equal_pvalue`; see its notes.
+    """
+    return pvalue_to_sigma(fisher_equal_pvalue(sigma, n_trials))
+
+# --------------------------------------------------------------------------------
 # Utilities
 # --------------------------------------------------------------------------------
+
+def _validate_p_values(p_values) -> np.ndarray:
+    """
+    Validate a set of p-values and return them as a float array.
+
+    The input shape is preserved (scalars become 0-d arrays). Raises if the
+    input is empty or holds non-finite values, or if any value falls outside
+    the ``[0, 1]`` interval.
+    """
+    p = np.asarray(p_values, dtype=float)
+
+    if p.size == 0:
+        raise ValueError("At least one p-value is required.")
+    if not np.all(np.isfinite(p)):
+        raise ValueError("p-values must be finite.")
+    if np.any(p < 0.0) or np.any(p > 1.0):
+        raise ValueError("p-values must lie within the [0, 1] interval.")
+
+    return p
 
 def pvalue_to_sigma(p):
     """
@@ -402,14 +567,14 @@ def pvalue_to_sigma(p):
     Parameters
     ----------
     p : float or array-like
-        One-sided p-value(s), expected in the interval [0, 1].
+        One-sided p-value(s), in the interval [0, 1].
 
     Returns
     -------
     sigma : float or ndarray
         Gaussian-equivalent significance/significances.
     """
-    p = np.asarray(p, dtype=float)
+    p = _validate_p_values(p)
 
     # Avoid infinities at exactly 0 or 1
     eps = np.finfo(float).tiny

@@ -168,21 +168,75 @@ class Flare:
     # Low-level sampling / evaluation methods
     # -------------------------------------------------------------------------
 
-    def _draw_flare_start(self) -> Time:
+    def _draw_flare_start(self, max_tries: int = 1000) -> Time:
         """
-        Draw the flare start time uniformly in ``[t0, tf - duration]``.
+        Draw a flare start time uniformly in ``[t0, tf - duration]``, keeping
+        only intervals whose centre is inside the FoV at the start *or* the
+        end of the flare.
+
+        Parameters
+        ----------
+        max_tries : int
+            Maximum number of rejection draws before giving up.
 
         Notes
         -----
         When ``duration == tf - t0`` (the spatial-only regime exercised by
         the sensitivity study) ``latest_start`` is exactly 0 and the start
-        time collapses to ``t0`` deterministically. This is the intended
-        behaviour for that regime.
+        time collapses to ``t0`` deterministically. In that regime every draw
+        would reproduce the identical full-window interval, so the FoV
+        rejection is skipped and ``t0`` is returned directly.
+
+        Raises
+        ------
+        RuntimeError
+            If no interval with a visible endpoint is found within
+            ``max_tries`` draws (e.g. a centre that never rises above the
+            acceptance cut for this observatory).
         """
         latest_start = self._T_obs_sec - self.duration_sec
-        start_offset_sec = self.rng.uniform(0.0, latest_start)
-        return self.t0 + TimeDelta(start_offset_sec, format="sec")
 
+        if latest_start == 0.0:
+            return self.t0
+
+        for _ in range(max_tries):
+            start_offset_sec = self.rng.uniform(0.0, latest_start)
+            endpoints = self.t0 + TimeDelta(
+                np.array([start_offset_sec, start_offset_sec + self.duration_sec]),
+                format="sec",
+            )
+            if np.any(self._check_time_in_FoV(endpoints)):
+                return endpoints[0]
+
+        raise RuntimeError(
+            f"Could not place the flare centre {self.centre} inside the FoV at "
+            f"either endpoint within {max_tries} draws; the direction may never "
+            "rise above the acceptance cut for this observatory."
+        )
+
+    def _check_time_in_FoV(self, time: Time) -> np.ndarray:
+        """
+        Boolean mask, ``True`` where the flare centre is inside the FoV at
+        ``time``.
+
+        The centre is considered visible when the observatory's instantaneous
+        geometric acceptance toward it is non-zero, i.e. its zenith angle is
+        below ``theta_max``.
+
+        Parameters
+        ----------
+        time : astropy.time.Time
+            Scalar or array of evaluation times.
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean array matching the shape of ``time``.
+        """
+        acceptance = self.exposure_model.instantaneous_acceptance(
+            t=time, centre=self.centre
+        )
+        return np.asarray(acceptance) > 0.0
 
     def _sample_gaussian_cluster(
         self,

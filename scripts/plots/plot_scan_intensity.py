@@ -135,7 +135,9 @@ def _format_duration(days: float) -> str:
     if np.isclose(days, 30.0):
         return r"$\Delta t_{\rm flare} = 1\,$month"
     if days < 1.0:
-        return rf"$\Delta t_{{\rm flare}} = {days:g}\,$day"
+        hours = days * 24.0
+        unit = "hour" if np.isclose(hours, 1.0) else "hours"
+        return rf"$\Delta t_{{\rm flare}} = {hours:g}\,${unit}"
     return rf"$\Delta t_{{\rm flare}} = {days:g}\,$days"
 
 
@@ -268,7 +270,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
         spacing="proportional",
     )
     cbar.ax.minorticks_off()
-    cbar.set_label(r"Signal-to-noise ratio")
+    cbar.set_label(r"SNR")
     cbar.outline.set_linewidth(0.5)
     cbar.ax.tick_params(direction="out")
 
@@ -293,8 +295,8 @@ if __name__ == "__main__":
     # Edit these paths to point at the two runs you want to combine
     base = Path("output/scripts/scan_intensity")
     run_dirs = [
-        base / "20260603_150233_seed42", # run 1 day
-        base / "20260603_150700_seed42", # run 1 month
+        base / "20260615_110220_seed42", # run 1 hour
+        base / "20260615_105751_seed42", # run 1 week
     ]
     output_dir = base / "figures"
     main(run_dirs=run_dirs, output_dir=output_dir)
