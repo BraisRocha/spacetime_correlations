@@ -8,4 +8,9 @@ notebook.txt
 logs/condor/*.out
 logs/condor/*.err
 logs/condor/*.log
+# Track the inputs/ folder structure but not the (large/local) data files
 inputs/*
+!inputs/catalogs/
+inputs/catalogs/*
+!inputs/catalogs/.gitkeep
+!inputs/catalogs/README.md
