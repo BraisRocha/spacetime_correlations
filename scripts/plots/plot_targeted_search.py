@@ -3,10 +3,20 @@ Significance sky map for a targeted multi-flare search.
 
 Two Hammer-projected panels show the ``n_f`` search windows of a
 :func:`run_targeted_search` run as circles of the search radius, each
-colour-coded by its one-sided Gaussian-equivalent significance ``sigma``:
+colour-coded by its trials-penalised ``-log10(p*)``:
 
     left panel  - Poisson counting test,
     right panel - Lambda test.
+
+The per-window colour shows a *trials-penalised* p-value: the raw p-value
+``p`` is Sidak-corrected, ``p* = 1 - (1 - p)**n_f`` (``n_f`` the number of
+windows evaluated), and plotted as ``-log10(p*)`` (large = significant). A
+colour map is scanned by eye one cell at a time, so once an outstanding
+window draws the attention the other windows that could have fluctuated are
+no longer accounted for; the penalty bakes that look-elsewhere effect into
+the colour. The shared colour scale spans the realised ``[min, max]`` across
+both panels. The Fisher combination below, by contrast, legitimately pools
+every window and uses the *unpenalised* p-values.
 
 Each panel title reports the Fisher-combined significance of its p-values,
 computed with :func:`spacetimecorr.fisher_sigma`: Fisher's statistic
@@ -32,15 +42,11 @@ import numpy as np
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Circle
 
-from spacetimecorr.statistics import fisher_sigma, pvalue_to_sigma
+from spacetimecorr.statistics import fisher_sigma
 
 # Zenith-angle cut defining the field of view (deg). Matches the
 # ExposureModel default / Auger SD standard cut used by the analysis.
 THETA_MAX_DEG = 60.0
-
-# Lower limit of the significance colour scale (sigma). The upper limit is
-# set per run from the largest per-window significance across both panels.
-SIGMA_MIN = 0.0
 
 # Figure geometry for the paper. The width is fixed by the journal column and
 # the height follows a chosen aspect, so the two-panel layout (and the
@@ -147,9 +153,35 @@ def combined_fisher_sigma(pvalues: np.ndarray) -> float:
     dropped; the rest are combined via
     :func:`spacetimecorr.statistics.fisher_sigma`, which returns the
     one-sided Gaussian-equivalent significance of Fisher's statistic.
+
+    Note: the Fisher combination uses the *raw* p-values; the trials
+    penalty in :func:`penalised_neglog10p` applies only to the per-window
+    colour, not to this combined statistic.
     """
     finite = np.isfinite(pvalues)
     return float(fisher_sigma(pvalues[finite]))
+
+
+def penalised_neglog10p(pvalues: np.ndarray) -> np.ndarray:
+    """Trials-penalised ``-log10(p*)`` over the finite per-window p-values.
+
+    Each raw p-value is Sidak-corrected for the number of search windows,
+    ``p* = 1 - (1 - p)**n_f`` with ``n_f`` the number of windows actually
+    evaluated (the finite p-values). The returned array is ``-log10(p*)``,
+    aligned with ``pvalues[np.isfinite(pvalues)]``: large values mark the few
+    windows that survive the penalty, ~0 the unremarkable bulk.
+
+    Numerics (log space): forming ``p*`` directly is lossy at both ends. We
+    carry the upper-tail survival in log space,
+    ``log q = log(1 - p*) = n_f * log1p(-p)``, then recover
+    ``p* = 1 - q = -expm1(log q)`` (``expm1`` avoids cancellation for the
+    outstanding windows, where ``p* -> 0``). ``-log10(p*)`` follows.
+    """
+    finite = np.isfinite(pvalues)
+    n_f = int(finite.sum())
+    log_survival = n_f * np.log1p(-pvalues[finite].astype(float))
+    p_star = -np.expm1(log_survival)        # = 1 - (1 - p)**n_f
+    return -np.log10(p_star)
 
 
 # ------------------------------------------------------------------
@@ -178,7 +210,7 @@ def _draw_panel(
     _draw_fov_cap(ax, dec_max_deg)
 
     finite = np.isfinite(pvalues)
-    sigma = pvalue_to_sigma(pvalues[finite])
+    values = penalised_neglog10p(pvalues)
 
     size_factor = 4
 
@@ -188,7 +220,7 @@ def _draw_panel(
         for x, y in zip(_ra_to_x(ra[finite]), np.deg2rad(dec[finite]))
     ]
     windows = PatchCollection(circles, cmap=cmap, norm=norm, zorder=3)
-    windows.set_array(sigma)
+    windows.set_array(values)
     windows.set_edgecolor("0.15")
     windows.set_linewidth(mpl.rcParams["axes.linewidth"])
     ax.add_collection(windows, autolim=False)
@@ -200,7 +232,7 @@ def _draw_panel(
         windows, ax=ax, orientation="horizontal", location="bottom",
         pad=0.12, fraction=0.05, aspect=30,
     )
-    cbar.set_label(r"$\sigma$", labelpad=1)
+    cbar.set_label(r"$-\log_{10} p^{\ast}$", labelpad=1)
     cbar.outline.set_linewidth(mpl.rcParams["axes.linewidth"])
     cbar.ax.tick_params(direction="out")
 
@@ -230,13 +262,15 @@ def main(run_dir: str | Path, output_dir: str | Path) -> None:
     fisher_sig_lambda = combined_fisher_sigma(p_lambda)
 
     # ------------------------------------------------------------------
-    # Colour scale (shared): floor at SIGMA_MIN, top at the largest
-    # per-window significance across both panels.
+    # Colour scale (shared): span the realised [min, max] of the
+    # trials-penalised -log10(p*) across both panels. No floor -- the full
+    # range is mapped across the colormap.
     # ------------------------------------------------------------------
     cmap = mpl.colormaps["magma"]
-    all_pvalues = np.concatenate([p_poisson, p_lambda])
-    sigma_max = float(np.max(pvalue_to_sigma(all_pvalues[np.isfinite(all_pvalues)])))
-    norm = mpl.colors.Normalize(vmin=SIGMA_MIN, vmax=sigma_max)
+    values_all = np.concatenate(
+        [penalised_neglog10p(p_poisson), penalised_neglog10p(p_lambda)]
+    )
+    norm = mpl.colors.Normalize(vmin=float(values_all.min()), vmax=float(values_all.max()))
 
     # ------------------------------------------------------------------
     # Figure: two Hammer panels, each over its own horizontal colour bar
@@ -269,10 +303,10 @@ def main(run_dir: str | Path, output_dir: str | Path) -> None:
     dur_hi_d = dur_hi_h / 24.0
     snr = float(metadata["flare_intensity"])
     fig.suptitle(
-        rf"$n_f = {n_flares}$, "
+        rf"$n_{{f}} = {n_flares}$, "
         rf"$\Delta t_{{\rm flare}} \in [{dur_lo_h:g}\,\mathrm{{h}},\,"
         rf"{dur_hi_d:g}\,\mathrm{{d}}]$, "
-        rf"$SNR = {snr:.2f}$",
+        rf"SNR $= {snr:.2f}$",
         y=1.0,
     )
 
@@ -286,7 +320,7 @@ if __name__ == "__main__":
     # Edit to point at a run_target_search.py output directory.
     run_dir = Path(
         "/home/brais/PhD/dev/stc_project/output/scripts/targeted_search/"
-        "20260617_111354_seed42"
+        "20260623_180141_seed70"
     )
     output_dir = run_dir / "figures"
     main(run_dir=run_dir, output_dir=output_dir)

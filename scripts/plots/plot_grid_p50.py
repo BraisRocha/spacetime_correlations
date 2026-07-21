@@ -23,16 +23,27 @@ from __future__ import annotations
 import json
 import pickle
 import warnings
+from collections import defaultdict
 from pathlib import Path
 
 import matplotlib as mpl
+import matplotlib.gridspec as gridspec
+import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.collections import LineCollection
 
 from spacetimecorr.statistics import pvalue_to_sigma
 
 # Percentile of the per-cell p-value distribution used for the map.
 PERCENTILE = 50.0
+
+# Gaussian-equivalent significance contours (sigma) overlaid on each map.
+THRESHOLD_LEVELS = (1.0, 2.0, 3.0, 5.0)
+
+# Reference flare durations drawn as dashed vertical guides.
+REF_LABELS = ["hour", "day", "week", "mth", "year"]
+REF_DAYS = [1.0 / 24.0, 1.0, 7.0, 30.0, 365.0]
 
 # ------------------------------------------------------------------
 # Style
@@ -42,9 +53,24 @@ if RC_FILE.exists():
     mpl.rc_file(RC_FILE, use_default_template=False)
 
 
-# ------------------------------------------------------------------
+# ==================================================================
 # Data loading
-# ------------------------------------------------------------------
+# ==================================================================
+
+def _sigma_with_nan(p: np.ndarray) -> np.ndarray:
+    """Convert p-values to sigma, preserving NaN for missing cells.
+
+    ``pvalue_to_sigma`` rejects non-finite inputs, but merged grids may have
+    cells with no data (all-NaN over the simulation axis). Those stay NaN here
+    and render blank; only finite cells are passed to ``pvalue_to_sigma``.
+    """
+    p = np.asarray(p, dtype=float)
+    out = np.full(p.shape, np.nan)
+    finite = np.isfinite(p)
+    if finite.any():
+        out[finite] = pvalue_to_sigma(p[finite])
+    return out
+
 
 def _load_merged_pvalues(path: Path) -> tuple:
     """Load a merged ``(durations, intensities, pvalues)`` pickle.
@@ -56,6 +82,10 @@ def _load_merged_pvalues(path: Path) -> tuple:
     durations = np.asarray(durations, dtype=float)
     intensities = np.asarray(intensities, dtype=float)
     pvalues = np.asarray(pvalues, dtype=float)
+    # Map any non-finite p-value (e.g. an undefined Lambda sample stored as
+    # +/-inf) to NaN so the per-cell ``nanpercentile`` simply drops those
+    # samples instead of letting them poison the quantile.
+    pvalues[~np.isfinite(pvalues)] = np.nan
     return durations, intensities, pvalues
 
 
@@ -78,6 +108,21 @@ def _read_expected_n_and_tobs(data_dir: Path) -> tuple[float, float]:
     return float(meta["expected_n"]), float(meta["time"]["T_obs_days"])
 
 
+def _cell_edges(centres: np.ndarray) -> np.ndarray:
+    """Cell edges for ``pcolormesh`` from cell centres.
+
+    Interior edges are the midpoints between centres; the outer edges are
+    extended by half a cell.
+    """
+    c = np.asarray(centres, dtype=float)
+    mids = 0.5 * (c[:-1] + c[1:])
+    return np.concatenate((
+        [c[0] - (mids[0] - c[0])],
+        mids,
+        [c[-1] + (c[-1] - mids[-1])],
+    ))
+
+
 def _load(run_dir: Path, percentile: float = PERCENTILE) -> tuple:
     """Return significance grids and axes needed for plotting.
 
@@ -89,7 +134,7 @@ def _load(run_dir: Path, percentile: float = PERCENTILE) -> tuple:
     -------
     sig_lam_grid   : (n_intensities, n_durations) significance of Lambda
     sig_poi_grid   : (n_intensities, n_durations) significance of Poisson
-    intensities_pct: (n_intensities,) flare intensity in percent
+    intensities_snr: (n_intensities,) flare intensity as signal-to-noise ratio
     x_log          : (n_durations,) log10(duration_days / T_obs_days)
     expected_n     : float, expected background events in window
     T_obs_years    : float
@@ -114,10 +159,14 @@ def _load(run_dir: Path, percentile: float = PERCENTILE) -> tuple:
 
     # Median p-value per cell, then sigma. Arrays are (n_dur, n_int);
     # transpose to (n_int, n_dur) for pcolormesh (y=intensity, x=duration).
-    median_p_lam = np.nanpercentile(pvals_lam, percentile, axis=2)
-    median_p_poi = np.nanpercentile(pvals_poi, percentile, axis=2)
-    sig_lam_grid = pvalue_to_sigma(median_p_lam).T
-    sig_poi_grid = pvalue_to_sigma(median_p_poi).T
+    # Cells with no data (all-NaN over the simulation axis) stay NaN and
+    # render blank; ``pvalue_to_sigma`` only sees the finite cells.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        median_p_lam = np.nanpercentile(pvals_lam, percentile, axis=2)
+        median_p_poi = np.nanpercentile(pvals_poi, percentile, axis=2)
+    sig_lam_grid = _sigma_with_nan(median_p_lam).T
+    sig_poi_grid = _sigma_with_nan(median_p_poi).T
 
     n_missing = int(np.isnan(sig_lam_grid).sum())
     if n_missing:
@@ -126,37 +175,36 @@ def _load(run_dir: Path, percentile: float = PERCENTILE) -> tuple:
         )
 
     x_log = np.log10(durations / T_obs_days)
-    intensities_pct = intensities * 100.0
+    intensities_snr = intensities
 
     return (
-        sig_lam_grid, sig_poi_grid, intensities_pct, x_log,
+        sig_lam_grid, sig_poi_grid, intensities_snr, x_log,
         expected_n, T_obs_years,
     )
 
 
-# ------------------------------------------------------------------
-# Threshold boundary (cell-aligned step line)
-# ------------------------------------------------------------------
+# ==================================================================
+# Plot helpers
+# ==================================================================
 
 def _draw_threshold_step(ax, Z, x_edges, y_edges, level, label=None,
-                         label_fontsize=8,
-                         label_offset_h=0.04, label_offset_v=0.05,
+                         label_dx=0.0, label_dy=0.97,
                          **kwargs):
     """Draw the boundary between cells with Z >= level and cells with Z < level.
 
     Only interior edges separating above/below cells are drawn (the outer
     frame is never traced).  If ``label`` is given, place it at the midpoint
     of the longest straight (collinear, contiguous) run of boundary segments,
-    offset perpendicular to that run into the above-threshold region.
+    nudged just off the line into the above-threshold region.
 
     Parameters
     ----------
-    label_offset_h : float
-        Label offset when the longest run is horizontal, as a fraction of
-        the full y-axis range (sign chosen to point into the above region).
-    label_offset_v : float
-        Label offset when the longest run is vertical, as a fraction of
-        the full x-axis range (sign chosen to point into the above region).
+    label_dx, label_dy : float
+        Manual nudge of the label in x and y, as a fraction of the full
+        x-axis and y-axis range respectively. Positive is rightward / upward.
+        Applied on top of the default placement, so both can move the label
+        freely in either direction, e.g. slid sideways when it crowds another
+        element.
     """
     above = Z >= level
     ny, nx = above.shape
@@ -186,7 +234,6 @@ def _draw_threshold_step(ax, Z, x_edges, y_edges, level, label=None,
     if not segs:
         return
 
-    from matplotlib.collections import LineCollection
     lc = LineCollection([s[2] for s in segs], **kwargs)
     ax.add_collection(lc)
 
@@ -199,7 +246,6 @@ def _draw_threshold_step(ax, Z, x_edges, y_edges, level, label=None,
     # through accumulating contiguous runs (consecutive segments touching
     # end-to-end with the same above_side; a flip in above_side marks a
     # T-junction and breaks the run).
-    from collections import defaultdict
     groups = defaultdict(list)
     for orient, above_side, ((x0, y0), (x1, y1)) in segs:
         if orient == "h":
@@ -227,28 +273,73 @@ def _draw_threshold_step(ax, Z, x_edges, y_edges, level, label=None,
     orient, fixed, lo, hi, above_side, _ = best
     mid = 0.5 * (lo + hi)
     sign = 1.0 if above_side else -1.0
+    x_range = x_edges[-1] - x_edges[0]
+    y_range = y_edges[-1] - y_edges[0]
+
+    # Default placement: sit at the run midpoint, pushed just off the line
+    # (perpendicular to the run) into the above-threshold region.
     if orient == "h":
-        cx, cy = mid, fixed
-        cy += sign * label_offset_h * (y_edges[-1] - y_edges[0])
+        cx, cy = mid, fixed + sign * y_range
     else:
-        cx, cy = fixed, mid
-        cx += sign * label_offset_v * (x_edges[-1] - x_edges[0])
+        cx, cy = fixed + sign * x_range, mid
 
-    ax.text(cx, cy, label, color="white",
-            fontsize=label_fontsize, ha="center", va="center",
-            zorder=5)
+    # Manual nudge, available in both x and y regardless of orientation.
+    cx += -label_dx * x_range
+    cy += -label_dy * y_range
+
+    ax.text(cx, cy, label, color="white", 
+            fontsize=8.5,
+            ha="center", va="center",
+            zorder=5,
+            path_effects=[pe.withStroke(linewidth=0.2, foreground="grey")])
 
 
-# ------------------------------------------------------------------
-# Main
-# ------------------------------------------------------------------
+def _draw_thresholds(ax, Z, x_edges, y_edges, label_dx=0.0, label_dy=0.97):
+    """Overlay all ``THRESHOLD_LEVELS`` significance contours on ``ax``."""
+    for level in THRESHOLD_LEVELS:
+        _draw_threshold_step(
+            ax, Z, x_edges, y_edges, level=level,
+            colors="white", linewidths=0.5, linestyles="solid",
+            label=rf"${level:g}\,\sigma$",
+            label_dx=label_dx, label_dy=label_dy,
+        )
+
+
+def _draw_reference_lines(ax, ref_x):
+    """Draw dashed vertical guides at the reference flare durations."""
+    for label, xr in zip(REF_LABELS, ref_x):
+        ax.axvline(xr, color="0.6", linewidth=0.6, linestyle="--")
+        ax.text(
+            xr, 1.01, label,
+            transform=ax.get_xaxis_transform(),
+            ha="center", va="bottom", fontsize=6, color="0.5",
+        )
+
+
+def _style_colorbar(cbar, label):
+    """Apply the shared colorbar label and tick/outline styling."""
+    cbar.set_label(label)
+    cbar.outline.set_linewidth(0.5)
+    cbar.ax.tick_params(direction="out")
+
+
+def _add_suptitle(fig, expected_n, T_obs_years):
+    """Add the shared ``mu`` / ``T_obs`` figure title."""
+    fig.suptitle(
+        rf"$\mu = {expected_n:.1f}\,$events, "
+        rf"$T_{{\rm obs}} = {int(T_obs_years)}\,$years"
+    )
+
+
+# ==================================================================
+# Figures
+# ==================================================================
 
 def _plot_ratio(
     sig_lam_grid: np.ndarray,
     sig_poi_grid: np.ndarray,
     x_edges: np.ndarray,
     y_edges: np.ndarray,
-    ref_labels: list[str],
     ref_x: list[float],
     expected_n: float,
     T_obs_years: float,
@@ -288,28 +379,59 @@ def _plot_ratio(
         )
         ax.legend(loc="best", fontsize=5, framealpha=0.9)
     ax.set_xlabel(r"$\log_{10}(\Delta t_{\rm flare}/10\,{\rm years})$")
-    ax.set_ylabel(r"$f\,(\%)$")
+    ax.set_ylabel(r"SNR")
 
-    for label, xr in zip(ref_labels, ref_x):
-        ax.axvline(xr, color="0.6", linewidth=0.6, linestyle="--")
-        ax.text(
-            xr, 1.01, label,
-            transform=ax.get_xaxis_transform(),
-            ha="center", va="bottom", fontsize=5, color="0.5",
-        )
+    _draw_reference_lines(ax, ref_x)
 
     cbar = fig.colorbar(mesh, ax=ax)
-    cbar.set_label(r"$\sigma_\Lambda / \sigma_{\rm Poisson}$")
-    cbar.outline.set_linewidth(0.5)
-    cbar.ax.tick_params(direction="out")
+    _style_colorbar(cbar, r"$\sigma_\Lambda / \sigma_{\rm Poisson}$")
 
-    fig.suptitle(
-        rf"$\mu = {expected_n:.1f}$ events, "
-        rf"$T_{{\rm obs}} = {int(T_obs_years)}\,$years"
-    )
+    _add_suptitle(fig, expected_n, T_obs_years)
     fig.subplots_adjust(left=0.18, right=0.95, bottom=0.2, top=0.82)
 
     out_path = output_dir / "grid_p50_ratio.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def _plot_lambda_only(
+    sig_lam_grid: np.ndarray,
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    ref_x: list[float],
+    expected_n: float,
+    T_obs_years: float,
+    cmap,
+    norm,
+    output_dir: Path,
+) -> None:
+    """Save a standalone single-panel figure with only the Lambda map.
+
+    Identical in content and style to the right panel of the combined
+    ``grid_p50.png`` figure, but rendered as a (1, 1) figure.
+    """
+    fig, ax = plt.subplots(figsize=(3.2, 2.5))
+
+    mesh = ax.pcolormesh(x_edges, y_edges, sig_lam_grid, cmap=cmap, norm=norm,
+                         rasterized=True, shading="flat")
+    ax.set_xlim(x_edges[0], x_edges[-1])
+    ax.set_ylim(y_edges[0], y_edges[-1])
+
+    _draw_thresholds(ax, sig_lam_grid, x_edges, y_edges)
+    ax.set_title(r"$\Lambda$", pad=8)
+    ax.set_xlabel(r"$\log_{10}(\Delta t_{\rm flare}/10\,{\rm years})$")
+    ax.set_ylabel(r"SNR")
+
+    _draw_reference_lines(ax, ref_x)
+
+    cbar = fig.colorbar(mesh, ax=ax)
+    _style_colorbar(cbar, r"significance of median $(\sigma)$")
+
+    _add_suptitle(fig, expected_n, T_obs_years)
+    fig.subplots_adjust(left=0.18, right=0.95, bottom=0.2, top=0.82)
+
+    out_path = output_dir / "grid_p50_lambda.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
@@ -320,6 +442,7 @@ def main(
     output_dir: str | Path,
     percentile: float = PERCENTILE,
     plot_ratio: bool = True,
+    plot_lambda_only: bool = True,
     ratio_mark_unity: bool = True,
     ratio_unity_tol: float = 0.1,
 ) -> None:
@@ -331,6 +454,8 @@ def main(
         Percentile of the per-cell p-value distribution to map (default 50).
     plot_ratio : bool
         If True, also save a separate sigma_Lambda / sigma_Poisson figure.
+    plot_lambda_only : bool
+        If True, also save a standalone single-panel Lambda figure.
     ratio_mark_unity : bool
         If True, overlay markers on cells where |ratio - 1| < ``ratio_unity_tol``.
     ratio_unity_tol : float
@@ -340,45 +465,29 @@ def main(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    (sig_lam_grid, sig_poi_grid, intensities_pct, x_log,
+    (sig_lam_grid, sig_poi_grid, intensities_snr, x_log,
      expected_n, T_obs_years) = _load(run_dir, percentile=percentile)
 
-    # Cell edges for pcolormesh: midpoints between centres, with
-    # outer edges extended by half a cell.
-    def _edges(centres: np.ndarray) -> np.ndarray:
-        c = np.asarray(centres, dtype=float)
-        mids = 0.5 * (c[:-1] + c[1:])
-        return np.concatenate(([c[0] - (mids[0] - c[0])],
-                               mids,
-                               [c[-1] + (c[-1] - mids[-1])]))
+    x_edges = _cell_edges(x_log)
+    y_edges = _cell_edges(intensities_snr)
 
-    x_edges = _edges(x_log)
-    y_edges = _edges(intensities_pct)
-
-    # Color scale: shared between panels
-    vmax = float(np.nanmax([sig_lam_grid.max(), sig_poi_grid.max()]))
-    vmax = max(vmax, 3.0)
-
-    # ------------------------------------------------------------------
-    # Reference vertical lines
-    # ------------------------------------------------------------------
+    # Reference vertical lines (positions depend on the run's T_obs).
     T_obs_days = T_obs_years * 365.25
-    ref_labels = ["1 day", "1 week", "1 mth", "1 year"]
-    ref_days   = [1.0,     7.0,      30.0,     365.0  ]
-    ref_x      = [np.log10(d / T_obs_days) for d in ref_days]
+    ref_x = [np.log10(d / T_obs_days) for d in REF_DAYS]
 
-    # ------------------------------------------------------------------
-    # Figure
-    # ------------------------------------------------------------------
+    # Color scale: shared between panels (ignore blank/missing cells).
+    vmax = float(np.nanmax([np.nanmax(sig_lam_grid), np.nanmax(sig_poi_grid)]))
+    vmax = max(vmax, 3.0)
     cmap = mpl.colors.LinearSegmentedColormap.from_list(
         "magma_trimmed",
         mpl.colormaps["magma"](np.linspace(0.05, 0.95, 256)),
     )
     norm = mpl.colors.Normalize(vmin=0, vmax=vmax)
 
-    import matplotlib.gridspec as gridspec
-
-    fig = plt.figure(figsize=(5.5, 2.5))
+    # ------------------------------------------------------------------
+    # Combined Poisson + Lambda figure with a shared colorbar.
+    # ------------------------------------------------------------------
+    fig = plt.figure(figsize=(5, 2.2))
     gs = gridspec.GridSpec(1, 3, width_ratios=[1, 1, 0.05], wspace=0.08)
 
     ax0 = fig.add_subplot(gs[0])
@@ -396,53 +505,43 @@ def main(
         ax.set_xlim(x_edges[0], x_edges[-1])
         ax.set_ylim(y_edges[0], y_edges[-1])
 
-        _draw_threshold_step(ax, Z, x_edges, y_edges, level=3.0,
-                             colors="white", linewidths=0.8,
-                             linestyles="solid",
-                             label=r"$3\sigma$")
-        _draw_threshold_step(ax, Z, x_edges, y_edges, level=5.0,
-                             colors="white", linewidths=0.8,
-                             linestyles="solid",
-                             label=r"$5\sigma$")
-        _draw_threshold_step(ax, Z, x_edges, y_edges, level=1.0,
-                             colors="white", linewidths=0.8,
-                             linestyles="solid",
-                             label=r"$1\sigma$")
-        _draw_threshold_step(ax, Z, x_edges, y_edges, level=2.0,
-                             colors="white", linewidths=0.8,
-                             linestyles="solid",
-                             label=r"$2\sigma$")
-        ax.set_title(title)
+        if ax == ax0:
+            _draw_thresholds(ax0, Z, x_edges, y_edges, label_dx= -0.04)
+        elif ax == ax1:
+            _draw_thresholds(ax1, Z, x_edges, y_edges)
+
+        ax.set_title(title, pad=8)
         ax.set_xlabel(r"$\log_{10}(\Delta t_{\rm flare}/10\,{\rm years})$")
 
-        for label, xr in zip(ref_labels, ref_x):
-            ax.axvline(xr, color="0.6", linewidth=0.6, linestyle="--")
-            ax.text(
-                xr, 1.01, label,
-                transform=ax.get_xaxis_transform(),
-                ha="center", va="bottom", fontsize=5, color="0.5",
-            )
+        _draw_reference_lines(ax, ref_x)
 
-    ax0.set_ylabel(r"$f\,(\%)$")
+    ax0.set_ylabel(r"SNR")
 
     sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
     cbar = fig.colorbar(sm, cax=cax)
-    cbar.set_label(r"significance of median $(\sigma)$")
-    cbar.outline.set_linewidth(0.5)
-    cbar.ax.tick_params(direction="out")
+    _style_colorbar(cbar, r"significance of median $(\sigma)$")
 
-    fig.suptitle(
-        rf"$\mu = {expected_n:.1f}$ events, "
-        rf"$T_{{\rm obs}} = {int(T_obs_years)}\,$years"
-    )
-
-    fig.subplots_adjust(left=0.1, right=0.95, bottom=0.2, top=0.82)
+    _add_suptitle(fig, expected_n, T_obs_years)
+    fig.subplots_adjust(left=0.1, right=0.95, bottom=0.15, top=0.83)
 
     out_path = output_dir / "grid_p50.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
+
+    if plot_lambda_only:
+        _plot_lambda_only(
+            sig_lam_grid=sig_lam_grid,
+            x_edges=x_edges,
+            y_edges=y_edges,
+            ref_x=ref_x,
+            expected_n=expected_n,
+            T_obs_years=T_obs_years,
+            cmap=cmap,
+            norm=norm,
+            output_dir=output_dir,
+        )
 
     if plot_ratio:
         _plot_ratio(
@@ -450,7 +549,6 @@ def main(
             sig_poi_grid=sig_poi_grid,
             x_edges=x_edges,
             y_edges=y_edges,
-            ref_labels=ref_labels,
             ref_x=ref_x,
             expected_n=expected_n,
             T_obs_years=T_obs_years,

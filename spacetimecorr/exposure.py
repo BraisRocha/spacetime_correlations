@@ -113,6 +113,12 @@ class ExposureModel:
         # which are immutable after construction.
         self._max_exposure_cache: dict[tuple[float, float], float] = {}
 
+        # Cached sky-average of the relative directional exposure, <omega>.
+        # Computed lazily (see `mean_relative_exposure`) the first time an
+        # expected count needs to be normalised. Depends only on the
+        # observatory latitude and theta_max, both immutable.
+        self._mean_rel_exposure: float | None = None
+
     # -------------------------------------------------------------------------
     # Private input / geometry helpers
     # -------------------------------------------------------------------------
@@ -608,6 +614,43 @@ class ExposureModel:
 
         h_star = math.acos((c - A) / B)
         return float(A * h_star + B * math.sin(h_star))
+
+    @property
+    def mean_relative_exposure(self) -> float:
+        r"""
+        Sky-averaged relative directional exposure ``<omega>``.
+
+        The raw weight returned by :meth:`relative_exposure` is the
+        *un-normalised* Sommers ``omega(delta)``; its average over the
+        celestial sphere is not 1, so multiplying it by ``sky_fraction``
+        does not yield a proper expected event count.  This property returns
+
+        .. math::
+
+            \langle\omega\rangle = \frac{1}{4\pi}\int \omega\,\mathrm{d}\Omega
+                                 = \frac{1}{2}\int_{-\pi/2}^{\pi/2}
+                                   \omega(\delta)\cos\delta\,\mathrm{d}\delta ,
+
+        the normalisation constant such that ``omega / <omega>`` has unit sky
+        average.  Dividing an expected count by ``<omega>`` guarantees that
+        the per-window counts sum to ``n_events`` over a full-sky tiling.
+
+        Depends only on the observatory latitude and ``theta_max``, so it is
+        evaluated once by declination quadrature and cached.
+        """
+        if self._mean_rel_exposure is None:
+            dec_deg = np.linspace(-90.0, 90.0, 4001)
+            omega = np.array(
+                [self.relative_exposure((0.0, d)) for d in dec_deg],
+                dtype=float,
+            )
+            dec_rad = np.deg2rad(dec_deg)
+            # np.trapz was renamed to np.trapezoid in NumPy 2.0.
+            trapz = getattr(np, "trapezoid", None) or np.trapz
+            self._mean_rel_exposure = 0.5 * float(
+                trapz(omega * np.cos(dec_rad), dec_rad)
+            )
+        return self._mean_rel_exposure
 
     # -------------------------------------------------------------------------
     # Exposure-space sampling

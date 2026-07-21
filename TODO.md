@@ -13,6 +13,18 @@ fix right now, but which should be revisited.
   Perhaps a test script could be written in order to have a tool to check
   it at any moment.
 
+- **FoV-boundary handling needs a package-wide review**
+  Near the edge of the field of view, flare generation (e.g.
+  `Flare.generate` / `Flare.generate_in_window`, which sample a Gaussian
+  cluster around the centre) can place events *outside* the FoV — a flare
+  centred close to the visible-sky boundary may scatter events into
+  directions the observatory never sees. This is not currently guarded.
+  More broadly, the whole package needs a careful pass to understand and
+  make consistent how the FoV boundaries are handled (event generation,
+  acceptance/exposure evaluation, window containment, and any implicit
+  visible-declination assumptions). Decide on the intended behaviour at the
+  edge and enforce it uniformly.
+
 ## Code quality
 
 - **Poisson vs. binomial draw in `EventSample.in_window`** — open

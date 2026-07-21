@@ -64,8 +64,8 @@ def load_fov_sources(
     catalog = np.atleast_2d(catalog)
     ra, dec = catalog[:, 0], catalog[:, 1]
 
-    dec_min = latitude - theta_max_deg + dec_margin_deg
-    dec_max = latitude + theta_max_deg - dec_margin_deg
+    dec_min = max(-90.0, latitude - theta_max_deg + dec_margin_deg)
+    dec_max = min(90.0, latitude + theta_max_deg - dec_margin_deg)
     mask = (dec >= dec_min) & (dec <= dec_max)
 
     return np.column_stack((ra[mask], dec[mask])), (dec_min, dec_max)
@@ -90,7 +90,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_total = int(5e5)
+    n_total = int(2e6)
     max_attempts = 20
 
     # Observational interval
@@ -117,24 +117,50 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Flare layout and search windows
     # ------------------------------------------------------------------
-    flare_duration_range = (1 * u.hour, 30 * u.day)   # per-flare duration, drawn uniformly
+    flare_duration_range = (1 * u.hour, 7 * u.day)   # per-flare duration, drawn uniformly
     flare_sigma = 1.0              # angular spread of each flare [deg]
     search_radius = 1.05 * observatory_resolution           # search-window radius that maximises SNR
 
-    # Flare positions are taken from a real source catalogue instead of being
-    # drawn at random. Sources outside the field of view are rejected, with an
-    # extra margin below the upper Dec edge (see `load_fov_sources`).
     project_root = Path(__file__).resolve().parents[2]
-    catalog_path = project_root / "inputs" / "catalogs" / "6-UNID_RA_Dec_Flux_Dist.cat"
-    dec_margin_deg = 3.0           # reject sources within this margin of the FoV Dec edge
 
-    flare_centres, dec_bounds = load_fov_sources(
-        catalog_path,
-        latitude=latitude_pa,
-        theta_max_deg=theta_max_deg,
-        dec_margin_deg=dec_margin_deg,
-    )
-    dec_min, dec_max = dec_bounds
+    # How flare positions are chosen:
+    #   "catalog" -> read real source positions from a catalogue and keep
+    #                those inside the FoV (see `load_fov_sources`);
+    #   "random"  -> draw positions uniformly inside the FoV.
+    # Durations are always drawn randomly in both modes.
+    position_mode = "random"      # "catalog" | "random"
+
+    # FoV Dec band, shared by both modes. A source at Dec `d` culminates at
+    # zenith angle |d - latitude|, so it is inside a half-aperture
+    # `theta_max_deg` FoV when |d - latitude| <= theta_max_deg; `dec_margin_deg`
+    # trims the marginal-exposure edges of that band.
+    dec_margin_deg = 3.0
+    dec_min = max(-90.0, latitude_pa - theta_max_deg + dec_margin_deg)
+    dec_max = min(90.0, latitude_pa + theta_max_deg - dec_margin_deg)
+
+    # Catalog-mode settings (ignored when position_mode == "random").
+    catalog_path = project_root / "inputs/catalogs/5-OTHER_RA_Dec_Flux_Dist.cat"
+
+    # Random-mode settings (ignored when position_mode == "catalog").
+    number_of_flares_random = 25
+    ra_range = (0.0, 360.0)        # [deg]
+
+    if position_mode == "catalog":
+        flare_centres, (dec_min, dec_max) = load_fov_sources(
+            catalog_path,
+            latitude=latitude_pa,
+            theta_max_deg=theta_max_deg,
+            dec_margin_deg=dec_margin_deg,
+        )
+    elif position_mode == "random":
+        ra = rng_layout.uniform(*ra_range, size=number_of_flares_random)
+        dec = rng_layout.uniform(dec_min, dec_max, size=number_of_flares_random)
+        flare_centres = np.column_stack((ra, dec))
+    else:
+        raise ValueError(
+            f"position_mode must be 'catalog' or 'random', got {position_mode!r}."
+        )
+
     number_of_flares = len(flare_centres)
 
     durations_lo = flare_duration_range[0].to_value(u.s)
@@ -151,7 +177,6 @@ def main(seed: int) -> None:
     target_fisher_sigma = 2.0
     #flare_intensity = stc.fisher_equal_sigma(target_fisher_sigma, number_of_flares)
     flare_intensity = 0.5 # There is a problem with the derived method that need to be solved
-    print(flare_intensity)
 
     # One circular search window per flare.
     grid = stc.SkyGrid(centres=flare_centres, radii=search_radius)
@@ -176,12 +201,20 @@ def main(seed: int) -> None:
     logger.info("Simulation ID: %s", sim_ID)
     logger.info("Output directory: %s", outdir)
     logger.info("Seed: %d", seed)
-    logger.info(
-        "Loaded %d catalogue sources inside the FoV from %s "
-        "(theta_max=%.1f deg, Dec margin=%.1f deg -> Dec=[%.2f, %.2f] deg)",
-        number_of_flares, catalog_path,
-        theta_max_deg, dec_margin_deg, dec_min, dec_max,
-    )
+    if position_mode == "catalog":
+        logger.info(
+            "Position mode 'catalog': loaded %d sources inside the FoV from %s "
+            "(theta_max=%.1f deg, Dec margin=%.1f deg -> Dec=[%.2f, %.2f] deg)",
+            number_of_flares, catalog_path,
+            theta_max_deg, dec_margin_deg, dec_min, dec_max,
+        )
+    else:
+        logger.info(
+            "Position mode 'random': drew %d positions in RA=[%.1f, %.1f], "
+            "Dec=[%.2f, %.2f] deg (theta_max=%.1f deg, Dec margin=%.1f deg)",
+            number_of_flares, ra_range[0], ra_range[1], dec_min, dec_max,
+            theta_max_deg, dec_margin_deg,
+        )
     logger.info(
         "Defined %d flares | radius=%.2f deg, duration in [%s, %s], sigma=%.2f deg",
         len(grid), search_radius,
@@ -351,6 +384,10 @@ def main(seed: int) -> None:
             "runtime_seconds": elapsed,
             "n_total": n_total,
             "number_of_flares": number_of_flares,
+            "expected_n_by_declination": [
+                {"dec_deg": round(float(c[1]), 3), "expected_n": round(float(n), 3)}
+                for c, n in zip(grid.centres, grid_expected_n)
+            ],
             "n_failed": n_failed,
             "n_zero_flare": n_zero_flare,
             "max_attempts": max_attempts,
@@ -366,9 +403,11 @@ def main(seed: int) -> None:
             "target_fisher_sigma": target_fisher_sigma,
             "flare_intensity": float(flare_intensity),
             "theta_max_deg": theta_max_deg,
-            "catalog_path": str(catalog_path),
+            "position_mode": position_mode,
             "dec_margin_deg": dec_margin_deg,
             "dec_bounds_deg": [dec_min, dec_max],
+            "catalog_path": str(catalog_path) if position_mode == "catalog" else None,
+            "ra_range_deg": list(ra_range) if position_mode == "random" else None,
             "latitude_pa_deg": latitude_pa,
             "longitude_pa_deg": longitude_pa,
             "altitude_pa_m": altitude_pa,
@@ -380,7 +419,7 @@ def main(seed: int) -> None:
 
 
 if __name__ == "__main__":
-    seed = 42
+    seed = 70
     main(seed)
 
 

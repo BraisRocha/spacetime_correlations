@@ -39,7 +39,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_total = int(5e5)
+    n_total = int(3e5)
     n_simulations = int(1e4)
     max_attempts = int(3 * n_simulations)
 
@@ -48,14 +48,15 @@ def main(seed: int) -> None:
     t0 = Time("2026-01-01T00:00:00", scale="utc")
     tf = t0 + T_obs
 
-    # Sky window parameters (RA [deg], Dec [deg], radius [deg])
-    centre = np.array([30.0, 0.0])
-    radius = 2.0
-
     # Pierre Auger Observatory coordinates
     latitude_pa = -35.15
     longitude_pa = -69.15
     altitude_pa = 1425
+    observatory_resolution = 1. # degree
+
+    # Sky window parameters (RA [deg], Dec [deg], radius [deg])
+    centre = np.array([0.0, -60.0])
+    radius = 1.05 * observatory_resolution
 
     # ------------------------------------------------------------------
     # Output directory

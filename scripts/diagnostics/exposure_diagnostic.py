@@ -273,10 +273,10 @@ def save_exposure_acceptance_plots(
 
     # Instantaneous acceptance curve
     plt.figure(figsize=(7, 4))
-    plt.plot(grid_offsets, grid_acceptance)
+    plt.plot(grid_offsets, grid_acceptance, linewidth=2.)
     plt.xlabel("Time offset from t0 [h]")
     plt.ylabel("Instantaneous acceptance")
-    plt.title(f"[RA={centre[0]}, Dec={centre[1]}] Instantaneous acceptance vs time")
+    plt.title(f"Instantaneous acceptance vs time")
     plt.tight_layout()
     p = outdir / "acceptance_vs_time.png"
     plt.savefig(p, dpi=150, bbox_inches="tight")
@@ -285,7 +285,7 @@ def save_exposure_acceptance_plots(
 
     # Cumulative directional exposure curve
     plt.figure(figsize=(7, 4))
-    plt.plot(grid_offsets, grid_exposure)
+    plt.plot(grid_offsets, grid_exposure, linewidth=2.)
     plt.xlabel("Time offset from t0 [h]")
     plt.ylabel("Cumulative directional exposure")
     plt.title("Cumulative directional exposure vs time")
@@ -535,7 +535,7 @@ if __name__ == "__main__":
 
     observatory = Observatory(latitude=-35.15, longitude=-69.15, altitude=1425.0)
     exposure_model = ExposureModel(
-        observatory=observatory, t0=t0, tf=tf, rng=rng_exposure,
+        observatory=observatory, t0=t0, tf=tf, rng=rng_exposure, theta_max_deg=90
     )
 
     run_exposure_diagnostic(

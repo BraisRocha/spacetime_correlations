@@ -25,6 +25,7 @@ assignment (``assign_*``) operate in place on an existing sample.
 from __future__ import annotations
 
 import importlib
+import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -668,6 +669,11 @@ class EventSample:
         they differ only in how many existing background events are
         removed to make room.
 
+        The method may be called repeatedly to inject several flares into
+        the same sample.  Events removed to make room for a new flare are
+        always drawn from the **background** only: already-injected flare
+        events are never displaced.
+
         ``mode="overdensity"``
             Appends ``n_flare`` flare events to the sample after
             removing a Poisson-distributed number of existing
@@ -714,15 +720,14 @@ class EventSample:
         ------
         TypeError
             If ``flare`` is not a :class:`Flare` instance.
-        RuntimeError
-            If the sample already contains an injected flare.
         ValueError
             - If ``mode`` is not one of the two accepted strings.
             - If coordinates have not been assigned.
             - If the flare has not been fully generated.
             - In ``"overdensity"`` mode: if ``expected_n`` is unset,
               ``n_total <= 0``, or ``n_flare > n_total``.
-            - In ``"no_overdensity"`` mode: if ``n_flare > n_sample``.
+            - In ``"no_overdensity"`` mode: if ``n_flare`` exceeds the
+              number of background (non-flare) events available to remove.
 
         Notes
         -----
@@ -752,9 +757,6 @@ class EventSample:
                 f"mode must be 'overdensity' or 'no_overdensity'; got {mode!r}."
             )
 
-        if self.has_flare:
-            raise RuntimeError("This sample already contains an injected flare.")
-
         if not self.has_coordinates:
             raise ValueError("Sample coordinates are not available.")
 
@@ -763,6 +765,50 @@ class EventSample:
                 "Flare is not fully generated. "
                 "Coordinates and exposure must be computed before injection."
             )
+
+        # ---- Provenance cross-check (cheap, metadata only) --------------
+        # When this sample is window-constrained, the flare's events should
+        # have been constrained to the *same* window. We compare the flare's
+        # provenance window (set by Flare.generate_in_window; None for the
+        # window-free Flare.generate) against the sample's window by value.
+        # No per-window geometric check is done downstream, so a mismatch
+        # would silently inject events outside the target region and analyse
+        # them as if inside. We only warn (once) rather than removing events.
+        if self.window is not None:
+            flare_window = getattr(flare, "window", None)
+            if flare_window is None:
+                warnings.warn(
+                    "Injecting a window-free flare (Flare.generate) into a "
+                    "window-constrained sample. Its events are not guaranteed "
+                    "to lie inside the sample's window and no per-window "
+                    "geometric check is performed downstream, so out-of-window "
+                    "events would be analysed as if inside. Use "
+                    "Flare.generate_in_window() for the windowed pipeline.",
+                    stacklevel=2,
+                )
+            elif not (
+                np.array_equal(flare_window.centre, self.window.centre)
+                and flare_window.radius == self.window.radius
+            ):
+                warnings.warn(
+                    "Injecting a flare constrained to a different window "
+                    f"(centre={np.asarray(flare_window.centre)}, "
+                    f"radius={flare_window.radius}) than the sample's window "
+                    f"(centre={np.asarray(self.window.centre)}, "
+                    f"radius={self.window.radius}). The flare events may fall "
+                    "outside the sample's window and would still be analysed "
+                    "as if inside.",
+                    stacklevel=2,
+                )
+
+        # ---- Background-only removal pool -------------------------------
+        # Events removed to make room for the new flare must always be
+        # background: any flare already injected into this sample is kept.
+        if self.flare_mask is not None:
+            bkg_idx = np.flatnonzero(~self.flare_mask)
+        else:
+            bkg_idx = np.arange(self.n_sample)
+        n_bkg = int(bkg_idx.size)
 
         # ---- Mode-specific n_removed ------------------------------------
         if mode == "overdensity":
@@ -785,22 +831,24 @@ class EventSample:
             p_in_window = float(self.expected_n) / float(self.n_total)
             mu_removed = p_in_window * flare.n_flare
             n_removed = int(self.rng.poisson(mu_removed))
-            n_removed = min(n_removed, self.n_sample)
+            n_removed = min(n_removed, n_bkg)
         else:  # mode == "no_overdensity"
-            if flare.n_flare > self.n_sample:
+            if flare.n_flare > n_bkg:
                 raise ValueError(
-                    f"In no_overdensity mode, n_flare ({flare.n_flare}) "
-                    f"cannot exceed n_sample ({self.n_sample}): there are "
-                    f"not enough slots to replace."
+                    f"In no_overdensity mode, n_flare ({flare.n_flare}) cannot "
+                    f"exceed the {n_bkg} background event(s) available to "
+                    f"remove: there are not enough background slots to replace "
+                    f"while keeping the count fixed. Injecting more flare "
+                    f"events than that would necessarily produce an "
+                    f"overdensity, so use mode='overdensity' instead if that "
+                    f"is the intent."
                 )
             n_removed = flare.n_flare
 
         # ---- Common removal + tail append -------------------------------
         keep_mask = np.ones(self.n_sample, dtype=bool)
         if n_removed > 0:
-            remove_idx = self.rng.choice(
-                self.n_sample, size=n_removed, replace=False,
-            )
+            remove_idx = self.rng.choice(bkg_idx, size=n_removed, replace=False)
             keep_mask[remove_idx] = False
 
         new_ra = np.concatenate([self.ra[keep_mask], flare.ra])
@@ -814,8 +862,15 @@ class EventSample:
                 [self.exposure[keep_mask], flare.exposure]
             )
 
-        new_flare_mask = np.zeros(new_ra.size, dtype=bool)
-        new_flare_mask[-flare.n_flare:] = True
+        # Preserve the flare flags of any previously injected flare(s) for
+        # the surviving events, then mark the newly appended tail.
+        if self.flare_mask is not None:
+            kept_flare_mask = self.flare_mask[keep_mask]
+        else:
+            kept_flare_mask = np.zeros(int(np.count_nonzero(keep_mask)), dtype=bool)
+        new_flare_mask = np.concatenate(
+            [kept_flare_mask, np.ones(flare.n_flare, dtype=bool)]
+        )
 
         self.ra = new_ra
         self.dec = new_dec

@@ -29,6 +29,7 @@ deterministic per-window scalars behind that boundary.
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Iterator
 
 from .event_sample import EventSample
@@ -243,13 +244,18 @@ class SkyWindow:
         When an :class:`ExposureModel` is supplied, the count is weighted by
         the analytical relative directional exposure ``omega(delta_centre)``
         evaluated at the window centre (see
-        :meth:`ExposureModel.relative_exposure`)::
+        :meth:`ExposureModel.relative_exposure`), normalised by its sky
+        average ``<omega>`` (see
+        :attr:`ExposureModel.mean_relative_exposure`)::
 
-            expected_n = n_events * sky_fraction * omega(delta_centre)
+            expected_n = n_events * sky_fraction * omega(delta_centre) / <omega>
 
         so that windows at well-exposed declinations get more events and
-        poorly-exposed ones get fewer.  If no exposure model is provided,
-        all declinations are weighted equally and the formula reduces to::
+        poorly-exposed ones get fewer.  The ``/ <omega>`` normalisation makes
+        the weight a proper probability density (unit sky average), so the
+        per-window counts sum to ``n_events`` over a full-sky tiling.  If no
+        exposure model is provided, all declinations are weighted equally and
+        the formula reduces to::
 
             expected_n = n_events * sky_fraction
 
@@ -271,6 +277,7 @@ class SkyWindow:
             return float(n_events) * self._sky_fraction
 
         weight = exposure_model.relative_exposure(self.centre)
+        weight /= exposure_model.mean_relative_exposure
         return float(n_events) * self._sky_fraction * weight
 
 
@@ -380,6 +387,172 @@ class SkyGrid:
         return cls(centres=centres, radii=radii)
 
     # -------------------------------------------------------------------------
+    # HEALPix construction
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _healpy():
+        """Import ``healpy`` lazily, with a helpful message if it is missing.
+
+        ``healpy`` is only needed for the HEALPix factory, so the rest of the
+        module (and ``from_arrays``) stays dependency-free.
+        """
+        try:
+            import healpy as hp
+        except ImportError as exc:  # pragma: no cover - depends on environment
+            raise ImportError(
+                "SkyGrid.from_healpix / min_covering_nside require the optional "
+                "dependency 'healpy'. Install it with `pip install healpy`."
+            ) from exc
+        return hp
+
+    @staticmethod
+    def min_covering_nside(radius: float, nside_max: int = 1 << 20) -> int:
+        """Coarsest power-of-two ``nside`` whose pixels are covered by caps of ``radius``.
+
+        A cap of angular radius ``radius`` (deg) centred on a pixel fully
+        contains that pixel iff ``radius >= max_pixrad(nside)`` (the largest
+        centre-to-corner distance). Since HEALPix pixels tile the sphere with
+        no gaps, this guarantees the union of caps covers everything. The
+        smallest such ``nside`` is returned: the fewest, least-overlapping
+        windows that still leave no gaps at the given radius.
+
+        Parameters
+        ----------
+        radius : float
+            Search-cap angular radius in degrees, in ``(0, 180]``.
+        nside_max : int, optional
+            Upper bound on the search over powers of two (safety stop).
+
+        Returns
+        -------
+        int
+            The minimal covering ``nside``.
+        """
+        hp = SkyGrid._healpy()
+        radius = float(radius)
+        if not (0.0 < radius <= 180.0):
+            raise ValueError("radius must be in (0, 180] degrees.")
+
+        radius_rad = np.deg2rad(radius)
+        nside = 1
+        while nside <= nside_max:
+            if hp.max_pixrad(nside) <= radius_rad:
+                return int(nside)
+            nside *= 2
+        raise ValueError(
+            f"No power-of-two nside <= {nside_max} has pixels small enough to be "
+            f"covered by a cap of radius {radius} deg."
+        )
+
+    @classmethod
+    def from_healpix(
+        cls,
+        radius: float,
+        nside: int | None = None,
+        *,
+        observatory=None,
+        theta_max_deg: float = 60.0,
+        nest: bool = False,
+    ) -> "SkyGrid":
+        """Build a grid of fixed-radius windows on HEALPix pixel centres.
+
+        The windows all share the search radius ``radius``; their centres are
+        the centres of the HEALPix pixels at resolution ``nside``. The radius
+        is the physics-driven input (e.g. the SNR-optimal search scale), and
+        ``nside`` defaults to the coarsest grid that radius still covers
+        without gaps (see :meth:`min_covering_nside`).
+
+        Optionally restricts the grid to windows that lie *entirely* inside an
+        observatory field of view: given ``observatory`` (anything exposing a
+        ``latitude`` in degrees) and a zenith cut ``theta_max_deg``, the
+        visible declination band is
+
+            ``dec_lo = max(-90, latitude - theta_max_deg)``
+            ``dec_hi = min(+90, latitude + theta_max_deg)``
+
+        and a window survives only when its whole cap fits inside it,
+
+            ``min(90, dec_c + radius) <= dec_hi``  and
+            ``max(-90, dec_c - radius) >= dec_lo``,
+
+        i.e. the centre sits at least one radius from each FoV edge. This
+        drops the thin, near-zero-exposure strip at the FoV boundary where the
+        windows would otherwise sample directions outside the FoV and the
+        exposure-at-centre approximation is least reliable.
+
+        Parameters
+        ----------
+        radius : float
+            Window angular radius in degrees, in ``(0, 180]``.
+        nside : int or None, optional
+            HEALPix resolution. ``None`` (default) auto-selects the minimal
+            covering ``nside`` for ``radius``. An explicit value is used as
+            given, with a warning if its pixels are larger than the caps can
+            cover (possible gaps).
+        observatory : optional
+            If given, restrict the grid to windows fully inside the FoV
+            derived from ``observatory.latitude`` and ``theta_max_deg``.
+            ``None`` (default) keeps the full sky.
+        theta_max_deg : float, optional
+            Zenith-angle cut defining the FoV, in ``(0, 90]``. Defaults to
+            60 deg, matching :class:`~spacetimecorr.exposure.ExposureModel`.
+            Only used when ``observatory`` is provided.
+        nest : bool, optional
+            HEALPix ordering. Defaults to RING (``False``).
+
+        Returns
+        -------
+        SkyGrid
+        """
+        hp = cls._healpy()
+
+        radius = float(radius)
+        if not (0.0 < radius <= 180.0):
+            raise ValueError("radius must be in (0, 180] degrees.")
+
+        if nside is None:
+            nside = cls.min_covering_nside(radius)
+        else:
+            nside = int(nside)
+            if not hp.isnsideok(nside, nest=nest):
+                raise ValueError(f"nside={nside} is not a valid HEALPix resolution.")
+            if hp.max_pixrad(nside) > np.deg2rad(radius):
+                warnings.warn(
+                    f"radius={radius} deg is smaller than "
+                    f"max_pixrad(nside={nside})="
+                    f"{np.degrees(hp.max_pixrad(nside)):.3f} deg: caps do not fully "
+                    f"cover their pixels, so the tiling may leave gaps.",
+                    stacklevel=2,
+                )
+
+        ipix = np.arange(hp.nside2npix(nside))
+        ra, dec = hp.pix2ang(nside, ipix, nest=nest, lonlat=True)
+
+        if observatory is not None:
+            if not (0.0 < theta_max_deg <= 90.0):
+                raise ValueError("theta_max_deg must be in (0, 90].")
+            latitude = float(observatory.latitude)
+            dec_hi = min(90.0, latitude + theta_max_deg)
+            dec_lo = max(-90.0, latitude - theta_max_deg)
+
+            contained = (
+                (np.minimum(90.0, dec + radius) <= dec_hi)
+                & (np.maximum(-90.0, dec - radius) >= dec_lo)
+            )
+            ra, dec = ra[contained], dec[contained]
+            if ra.size == 0:
+                raise ValueError(
+                    f"No HEALPix windows of radius {radius} deg fit entirely "
+                    f"inside the FoV declination band "
+                    f"[{dec_lo:.2f}, {dec_hi:.2f}] deg "
+                    f"(latitude={latitude:.2f}, theta_max={theta_max_deg:.2f})."
+                )
+
+        centres = np.column_stack((ra, dec))
+        return cls(centres=centres, radii=radius)
+
+    # -------------------------------------------------------------------------
     # Container protocol
     # -------------------------------------------------------------------------
 
@@ -465,7 +638,9 @@ class SkyGrid:
         Mirrors :meth:`SkyWindow.expected_n_in_window` for every window.
         With no exposure model the result is ``n_events * sky_fraction``;
         with one it is additionally weighted by the relative directional
-        exposure at each centre.
+        exposure at each centre, normalised by its sky average ``<omega>``
+        (see :attr:`ExposureModel.mean_relative_exposure`) so the counts sum
+        to ``n_events`` over a full-sky tiling.
 
         Notes
         -----
@@ -480,4 +655,5 @@ class SkyGrid:
             [exposure_model.relative_exposure(c) for c in self._centres],
             dtype=float,
         )
+        weights /= exposure_model.mean_relative_exposure
         return float(n_events) * self.sky_fraction * weights

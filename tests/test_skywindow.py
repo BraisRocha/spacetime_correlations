@@ -163,9 +163,12 @@ def test_expected_n_in_window_unweighted_matches_formula():
 
 def test_expected_n_in_window_with_exposure_model_includes_omega(exposure_model):
     win = SkyWindow(centre=[180.0, -30.0], radius=15.0)
+    # The weight is the relative exposure normalised by its sky average, so
+    # that the per-window counts sum to n_events over a full-sky tiling.
     omega = exposure_model.relative_exposure(win.centre)
+    omega_bar = exposure_model.mean_relative_exposure
     result = win.expected_n_in_window(n_events=10_000, exposure_model=exposure_model)
-    assert result == pytest.approx(10_000 * win.sky_fraction * omega)
+    assert result == pytest.approx(10_000 * win.sky_fraction * omega / omega_bar)
 
 
 def test_expected_n_in_window_scales_linearly_in_n_events():

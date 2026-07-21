@@ -1,20 +1,36 @@
 """
 EventSample visual / inspection diagnostic.
 
-Two pipelines, side by side:
+Two generation pipelines, each in a *no-flare* and a *with-flare* variant
+(four cases total):
 
-1. **Full-sky pipeline** — generate an isotropic full-sky sample via
-   ``EventSample.full_sky``, then carve out a window via
-   ``select_subsample`` and attach exposure via
-   ``assign_directional_exposure``.
+1. **Full-sky pipeline** (``full_sky/``) — an isotropic full-sky sample
+   from ``EventSample.full_sky``. No subsample selection and no exposure
+   are attached; the full-sky background carries no exposure model.
 
-2. **Per-window pipeline** — generate events directly inside a window via
-   ``EventSample.in_window``, then attach exposure.
+   - ``full_sky/no_flare``   : the bare isotropic sample.
+   - ``full_sky/with_flare`` : the same sample with a *window-free* flare
+     (``Flare.generate``) injected in ``mode="no_overdensity"`` (the
+     count-preserving full-sky convention).
 
-For each pipeline this script prints a text summary, dumps the underlying
+2. **In-window pipeline** (``in_window/``) — events drawn directly inside
+   a :class:`SkyWindow` via ``EventSample.in_window`` (a Poisson draw whose
+   mean is the exposure-weighted expected count in the cap), with per-event
+   directional exposure attached via ``assign_directional_exposure``.
+
+   - ``in_window/no_flare``   : the bare in-window sample with exposure.
+   - ``in_window/with_flare`` : the same sample with a *windowed* flare
+     (``Flare.generate_in_window``) injected in ``mode="overdensity"``.
+
+In every case the "with_flare" sample is the *same* background as its
+"no_flare" sibling (cloned) plus the flare, so the two are directly
+comparable.
+
+For each case this script prints a text summary, dumps the underlying
 arrays as ``.npz``, and saves coordinate / exposure histograms plus a
-HEALPix Hammer-projection skymap.  A flare-injection case is run on the
-per-window output.
+HEALPix Hammer-projection skymap. The "with_flare" cases additionally
+write an ``injection_check.txt`` comparing the sample before and after
+injection.
 
 No assertions — pass/fail checks for these contracts live in
 ``tests/test_event_sample.py``.
@@ -203,20 +219,31 @@ def flare_injection_summary_text(
         lines.append("  number flagged as flare      : None")
 
     if sample_before.ra is not None and sample_after.ra is not None:
-        changed_ra = int(np.count_nonzero(sample_before.ra != sample_after.ra))
-        changed_dec = int(np.count_nonzero(sample_before.dec != sample_after.dec))
         lines.append("")
-        lines.append("Coordinate replacement check:")
-        lines.append(f"  changed ra entries           : {changed_ra}")
-        lines.append(f"  changed dec entries          : {changed_dec}")
+        lines.append("Coordinate change check:")
+        if len(sample_before.ra) == len(sample_after.ra):
+            changed_ra = int(np.count_nonzero(sample_before.ra != sample_after.ra))
+            changed_dec = int(np.count_nonzero(sample_before.dec != sample_after.dec))
+            lines.append(f"  changed ra entries           : {changed_ra}")
+            lines.append(f"  changed dec entries          : {changed_dec}")
+        else:
+            # Injection removes background events and appends the flare at the
+            # tail, so the arrays differ in length and an element-wise diff is
+            # not meaningful; report the net size change instead.
+            lines.append(f"  net size change              : "
+                         f"{len(sample_after.ra) - len(sample_before.ra):+d}")
 
     if sample_before.exposure is not None and sample_after.exposure is not None:
-        before = np.asarray(sample_before.exposure, dtype=float)
-        after = np.asarray(sample_after.exposure, dtype=float)
-        changed_exp = int(np.count_nonzero(~np.isclose(before, after, equal_nan=True)))
         lines.append("")
-        lines.append("Exposure replacement check:")
-        lines.append(f"  changed exposure entries     : {changed_exp}")
+        lines.append("Exposure change check:")
+        if len(sample_before.exposure) == len(sample_after.exposure):
+            before = np.asarray(sample_before.exposure, dtype=float)
+            after = np.asarray(sample_after.exposure, dtype=float)
+            changed_exp = int(np.count_nonzero(~np.isclose(before, after, equal_nan=True)))
+            lines.append(f"  changed exposure entries     : {changed_exp}")
+        else:
+            lines.append(f"  net size change              : "
+                         f"{len(sample_after.exposure) - len(sample_before.exposure):+d}")
 
     if sample_after.flare_mask is not None:
         flare_idx = np.flatnonzero(sample_after.flare_mask)
@@ -384,7 +411,7 @@ def save_skymap_plot(
             mask_fov=mask_fov,
             location=location,
             zenith_max=zenith_max,
-            title=title,
+            #title=title,
             output_file=None,
             show=False,
         )
@@ -470,65 +497,54 @@ def clone_event_sample(sample: EventSample) -> EventSample:
     )
 
 
-def run_flare_injection_diagnostic(
+def run_flare_injection_case(
     parent_sample: EventSample,
-    window: SkyWindow,
     flare: Flare,
     *,
-    case_name: str = "flare_injection",
+    mode: str,
+    case_name: str,
+    label: str,
+    stem: str,
     max_rows: int = 10,
+    save_exposure: bool = True,
     nside: int = 32,
     mask_fov: bool = False,
     location=None,
     zenith_max=None,
-) -> None:
-    """Run a flare-injection diagnostic on ``parent_sample`` (already populated)."""
+) -> EventSample:
+    """Clone ``parent_sample``, inject ``flare``, and run the standard diagnostic.
+
+    The clone keeps ``parent_sample`` untouched so it can stay the "no_flare"
+    sibling. An ``injection_check.txt`` comparing parent vs injected is written
+    alongside the usual summary / arrays / plots.
+    """
+    injected = clone_event_sample(parent_sample)
+    injected.inject_flare(flare, mode=mode)
+
+    run_event_sample_diagnostic(
+        injected,
+        case_name=case_name,
+        label=label,
+        stem=stem,
+        max_rows=max_rows,
+        save_coordinates=True,
+        save_exposure=save_exposure,
+        save_skymap=True,
+        nside=nside,
+        mask_fov=mask_fov,
+        location=location,
+        zenith_max=zenith_max,
+    )
+
     outdir = build_case_output_dir(case_name)
+    injection_check = flare_injection_summary_text(
+        parent_sample, injected, label=f"{label} INJECTION CHECK", max_rows=max_rows,
+    )
+    (outdir / "injection_check.txt").write_text(injection_check, encoding="utf-8")
+    print("\n" + injection_check)
+    print(f"\n  Injection check : {outdir / 'injection_check.txt'}")
 
-    # Before injection
-    before_dir = outdir / "sample_before_injection"
-    before_dir.mkdir(parents=True, exist_ok=True)
-    before_summary = event_sample_summary_text(
-        parent_sample, label="SAMPLE BEFORE FLARE INJECTION", max_rows=max_rows,
-    )
-    (before_dir / "summary.txt").write_text(before_summary, encoding="utf-8")
-    save_event_sample_arrays(parent_sample, before_dir, "sample_before_injection")
-    save_coordinate_plots(parent_sample, before_dir)
-    save_exposure_plots(parent_sample, before_dir)
-    save_skymap_plot(
-        parent_sample, before_dir, filename="skymap.png", nside=nside,
-        mask_fov=mask_fov, location=location, zenith_max=zenith_max,
-        title="Sample before flare injection",
-    )
-
-    # After injection
-    after = clone_event_sample(parent_sample)
-    after.inject_flare(flare, mode="overdensity")
-
-    after_dir = outdir / "sample_after_injection"
-    after_dir.mkdir(parents=True, exist_ok=True)
-    after_summary = event_sample_summary_text(
-        after, label="SAMPLE AFTER FLARE INJECTION", max_rows=max_rows,
-    )
-    injection_summary = flare_injection_summary_text(
-        parent_sample, after, label="FLARE INJECTION CHECK", max_rows=max_rows,
-    )
-    (after_dir / "summary.txt").write_text(after_summary, encoding="utf-8")
-    (after_dir / "injection_check.txt").write_text(injection_summary, encoding="utf-8")
-    save_event_sample_arrays(after, after_dir, "sample_after_injection")
-    save_coordinate_plots(after, after_dir)
-    save_exposure_plots(after, after_dir)
-    save_skymap_plot(
-        after, after_dir, filename="skymap.png", nside=nside,
-        mask_fov=mask_fov, location=location, zenith_max=zenith_max,
-        title="Sample after flare injection",
-    )
-
-    print("\n" + "=" * 70)
-    print(f"FLARE INJECTION DIAGNOSTIC ({case_name})")
-    print("=" * 70)
-    print(f"Saved before injection : {before_dir}")
-    print(f"Saved after  injection : {after_dir}")
+    return injected
 
 
 # -------------------------------------------------------------------------
@@ -536,27 +552,37 @@ def run_flare_injection_diagnostic(
 # -------------------------------------------------------------------------
 
 
-def build_example_flare(
+def build_flare(
     *,
-    rng_manager: RNGManager,
-    window: SkyWindow,
+    rng: np.random.Generator,
+    centre: np.ndarray,
     exposure_model: ExposureModel,
     t0: Time,
     tf: Time,
+    window: SkyWindow | None = None,
     n_flare: int = 200,
     flare_duration: u.Quantity = 1.0 * u.day,
     flare_sigma: float = 3.0,
 ) -> Flare:
-    rng_flare = rng_manager.get("flare")
+    """Build and realise a flare around ``centre``.
+
+    If ``window`` is given the flare is constrained to it
+    (``Flare.generate_in_window``, for the in-window pipeline); otherwise a
+    window-free realisation is used (``Flare.generate``, for the full-sky
+    pipeline).
+    """
     flare = Flare(
         n_flare=n_flare,
         duration=flare_duration,
         t0=t0, tf=tf,
-        centre=window.centre,
+        centre=centre,
         exposure_model=exposure_model,
-        rng=rng_flare,
+        rng=rng,
     )
-    flare.generate_in_window(window=window, sigma=flare_sigma)
+    if window is None:
+        flare.generate(sigma=flare_sigma)
+    else:
+        flare.generate_in_window(window=window, sigma=flare_sigma)
     return flare
 
 
@@ -571,6 +597,8 @@ if __name__ == "__main__":
     rng_full_sky = rng_manager.get("full_sky_sample")
     rng_in_window = rng_manager.get("in_window_sample")
     rng_exposure = rng_manager.get("exposure")
+    rng_flare_full_sky = rng_manager.get("flare_full_sky")
+    rng_flare_in_window = rng_manager.get("flare_in_window")
 
     t0 = Time("2025-01-01T00:00:00")
     tf = Time("2025-02-01T00:00:00")
@@ -587,72 +615,91 @@ if __name__ == "__main__":
     zenith_max = 60 * u.deg
 
     n_total = 10_000
+    n_flare = 120
+    flare_duration = 1.0 * u.day
+    flare_sigma = 3.0
 
-    # ------------------------------------------------------------------
-    # Pipeline 1: full-sky -> subsample -> exposure
-    # ------------------------------------------------------------------
-    full_sample = EventSample.full_sky(
+    # ==================================================================
+    # Pipeline 1: full-sky (no subsample, no exposure)
+    # ==================================================================
+    # --- no flare ---
+    full_no_flare = EventSample.full_sky(
         n_total=n_total, t0=t0, tf=tf, rng=rng_full_sky,
     )
     run_event_sample_diagnostic(
-        full_sample,
-        case_name="full_sky/full_sample",
-        label="FULL-SKY SAMPLE",
-        stem="full_sample",
+        full_no_flare,
+        case_name="full_sky/no_flare",
+        label="FULL-SKY SAMPLE (no flare)",
+        stem="full_sky_no_flare",
         max_rows=12,
         save_coordinates=True, save_exposure=False, save_skymap=True,
     )
 
-    subsample = full_sample.select_subsample(window)
-    subsample.assign_directional_exposure(window=window, exposure_model=exposure_model)
-    run_event_sample_diagnostic(
-        subsample,
-        case_name="full_sky/subsample",
-        label="WINDOW SUBSAMPLE (from full-sky)",
-        stem="subsample",
+    # --- with flare (window-free flare, count-preserving injection) ---
+    flare_full_sky = build_flare(
+        rng=rng_flare_full_sky,
+        centre=centre,
+        exposure_model=exposure_model,
+        t0=t0, tf=tf,
+        window=None,
+        n_flare=n_flare,
+        flare_duration=flare_duration,
+        flare_sigma=flare_sigma,
+    )
+    run_flare_injection_case(
+        full_no_flare,
+        flare_full_sky,
+        mode="no_overdensity",
+        case_name="full_sky/with_flare",
+        label="FULL-SKY SAMPLE (with flare)",
+        stem="full_sky_with_flare",
         max_rows=12,
-        save_coordinates=True, save_exposure=True, save_skymap=True,
-        location=location, zenith_max=zenith_max,
+        save_exposure=False,
     )
 
-    # ------------------------------------------------------------------
-    # Pipeline 2: direct per-window sample -> exposure
-    # ------------------------------------------------------------------
-    in_window_sample = EventSample.in_window(
+    # ==================================================================
+    # Pipeline 2: in-window (direct draw + directional exposure)
+    # ==================================================================
+    # --- no flare ---
+    in_window_no_flare = EventSample.in_window(
         window=window,
         n_total=n_total,
         exposure_model=exposure_model,
         t0=t0, tf=tf,
         rng=rng_in_window,
     )
-    in_window_sample.assign_directional_exposure(window=window, exposure_model=exposure_model)
+    in_window_no_flare.assign_directional_exposure(
+        window=window, exposure_model=exposure_model,
+    )
     run_event_sample_diagnostic(
-        in_window_sample,
-        case_name="in_window/sample",
-        label="PER-WINDOW SAMPLE",
-        stem="in_window_sample",
+        in_window_no_flare,
+        case_name="in_window/no_flare",
+        label="IN-WINDOW SAMPLE (no flare)",
+        stem="in_window_no_flare",
         max_rows=12,
         save_coordinates=True, save_exposure=True, save_skymap=True,
         location=location, zenith_max=zenith_max,
     )
 
-    # ------------------------------------------------------------------
-    # Flare injection diagnostic on the per-window sample
-    # ------------------------------------------------------------------
-    flare = build_example_flare(
-        rng_manager=rng_manager,
-        window=window,
+    # --- with flare (windowed flare, overdensity injection) ---
+    flare_in_window = build_flare(
+        rng=rng_flare_in_window,
+        centre=centre,
         exposure_model=exposure_model,
         t0=t0, tf=tf,
-        n_flare=50,
-        flare_duration=1.0 * u.day,
-        flare_sigma=3.0,
-    )
-    run_flare_injection_diagnostic(
-        parent_sample=in_window_sample,
         window=window,
-        flare=flare,
-        case_name="in_window/flare_injection",
+        n_flare=n_flare,
+        flare_duration=flare_duration,
+        flare_sigma=flare_sigma,
+    )
+    run_flare_injection_case(
+        in_window_no_flare,
+        flare_in_window,
+        mode="overdensity",
+        case_name="in_window/with_flare",
+        label="IN-WINDOW SAMPLE (with flare)",
+        stem="in_window_with_flare",
         max_rows=12,
+        save_exposure=True,
         location=location, zenith_max=zenith_max,
     )

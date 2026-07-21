@@ -15,13 +15,21 @@ Parameters carried on the instance:
   directional-exposure evaluation.
 
 The spatial spread (``sigma``, Rayleigh radius of the Gaussian cluster in
-the tangent plane) is supplied at generation time to
-:meth:`Flare.generate_in_window`, not at construction.
+the tangent plane) is supplied at generation time to the ``generate_*``
+methods, not at construction.
 
 The class is constructed independently of an
-:class:`~spacetimecorr.event_sample.EventSample`. Use
-:meth:`Flare.generate_in_window` to populate the flare's own arrays,
-and :meth:`EventSample.inject_flare` to overlay it on a sample.
+:class:`~spacetimecorr.event_sample.EventSample`. Two realisation methods
+populate the flare's own arrays:
+
+- :meth:`Flare.generate_in_window` — constrains events to a
+  :class:`~spacetimecorr.skywindow.SkyWindow` (windowed pipeline).
+- :meth:`Flare.generate` — window-free realisation around the flare
+  centre (full-sky pipeline); see its warning about misuse in the
+  windowed pipeline.
+
+Either way, :meth:`EventSample.inject_flare` then overlays the flare on a
+sample.
 """
 
 from __future__ import annotations
@@ -44,8 +52,9 @@ class Flare:
     stores the parameters needed to generate a compact set of events in time
     and sky coordinates within a fixed observation interval ``[t0, tf]``,
     and exposes high-level helpers to populate them
-    (:meth:`generate_in_window`) or to inject them into an existing sample
-    (via :meth:`EventSample.inject_flare`).
+    (:meth:`generate_in_window` for the windowed pipeline or
+    :meth:`generate` for the full-sky pipeline) or to inject them into an
+    existing sample (via :meth:`EventSample.inject_flare`).
 
     Parameters
     ----------
@@ -154,6 +163,14 @@ class Flare:
         self.dec: np.ndarray | None = None
         self.time: Time | None = None
         self.exposure: np.ndarray | None = None
+
+        # Spatial-provenance tag: records how the flare was realised.
+        # ``generate_in_window`` stores the constraining window here; the
+        # window-free ``generate`` leaves it ``None``. Downstream consumers
+        # (e.g. ``EventSample.inject_flare``) use this to tell a
+        # window-constrained flare from a free one without re-checking
+        # geometry. See also the ``spatial_domain`` property.
+        self.window: "SkyWindow | None" = None
 
     # -------------------------------------------------------------------------
     # State-check properties
@@ -340,8 +357,127 @@ class Flare:
         self.exposure = self._evaluate_directional_exposure(self.time, direction)
 
     # -------------------------------------------------------------------------
-    # High-level realization method
+    # High-level realization methods
     # -------------------------------------------------------------------------
+
+    def _accumulate_events(
+        self,
+        sigma: float,
+        reference_direction: np.ndarray,
+        window: SkyWindow | None,
+        efficiency,
+    ) -> tuple[np.ndarray, np.ndarray, Time]:
+        """
+        Run the batched rejection loop and return ``n_flare`` accepted events.
+
+        Shared core of :meth:`generate_in_window` and :meth:`generate`. The
+        procedure is:
+
+        1. draw a single flare start time uniformly in ``[t0, tf - duration]``,
+        2. iterate by batches:
+           a. sample spatial candidates from a Gaussian cluster around
+              ``self.centre`` with width ``sigma``,
+           b. if ``window`` is given, keep only candidates inside it;
+              otherwise keep all of them,
+           c. draw uniform candidate times within the flare interval,
+           d. apply Bernoulli detection thinning via
+              :meth:`ExposureModel.detect_times` evaluated at
+              ``reference_direction``,
+        3. accumulate accepted events until exactly ``self.n_flare`` are
+           reached, then trim.
+
+        Parameters
+        ----------
+        sigma : float
+            Standard deviation (in degrees) of the Gaussian spatial profile.
+        reference_direction : np.ndarray
+            ``[RA, Dec]`` (degrees) at which detection thinning is evaluated.
+        window : SkyWindow or None
+            If given, candidates outside it are rejected. If ``None``, no
+            spatial selection is performed (window-free realisation).
+        efficiency : callable or None
+            Optional time-dependent efficiency forwarded to the exposure
+            model.
+
+        Returns
+        -------
+        ra, dec : np.ndarray
+            Accepted event coordinates in degrees (length ``self.n_flare``).
+        time : astropy.time.Time
+            Accepted event times (length ``self.n_flare``).
+
+        Raises
+        ------
+        RuntimeError
+            If the loop cannot reach ``self.n_flare`` accepted events within
+            ``1000 * self.n_flare`` candidate draws.
+        """
+        target = self.n_flare
+
+        ra_acc: list[np.ndarray] = []
+        dec_acc: list[np.ndarray] = []
+        time_acc: list[Time] = []
+
+        n_kept = 0
+        n_drawn = 0
+        max_draws = 1000 * target
+
+        # 1. Fix the Flare start time for this realization
+        # All candidate events for this flare instance happen in [start, start + duration]
+        flare_start = self._draw_flare_start()
+
+        while n_kept < target:
+            remaining = target - n_kept
+            current_batch = max(200, 10 * remaining) # Avoid very low values of current_batch
+            n_drawn += current_batch
+
+            if n_drawn > max_draws:
+                raise RuntimeError(
+                    "Could not generate enough events before reaching "
+                    "max_draws = 1000 * self.n_flare."
+                )
+
+            # --- Step 1: Spatial Sampling ---
+            ra_batch, dec_batch = self._sample_gaussian_cluster(current_batch, sigma)
+
+            # --- Step 2: Spatial selection (only when a window is given) ---
+            if window is not None:
+                spatial_mask = window.contains(ra_batch, dec_batch)
+                if not np.any(spatial_mask):
+                    continue
+                ra_cand = ra_batch[spatial_mask]
+                dec_cand = dec_batch[spatial_mask]
+            else:
+                ra_cand = ra_batch
+                dec_cand = dec_batch
+
+            # --- Step 3: Temporal Sampling + Exposure Thinning ---
+            times_cand = self._sample_uniform_times(ra_cand.size, start=flare_start)
+
+            _, detection_mask = self.exposure_model.detect_times(
+                times_cand,
+                reference_direction,
+                efficiency=efficiency,
+                return_mask=True,
+            )
+
+            if not np.any(detection_mask):
+                continue
+
+            ra_acc.append(ra_cand[detection_mask])
+            dec_acc.append(dec_cand[detection_mask])
+            time_acc.append(times_cand[detection_mask])
+            n_kept += int(np.count_nonzero(detection_mask))
+
+        # Clean up and slice to exact target
+        ra = np.concatenate(ra_acc)[:target]
+        dec = np.concatenate(dec_acc)[:target]
+        time = Time(
+            np.concatenate([t.jd for t in time_acc])[:target],
+            format="jd",
+            scale=flare_start.scale,
+        )
+        return ra, dec, time
 
     def generate_in_window(
         self,
@@ -352,20 +488,10 @@ class Flare:
         """
         Generate a flare realisation inside a sky window and store it on ``self``.
 
-        The procedure is:
-
-        1. draw a single flare start time uniformly in ``[t0, tf - duration]``,
-        2. iterate by batches:
-           a. sample spatial candidates from a Gaussian cluster around
-              ``self.centre`` with width ``sigma``,
-           b. keep only candidates inside ``window``,
-           c. draw uniform candidate times within the flare interval,
-           d. apply Bernoulli detection thinning via
-              :meth:`ExposureModel.acceptance_mask`,
-        3. accumulate accepted events until exactly ``self.n_flare`` are
-           reached, then trim,
-        4. compute directional exposure values for the kept times via
-           :meth:`compute_directional_exposure` evaluated at ``window.centre``.
+        Candidates are drawn from a Gaussian cluster around ``self.centre``
+        and only those falling inside ``window`` are kept (plus detection
+        thinning), so all ``self.n_flare`` events are guaranteed to lie
+        inside the window. Use this method for the **windowed pipeline**.
 
         Parameters
         ----------
@@ -395,8 +521,9 @@ class Flare:
 
         Notes
         -----
-        Sets ``self.ra``, ``self.dec``, ``self.time``, ``self.exposure``
-        and tags ``self.spatial_profile = "gaussian_spherical"``,
+        Sets ``self.ra``, ``self.dec``, ``self.time``, ``self.exposure``,
+        stores the constraining ``window`` on ``self.window`` and tags
+        ``self.spatial_profile = "gaussian_spherical"``,
         ``self.time_profile = "uniform_thinned"``.
 
         Directional exposure for each generated event is evaluated at
@@ -413,76 +540,105 @@ class Flare:
         if sigma <= 0:
             raise ValueError("sigma must be > 0.")
 
-        target = self.n_flare
-
-        ra_acc: list[np.ndarray] = []
-        dec_acc: list[np.ndarray] = []
-        time_acc: list[Time] = []
-
-        n_kept = 0
-        n_drawn = 0
-        max_draws = 1000 * target
-
-        # 1. Fix the Flare start time for this realization
-        # All candidate events for this flare instance happen in [start, start + duration]
-        flare_start = self._draw_flare_start()
-
-        while n_kept < target:
-            remaining = target - n_kept
-            current_batch = max(200, 10 * remaining) # Avoid very low values of current_batch
-            n_drawn += current_batch
-
-            if n_drawn > max_draws:
-                raise RuntimeError(
-                    "Could not generate enough events inside the window before "
-                    "reaching max_draws = 1000 * self.n_flare."
-                )
-
-            # --- Step 1: Spatial Sampling ---
-            ra_batch, dec_batch = self._sample_gaussian_cluster(current_batch, sigma)
-            spatial_mask = window.contains(ra_batch, dec_batch)
-            
-            # Filter batch to only those in window
-            if not np.any(spatial_mask):
-                continue
-
-            ra_cand = ra_batch[spatial_mask]
-            dec_cand = dec_batch[spatial_mask]
-
-            # --- Step 2: Temporal Sampling + Exposure Thinning ---
-            times_cand = self._sample_uniform_times(ra_cand.size, start=flare_start)
-
-            # --- Step 3: Exposure Thinning ---
-            _, detection_mask = self.exposure_model.detect_times(
-                times_cand,
-                window.centre,
-                efficiency=efficiency,
-                return_mask=True,
-            )
-
-            if not np.any(detection_mask):
-                continue
-
-            ra_acc.append(ra_cand[detection_mask])
-            dec_acc.append(dec_cand[detection_mask])
-            time_acc.append(times_cand[detection_mask])
-            n_kept += int(np.count_nonzero(detection_mask))
-
-
-        # Clean up and slice to exact target
-        self.ra = np.concatenate(ra_acc)[:target]
-        self.dec = np.concatenate(dec_acc)[:target]
-        self.time = Time(
-            np.concatenate([t.jd for t in time_acc])[:target],
-            format="jd",
-            scale=flare_start.scale,
+        self.ra, self.dec, self.time = self._accumulate_events(
+            sigma=sigma,
+            reference_direction=window.centre,
+            window=window,
+            efficiency=efficiency,
         )
-        
+
+        self.window = window
         self.spatial_profile = "gaussian_spherical"
         self.time_profile = "uniform_thinned"
 
         # Exposure attached to the final accepted events
         self.compute_directional_exposure(window.centre)
+
+    def generate(
+        self,
+        sigma: float,
+        efficiency = None,
+    ) -> Flare:
+        """
+        Generate a window-free flare realisation and store it on ``self``.
+
+        This is the counterpart of :meth:`generate_in_window` for the
+        **full-sky pipeline**: events are drawn from a Gaussian cluster
+        around ``self.centre`` with width ``sigma`` and thinned by detection
+        only — there is **no spatial selection**, so only the flare position
+        and width are needed and no :class:`SkyWindow` is involved.
+        Detection thinning and directional exposure are evaluated at the
+        flare centre ``self.centre``.
+
+        Parameters
+        ----------
+        sigma : float
+            Standard deviation (in degrees) of the Gaussian spatial profile
+            on the sphere (same small-angle approximation as
+            :meth:`generate_in_window`).
+        efficiency : callable or None, optional
+            Optional time-dependent efficiency in ``[0, 1]`` forwarded to
+            the exposure model.
+
+        Raises
+        ------
+        ValueError
+            If ``sigma <= 0``.
+        RuntimeError
+            If the rejection loop cannot reach ``self.n_flare`` accepted
+            events within ``1000 * self.n_flare`` candidate draws.
+
+        Warnings
+        --------
+        This method performs **no** spatial selection, so the generated
+        events are not guaranteed to lie inside any :class:`SkyWindow`. It is
+        meant for the full-sky pipeline. Injecting such a flare into a
+        window-constrained sample places events that may fall outside the
+        window; since :class:`EventSample` does not re-check geometry per
+        window (it would be expensive), those out-of-window events would be
+        analysed as if they were inside, biasing the result. The flare is
+        tagged as window-free (``self.window is None``) so
+        :meth:`EventSample.inject_flare` can warn about this misuse; for the
+        windowed pipeline use :meth:`generate_in_window` instead.
+
+        Notes
+        -----
+        Sets ``self.ra``, ``self.dec``, ``self.time``, ``self.exposure``,
+        leaves ``self.window`` as ``None`` (window-free provenance) and tags
+        ``self.spatial_profile = "gaussian_spherical"``,
+        ``self.time_profile = "uniform_thinned"``.
+        """
+        if sigma <= 0:
+            raise ValueError("sigma must be > 0.")
+
+        self.ra, self.dec, self.time = self._accumulate_events(
+            sigma=sigma,
+            reference_direction=self.centre,
+            window=None,
+            efficiency=efficiency,
+        )
+
+        self.window = None
+        self.spatial_profile = "gaussian_spherical"
+        self.time_profile = "uniform_thinned"
+
+        # Exposure attached to the final accepted events, evaluated at the
+        # flare centre (no window reference direction in the full-sky case).
+        self.compute_directional_exposure(self.centre)
+
+    @property
+    def spatial_domain(self) -> str | None:
+        """
+        Spatial provenance of the realisation.
+
+        Returns ``"window"`` if the flare was generated with
+        :meth:`generate_in_window` (events constrained to ``self.window``),
+        ``"full_sky"`` if generated window-free with :meth:`generate`, and
+        ``None`` if the flare has not been generated yet.
+        """
+        if not self.has_coordinates:
+            return None
+        return "window" if self.window is not None else "full_sky"
 
     @property
     def flare_type(self) -> str:

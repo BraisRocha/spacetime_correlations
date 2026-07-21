@@ -204,7 +204,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
 
     import matplotlib.gridspec as gridspec
 
-    fig = plt.figure(figsize=(5.5, 2.5))
+    fig = plt.figure(figsize=(5, 2.2))
     gs = gridspec.GridSpec(
         1, 3,
         width_ratios=[1, 1, 0.05],  # last column = colorbar
@@ -239,10 +239,10 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
         ax.axvline(lam_3sigma, color="0.3", linewidth=0.8, linestyle=":")
         ax.axvline(lam_5sigma, color="0.3", linewidth=0.8, linestyle="-.")
         trans = mpl.transforms.blended_transform_factory(ax.transData, ax.transAxes)
-        ax.text(lam_3sigma, 0.97, r"$3\sigma$", transform=trans,
-                va="top", ha="right", fontsize=6, color="0.3")
-        ax.text(lam_5sigma, 0.97, r"$5\sigma$", transform=trans,
-                va="top", ha="right", fontsize=6, color="0.3")
+        ax.text(lam_3sigma * 0.99, 0.95, r"$3\sigma$", transform=trans,
+                va="top", ha="right", color="0.3")
+        ax.text(lam_5sigma * 0.99, 0.95, r"$5\sigma$", transform=trans,
+                va="top", ha="right", color="0.3")
 
     # Discrete colorbar over the intensity grid (displayed in percent).
     # Ticks are centred in their bin: bounds straddle each intensity by
@@ -275,7 +275,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
     cbar.ax.tick_params(direction="out")
 
     fig.suptitle(
-        rf"$\mu = {expected_n:.1f}$ events, "
+        rf"$\mu = {expected_n:.1f}\,$events, "
         rf"$T_{{\rm obs}} = {int(T_obs_years)}\,$years"
     )
 
@@ -286,7 +286,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
         top=0.85,
         wspace=0.05
     )
-    fig.savefig(output_dir / "lambda_vs_flare_intensity.png",
+    fig.savefig(output_dir / "LambdaDist_IntensityScan_FixedDur_2Cases.png",
                 dpi=300, bbox_inches="tight")
     plt.close(fig)
 

@@ -522,14 +522,39 @@ def test_inject_flare_overwrites_flare_slots(window, exposure_model, t0, tf, rng
     )
 
 
-def test_inject_flare_double_injection_raises(window, exposure_model, t0, tf, rng, generated_flare):
+def test_inject_flare_multiple_injections_accumulate(
+    window, exposure_model, t0, tf, rng, generated_flare
+):
+    """A second injection is allowed and adds to the existing flare events."""
     s = EventSample.in_window(
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
     s.inject_flare(generated_flare, mode="overdensity")
-    with pytest.raises(RuntimeError):
-        s.inject_flare(generated_flare, mode="overdensity")
+    s.inject_flare(generated_flare, mode="overdensity")  # must not raise
+    assert int(np.count_nonzero(s.flare_mask)) == 2 * generated_flare.n_flare
+
+
+def test_inject_flare_second_injection_preserves_first_flare(
+    window, exposure_model, t0, tf, rng, generated_flare
+):
+    """Removing background for a second flare never displaces the first flare."""
+    s = EventSample.in_window(
+        window=window, n_total=20_000, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng,
+    )
+    s.inject_flare(generated_flare, mode="no_overdensity")
+    first_flare_ra = s.ra[s.flare_mask].copy()
+    first_flare_dec = s.dec[s.flare_mask].copy()
+
+    s.inject_flare(generated_flare, mode="no_overdensity")
+
+    # Every event flagged after the first injection is still flagged and present.
+    flare_ra = s.ra[s.flare_mask]
+    flare_dec = s.dec[s.flare_mask]
+    for ra_i, dec_i in zip(first_flare_ra, first_flare_dec):
+        keep = np.isclose(flare_ra, ra_i) & np.isclose(flare_dec, dec_i)
+        assert keep.any()
 
 
 def test_inject_flare_not_a_flare_raises(window, exposure_model, t0, tf, rng):
