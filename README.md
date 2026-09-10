@@ -74,14 +74,14 @@ spacetime_correlations/
 │   │   ├── run_scan_correlation.py     # 1-D scan over correlation type
 │   │   └── run_grid_p50.py             # 2-D (duration, intensity) grid; one Condor job per point
 │   └── plots/                          # Plotting helpers for Monte-Carlo outputs
-├── condor/                             # HTCondor submission layer (see condor/README.md)
-│   ├── lib/env.sh                      # shared setup: conda env and cache folders
-│   ├── logs/                           # job stdout/stderr/log (gitignored)
+├── condor/                             # HTCondor submission layer
 │   └── grid_p50/                       # one folder per submitted script
-│       ├── submit.sh                   # builds the grid and submits it
-│       ├── job.sh                      # wrapper HTCondor runs, once per grid point
-│       ├── grid_p50.sub                # condor_submit file
-│       └── params.txt                  # parameter grid (rebuilt by submit.sh)
+│       ├── grid_p50.sub                # condor_submit file (absolute cluster paths)
+│       ├── run_grid_p50.sh             # wrapper HTCondor runs, once per grid point
+│       ├── submit_grid_p50.sh          # builds the grid and submits it
+│       └── grid_p50_params.txt         # parameter grid (rebuilt by submit_grid_p50.sh)
+├── logs/
+│   └── condor/                         # job stdout/stderr/log (gitignored)
 ├── output/                             # Scientific results (gitignored)
 │   ├── montecarlo/                     # one folder per run, mirrors scripts/montecarlo/
 │   └── diagnostics/                    # mirrors scripts/diagnostics/
@@ -185,31 +185,40 @@ workflow has three steps: **submit → merge → plot**.
 
 ### 1. Submit the grid
 
+From the submit host, with the `stc_env` conda environment active (it is
+needed here to build the grid):
+
 ```bash
-bash condor/grid_p50/submit.sh
+bash condor/grid_p50/submit_grid_p50.sh
 ```
 
 This script:
-1. Regenerates the parameter grid `condor/grid_p50/params.txt`
+1. Regenerates the parameter grid `condor/grid_p50/grid_p50_params.txt`
    (durations × intensities × seed — edit the ranges inside the script
    if needed).
-2. Creates the log directory `condor/logs/grid_p50/`.
+2. Creates the log directory `logs/condor/grid_p50/`.
 3. Builds a **submission ID** from the current timestamp
    (e.g. `20260525_153127`) and submits all cells to HTCondor.
 
-Add `--dry-run` to rebuild the grid and print what would happen without
-submitting anything. To test a single grid point first, run the very same
-wrapper HTCondor uses:
+To test a single grid point first, run the very same wrapper HTCondor uses
+(arguments: duration in days, intensity, seed, job id, submission id):
 
 ```bash
-bash condor/grid_p50/job.sh 1.0 0.5 42 0 test
+bash condor/grid_p50/run_grid_p50.sh 1.0 0.5 42 0 test
 ```
 
 The submission ID is printed to the terminal and is also the name of the
 output directory. **Write it down — you need it for the plot step.**
 
-See [`condor/README.md`](condor/README.md) for log locations, debugging and
-the per-machine conda settings.
+The `.out`, `.err` and `.log` of every job land in
+`logs/condor/grid_p50/grid_p50_<ID>_<N>.*`. `condor_q` shows what is still
+queued or running, and `condor_q -better-analyze` why a job is not starting.
+
+The paths inside `grid_p50.sub` and `run_grid_p50.sh` are absolute cluster
+paths (`/lustre/Auger/brais.rocha/spacetime_correlations`, and the `stc_env`
+interpreter): the executable is copied to the worker node, so nothing can be
+found relative to those files. They are the two places to edit if the
+repository or the environment moves.
 
 Each job writes into `output/montecarlo/grid_p50/<ID>/data/` and produces
 four files (`N` = the job/process number):
@@ -286,7 +295,8 @@ Monte-Carlo scripts follow a two-part scheme: `<mode>_<what_varies>.py`.
 
 Plot scripts mirror the same root name (`plot_null.py`, `plot_scan_intensity.py`, …).
 Condor files in `condor/` are grouped in a folder with the same root name
-(`condor/grid_p50/`, holding `grid_p50.sub`, `job.sh` and `submit.sh`).
+(`condor/grid_p50/`, holding `grid_p50.sub`, `run_grid_p50.sh` and
+`submit_grid_p50.sh`).
 
 The scripts under `scripts/` are provided as worked examples of the
 analysis workflows the package supports; new studies are expected to

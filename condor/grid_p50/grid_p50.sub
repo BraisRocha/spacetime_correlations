@@ -1,73 +1,21 @@
-# ===========================================================================
-# HTCondor submit file for the 2-D (flare duration, flare intensity) grid.
-# One HTCondor job is created per grid point.
+# One job per line of grid_p50_params.txt (flare_duration, flare_intensity, seed).
+# Submit with: bash condor/grid_p50/submit_grid_p50.sh
 #
-# Do not run "condor_submit" on this file directly - use:
-#
-#     bash condor/grid_p50/submit.sh
-#
-# which rebuilds params.txt, creates the log folder, and fills in the two
-# settings just below.
-# ===========================================================================
+# Paths are absolute because the executable is copied to the worker node, so
+# nothing can be located relative to this file. Update them if the repository
+# moves. The Python environment is picked by run_grid_p50.sh, not here.
 
+getenv     = PATH,HOME,LD_LIBRARY_PATH,CONDA_PREFIX,CONDA_DEFAULT_ENV
+executable = /lustre/Auger/brais.rocha/spacetime_correlations/condor/grid_p50/run_grid_p50.sh
 
-# --- Settings filled in by submit.sh ---------------------------------------
-# A submit file can define its own variables. Anywhere below, "$(NAME)" is
-# replaced by the value of NAME. submit.sh overrides both of these when it
-# submits, so the values written here are only fallbacks.
+output = /lustre/Auger/brais.rocha/spacetime_correlations/logs/condor/grid_p50/grid_p50_$(submission_id)_$(Process).out
+error  = /lustre/Auger/brais.rocha/spacetime_correlations/logs/condor/grid_p50/grid_p50_$(submission_id)_$(Process).err
+log    = /lustre/Auger/brais.rocha/spacetime_correlations/logs/condor/grid_p50/grid_p50_$(submission_id)_$(Process).log
 
-# The project folder on this machine.
-REPO_DIR = /lustre/Auger/brais.rocha/spacetime_correlations
-
-# A name shared by every job of one submission. They all write their results
-# into a folder of that name, and submit.sh sets it to a timestamp.
-submission_id = manual
-
-
-# --- What to run -----------------------------------------------------------
-executable = $(REPO_DIR)/condor/grid_p50/job.sh
-
-# The arguments handed to job.sh. The names in brackets are filled in per job:
-#   flare_duration, flare_intensity, seed  come from params.txt (see the
-#                                          "queue" line at the bottom)
-#   $(Process)  is HTCondor's own job counter: 0, 1, 2, ... for this submission
-arguments = $(flare_duration) $(flare_intensity) $(seed) $(Process) $(submission_id)
-
-# Variables placed in the job's environment. STC_REPO_DIR tells job.sh where
-# the project lives (it cannot find out by itself - see the comment in
-# job.sh). The other two get recorded in each run's metadata.json.
-environment = "STC_REPO_DIR=$(REPO_DIR) CONDOR_CLUSTER_ID=$(Cluster) CONDOR_PROCESS_ID=$(Process)"
-
-
-# --- Where the job's output goes -------------------------------------------
-# "output" and "error" capture whatever the job prints to the screen and to
-# the error stream. "log" is HTCondor's own record: when the job started,
-# which machine it ran on, and how it finished.
-#
-# IMPORTANT: HTCondor does not create these folders. If the folder is missing,
-# the submission fails - and you are left with no .out or .err file to look
-# at. submit.sh creates it before submitting.
-log_dir = $(REPO_DIR)/condor/logs/grid_p50
-output  = $(log_dir)/$(submission_id)_$(Process).out
-error   = $(log_dir)/$(submission_id)_$(Process).err
-
-# One log file for the whole submission, rather than one per job.
-log     = $(log_dir)/$(submission_id).log
-
-
-# --- Resources and queue ---------------------------------------------------
-request_memory          = 1G
-+flavour                = "xshort"
-
-# Copy job.sh to the worker node before running it. Everything else - the
-# spacetimecorr package, the output folder - is reached through the shared
-# /lustre disk, so there is nothing else to send.
 should_transfer_files   = Yes
 when_to_transfer_output = ON_EXIT
++flavour                = "xshort"
+arguments               = $(flare_duration) $(flare_intensity) $(seed) $(Process) $(submission_id)
+request_memory          = 2G
 
-
-# --- The job list ----------------------------------------------------------
-# Read params.txt and create one job per line. Each line holds three values
-# separated by commas, which are assigned to the three names below and are
-# then available as $(flare_duration), $(flare_intensity) and $(seed) above.
-queue flare_duration, flare_intensity, seed from $(REPO_DIR)/condor/grid_p50/params.txt
+queue flare_duration, flare_intensity, seed from /lustre/Auger/brais.rocha/spacetime_correlations/condor/grid_p50/grid_p50_params.txt
