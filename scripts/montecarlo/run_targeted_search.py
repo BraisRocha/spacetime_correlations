@@ -184,7 +184,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Output directory
     # ------------------------------------------------------------------
-    base_dir = project_root / "output" / "scripts"
+    base_dir = project_root / "output" / "montecarlo"
 
     outdir, sim_ID = make_run_dir(
         base_dir=base_dir,

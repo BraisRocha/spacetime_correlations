@@ -374,10 +374,12 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
 
 
 if __name__ == "__main__":
+    # The project root, found from this file's own location (scripts/plots/ is
+    # two levels below it), so the path works on any machine.
+    project_root = Path(__file__).resolve().parents[2]
+
     # Edit these paths to point at the two runs you want to combine
-    base = Path(
-        "/lustre/Auger/brais.rocha/spacetime_correlations/output/scripts/scan_intensity"
-    )
+    base = project_root / "output" / "montecarlo" / "scan_intensity"
     run_dirs = [
         base / "20260519_095850_seed42",  # T_obs = 10 years (reference)
         base / "20260519_100251_seed42",  # T_obs = 1 year

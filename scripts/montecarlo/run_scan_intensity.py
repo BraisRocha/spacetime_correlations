@@ -10,7 +10,7 @@ matrix of Lambda values. Sharing the parent sample across intensities
 reduces background-driven variance in the intensity-to-intensity
 comparison.
 
-Outputs are written to ``output/scripts/scan_intensity/<sim_ID>/``
+Outputs are written to ``output/montecarlo/scan_intensity/<sim_ID>/``
 as ``results.npz`` plus a ``metadata.json`` describing the run.
 """
 
@@ -36,7 +36,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_total = int(5e5)
+    n_total = int(3e5)
     n_simulations = int(1e4)
     max_attempts = int(5 * n_simulations)
 
@@ -46,8 +46,8 @@ def main(seed: int) -> None:
     tf = t0 + T_obs
 
     # Sky window
-    centre = np.array([30.0, 0.0])
-    radius = 2
+    centre = np.array([0.0, -40.0]) # [ra, dec]
+    radius = 1.05
 
     # Pierre Auger Observatory
     latitude_pa = -35.15
@@ -63,7 +63,7 @@ def main(seed: int) -> None:
     # Output directory
     # ------------------------------------------------------------------
     project_root = Path(__file__).resolve().parents[2]
-    base_dir = project_root / "output" / "scripts"
+    base_dir = project_root / "output" / "montecarlo"
 
     outdir, sim_ID = make_run_dir(
         base_dir=base_dir,

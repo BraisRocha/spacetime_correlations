@@ -267,7 +267,11 @@ def main(results_dir: str | Path) -> None:
     plt.close(fig)
 
 if __name__ == "__main__":
-    # Change this path to the run you want to plot
-    run_dir = Path("/lustre/Auger/brais.rocha/spacetime_correlations/output/scripts/null")
+    # The project root, found from this file's own location (scripts/plots/ is
+    # two levels below it), so the path works on any machine.
+    project_root = Path(__file__).resolve().parents[2]
+
+    # Change this to the run you want to plot
+    run_dir = project_root / "output" / "montecarlo" / "null"
     sim_id = "20260518_164126_seed42"
     main(run_dir/sim_id)

@@ -26,8 +26,26 @@ import scipy.stats as scp
 import astropy.units as u
 from astropy.time import Time, TimeDelta
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 
 from spacetimecorr import ExposureModel, Observatory, RNGManager
+
+
+# -------------------------------------------------------------------------
+# Provisional physical conversion (seconds -> km^2 sr yr)
+# -------------------------------------------------------------------------
+# ExposureModel.cumulative_directional_exposure returns seconds (no area or
+# solid angle folded in, see TODO.md). These constants are used only to
+# convert the diagnostic plot below into physical units; they are not part
+# of the exposure model itself yet.
+DETECTOR_AREA_KM2 = 3000.0
+TARGET_RADIUS_DEG = 1.05
+SECONDS_PER_YEAR = 365.25 * 86400.0
+
+
+def _target_solid_angle_sr(radius_deg: float) -> float:
+    """Solid angle (sr) of a circular cap of angular radius `radius_deg`."""
+    return 2.0 * np.pi * (1.0 - np.cos(np.deg2rad(radius_deg)))
 
 
 # -------------------------------------------------------------------------
@@ -256,6 +274,10 @@ def save_exposure_sampling_arrays(
 # Plots
 # -------------------------------------------------------------------------
 
+# Style #
+RC_FILE = Path(__file__).resolve().parents[1] / "plots/matplotlibrc_test"
+if RC_FILE.exists():
+    mpl.rc_file(RC_FILE, use_default_template=False)
 
 def save_exposure_acceptance_plots(
     outdir: Path,
@@ -269,7 +291,40 @@ def save_exposure_acceptance_plots(
 ) -> list[Path]:
     saved = []
 
-    grid_offsets = (grid_times - grid_times[0]).to_value(u.h)
+    grid_offsets = (grid_times - grid_times[0]).to_value(u.day)
+
+    target_solid_angle_sr = _target_solid_angle_sr(TARGET_RADIUS_DEG)
+    grid_exposure_physical = (
+        grid_exposure * DETECTOR_AREA_KM2 * target_solid_angle_sr / SECONDS_PER_YEAR
+    )
+
+    fig, ax = plt.subplots(1, 2, figsize=(5, 2), constrained_layout=True)
+
+    ax[0].plot(grid_offsets, grid_acceptance, linewidth=0.7)
+    ax[0].set_ylabel(r"$\omega/\omega_{{\rm max}}$")
+    ax[0].set_xlabel(r"Time offset from $t_0$ [days]")
+    ax[0].set_xlim(grid_offsets.min(), grid_offsets.max())
+
+    ax[1].plot(grid_offsets, grid_exposure_physical, linewidth=0.7)
+    ax[1].set_ylabel(r"$\mathcal{E}$ (km$^2$ sr yr)")
+    ax[1].set_xlabel(r"Time offset from $t_0$ [days]")
+    ax[1].set_xlim(grid_offsets.min(), grid_offsets.max())
+
+    alpha_deg, delta_deg = centre
+    T_obs_days = grid_offsets.max()
+    if np.isclose(T_obs_days, round(T_obs_days), atol=1e-2):
+        tobs_str = rf"{int(round(T_obs_days))}\,\mathrm{{days}}"
+    else:
+        tobs_str = rf"{T_obs_days:.2f}\,\mathrm{{days}}"
+    fig.suptitle(
+        rf"($\delta = {delta_deg:.1f}^\circ,\alpha = {alpha_deg:.1f}^\circ$)"
+        rf"$\quad \theta_{{\rm max}} = {exposure_model.theta_max_deg}^{{\circ}}$"
+    )
+
+    p = outdir / "instantaneous_and_cumulative_exposure.pdf"
+    fig.savefig(p, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    saved.append(p)
 
     # Instantaneous acceptance curve
     plt.figure(figsize=(7, 4))
@@ -528,21 +583,21 @@ if __name__ == "__main__":
     rng_manager = RNGManager(seed=42)
     rng_exposure = rng_manager.get("exposure")
 
-    t0 = Time("2025-01-01T00:00:00")
-    tf = Time("2025-01-07T00:00:00")
+    t0 = Time("2025-01-01T10:00:00")
+    tf = Time("2025-01-08T10:00:00")
 
-    centre = np.array([30.0, 0.0])
+    centre = np.array([0.0, -35.0])
 
     observatory = Observatory(latitude=-35.15, longitude=-69.15, altitude=1425.0)
     exposure_model = ExposureModel(
-        observatory=observatory, t0=t0, tf=tf, rng=rng_exposure, theta_max_deg=90
+        observatory=observatory, t0=t0, tf=tf, rng=rng_exposure, theta_max_deg=80
     )
 
     run_exposure_diagnostic(
         exposure=exposure_model,
         centre=centre,
         n_candidates=100_000,
-        grid_size=4000,
+        grid_size=10000,
         efficiency=None,
         max_rows=12,
         stem="exposure",

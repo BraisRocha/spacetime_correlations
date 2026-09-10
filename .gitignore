@@ -5,9 +5,10 @@ __pycache__/
 output/
 spacetimecorr.egg-info/
 notebook.txt
-logs/condor/*.out
-logs/condor/*.err
-logs/condor/*.log
+# Parameter grids are rebuilt by each submit.sh, so they are not tracked.
+# (HTCondor job logs are ignored by condor/logs/.gitignore.)
+condor/*/params.txt
+condor/*/params.txt.tmp
 # Track the inputs/ folder structure but not the (large/local) data files
 inputs/*
 !inputs/catalogs/

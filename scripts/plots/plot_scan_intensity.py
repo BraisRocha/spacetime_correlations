@@ -195,7 +195,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
     # ------------------------------------------------------------------
     # Lambda distributions vs flare intensity (panels = flare durations)
     # ------------------------------------------------------------------
-    bins = np.linspace(0, 350, 70)
+    bins = np.linspace(0, 300, 70)
     cmap = mpl.colors.LinearSegmentedColormap.from_list(
         "plasma_trimmed",
         mpl.colormaps["magma"](np.linspace(0.1, 0.95, 256))
@@ -286,17 +286,21 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
         top=0.85,
         wspace=0.05
     )
-    fig.savefig(output_dir / "LambdaDist_IntensityScan_FixedDur_2Cases.png",
+    fig.savefig(output_dir / "LambdaDist_IntensityScan_FixedDur_2Cases.pdf",
                 dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
 if __name__ == "__main__":
+    # The project root, found from this file's own location (scripts/plots/ is
+    # two levels below it), so the path works on any machine.
+    project_root = Path(__file__).resolve().parents[2]
+
     # Edit these paths to point at the two runs you want to combine
-    base = Path("output/scripts/scan_intensity")
+    base = project_root / "output" / "montecarlo" / "scan_intensity"
     run_dirs = [
-        base / "20260615_110220_seed42", # run 1 hour
-        base / "20260615_105751_seed42", # run 1 week
+        base / "20260909_152715_seed42", # run 1 hour
+        base / "20260909_152239_seed42", # run 1 week
     ]
     output_dir = base / "figures"
     main(run_dirs=run_dirs, output_dir=output_dir)

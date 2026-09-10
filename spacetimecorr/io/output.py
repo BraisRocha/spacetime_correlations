@@ -18,7 +18,7 @@ def make_run_dir(
     Parameters
     ----------
     base_dir : Path
-        Base output directory, e.g. project_root / "output" / "scripts".
+        Base output directory, e.g. project_root / "output" / "montecarlo".
     run_code : str
         Short code identifying the script or experiment, e.g. "fi".
     seed : int

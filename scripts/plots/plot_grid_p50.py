@@ -559,9 +559,11 @@ def main(
 
 
 if __name__ == "__main__":
-    run_dir = Path(
-        "/lustre/Auger/brais.rocha/spacetime_correlations/output/scripts/"
-        "grid_p50/20260525_153127"
-    )
+    # The project root, found from this file's own location (scripts/plots/ is
+    # two levels below it), so the path works on any machine.
+    project_root = Path(__file__).resolve().parents[2]
+
+    # Change this to the run you want to plot
+    run_dir = project_root / "output" / "montecarlo" / "grid_p50" / "20260525_153127"
     output_dir = run_dir / "figures"
     main(run_dir=run_dir, output_dir=output_dir)

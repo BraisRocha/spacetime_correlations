@@ -317,10 +317,14 @@ def main(run_dir: str | Path, output_dir: str | Path) -> None:
 
 
 if __name__ == "__main__":
-    # Edit to point at a run_target_search.py output directory.
-    run_dir = Path(
-        "/home/brais/PhD/dev/stc_project/output/scripts/targeted_search/"
-        "20260623_180141_seed70"
+    # The project root, found from this file's own location (scripts/plots/ is
+    # two levels below it), so the path works on any machine.
+    project_root = Path(__file__).resolve().parents[2]
+
+    # Edit to point at a run_targeted_search.py output directory.
+    run_dir = (
+        project_root / "output" / "montecarlo" / "targeted_search"
+        / "20260623_180141_seed70"
     )
     output_dir = run_dir / "figures"
     main(run_dir=run_dir, output_dir=output_dir)

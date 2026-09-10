@@ -74,18 +74,17 @@ spacetime_correlations/
 │   │   ├── run_scan_correlation.py     # 1-D scan over correlation type
 │   │   └── run_grid_p50.py             # 2-D (duration, intensity) grid; one Condor job per point
 │   └── plots/                          # Plotting helpers for Monte-Carlo outputs
-├── jobs/                               # Submission layer (local and HTCondor)
-│   ├── condor/                         # HTCondor submit files and wrappers
-│   │   └── grid_p50/
-│   │       ├── grid_p50.sub            # condor_submit file
-│   │       ├── grid_p50_params.txt     # parameter grid (shared with local)
-│   │       ├── run_grid_p50.sh         # bash wrapper executed by Condor
-│   │       └── submit_grid_p50.sh      # convenience submit script
-│   └── local/                          # Local launchers (iterate over the same grids)
-│       └── run_grid_p50.sh
-├── logs/
-│   └── condor/                         # HTCondor stdout/stderr (gitignored)
+├── condor/                             # HTCondor submission layer (see condor/README.md)
+│   ├── lib/env.sh                      # shared setup: conda env and cache folders
+│   ├── logs/                           # job stdout/stderr/log (gitignored)
+│   └── grid_p50/                       # one folder per submitted script
+│       ├── submit.sh                   # builds the grid and submits it
+│       ├── job.sh                      # wrapper HTCondor runs, once per grid point
+│       ├── grid_p50.sub                # condor_submit file
+│       └── params.txt                  # parameter grid (rebuilt by submit.sh)
 ├── output/                             # Scientific results (gitignored)
+│   ├── montecarlo/                     # one folder per run, mirrors scripts/montecarlo/
+│   └── diagnostics/                    # mirrors scripts/diagnostics/
 └── spacetimecorr/                      # Python package
     ├── __init__.py
     ├── observatory.py                  # Observatory location (lat/lon/alt)
@@ -187,20 +186,32 @@ workflow has three steps: **submit → merge → plot**.
 ### 1. Submit the grid
 
 ```bash
-bash jobs/condor/grid_p50/submit_grid_p50.sh
+bash condor/grid_p50/submit.sh
 ```
 
 This script:
-1. Regenerates the parameter grid `jobs/condor/grid_p50/grid_p50_params.txt`
-   (durations × intensities × seed — edit the ranges at the top of the
-   script if needed).
-2. Builds a **submission ID** from the current timestamp
+1. Regenerates the parameter grid `condor/grid_p50/params.txt`
+   (durations × intensities × seed — edit the ranges inside the script
+   if needed).
+2. Creates the log directory `condor/logs/grid_p50/`.
+3. Builds a **submission ID** from the current timestamp
    (e.g. `20260525_153127`) and submits all cells to HTCondor.
+
+Add `--dry-run` to rebuild the grid and print what would happen without
+submitting anything. To test a single grid point first, run the very same
+wrapper HTCondor uses:
+
+```bash
+bash condor/grid_p50/job.sh 1.0 0.5 42 0 test
+```
 
 The submission ID is printed to the terminal and is also the name of the
 output directory. **Write it down — you need it for the plot step.**
 
-Each job writes into `output/scripts/grid_p50/<ID>/data/` and produces
+See [`condor/README.md`](condor/README.md) for log locations, debugging and
+the per-machine conda settings.
+
+Each job writes into `output/montecarlo/grid_p50/<ID>/data/` and produces
 four files (`N` = the job/process number):
 
 | File | Contents |
@@ -216,7 +227,7 @@ Once all jobs have finished, collapse the per-cell pickles into one
 pickle per statistic:
 
 ```bash
-python -m spacetimecorr.io.merge output/scripts/grid_p50/<ID> --mode grid-pvalues
+python -m spacetimecorr.io.merge output/montecarlo/grid_p50/<ID> --mode grid-pvalues
 ```
 
 Replace `<ID>` with your submission ID. The command auto-detects the
@@ -242,8 +253,9 @@ path:
 
 ```python
 if __name__ == "__main__":
-    run_dir = Path("output/scripts/grid_p50/<ID>")   # <- your submission ID
-    output_dir = run_dir / "figures"                 # <- where the PNGs go
+    project_root = Path(__file__).resolve().parents[2]
+    run_dir = project_root / "output" / "montecarlo" / "grid_p50" / "<ID>"  # <- your submission ID
+    output_dir = run_dir / "figures"                                        # <- where the PNGs go
     main(run_dir=run_dir, output_dir=output_dir)
 ```
 
@@ -254,7 +266,7 @@ python scripts/plots/plot_grid_p50.py
 ```
 
 **Finding the ID:** it is the name of the run directory, and it is also
-printed in every per-job log. Open any `output/scripts/grid_p50/<ID>/data/run_job*.log`
+printed in every per-job log. Open any `output/montecarlo/grid_p50/<ID>/data/run_job*.log`
 and read the line:
 
 ```text
@@ -273,8 +285,8 @@ Monte-Carlo scripts follow a two-part scheme: `<mode>_<what_varies>.py`.
 | `run_grid_*` | 2-D parameter sweep; designed for Condor array jobs |
 
 Plot scripts mirror the same root name (`plot_null.py`, `plot_scan_intensity.py`, …).
-Job files in `jobs/` follow the same root without the `run_`/`plot_` prefix
-(`grid_p50.sub`, `run_grid_p50.sh`).
+Condor files in `condor/` are grouped in a folder with the same root name
+(`condor/grid_p50/`, holding `grid_p50.sub`, `job.sh` and `submit.sh`).
 
 The scripts under `scripts/` are provided as worked examples of the
 analysis workflows the package supports; new studies are expected to

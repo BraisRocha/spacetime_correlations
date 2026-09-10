@@ -168,9 +168,11 @@ def main(run_dirs: list[str | Path],
 
 
 if __name__ == "__main__":
-    scripts_out = Path(
-        "/lustre/Auger/brais.rocha/spacetime_correlations/output/scripts"
-    )
+    # The project root, found from this file's own location (scripts/plots/ is
+    # two levels below it), so the path works on any machine.
+    project_root = Path(__file__).resolve().parents[2]
+
+    scripts_out = project_root / "output" / "montecarlo"
     runs_base = scripts_out / "compare_bg_signal"
     run_dirs = [
         runs_base / "20260525_114456_seed42",

@@ -18,7 +18,7 @@ grid cell. Each job:
 The ``flare_duration`` (in days), ``flare_intensity`` (S/N), ``seed``,
 and an optional ``job_id`` are passed in as command-line arguments by
 the Condor submit file. Outputs are written to
-``output/scripts/grid_p50/<run_name>/``.
+``output/montecarlo/grid_p50/<run_name>/``.
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ def main(
     # Output directory
     # ------------------------------------------------------------------
     project_root = Path(__file__).resolve().parents[2]
-    base_dir = project_root / "output" / "scripts"
+    base_dir = project_root / "output" / "montecarlo"
 
     outdir, sim_ID = make_run_dir(
         base_dir=base_dir,

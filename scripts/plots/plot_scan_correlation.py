@@ -294,7 +294,11 @@ def main(results_dir: str | Path) -> None:
     plt.close(fig)
 
 if __name__ == "__main__":
-    # Change this path to the run you want to plot
-    run_dir = Path("/home/brais_rocha/Work/dev/stc_project/output/scripts/scan_correlation")
+    # The project root, found from this file's own location (scripts/plots/ is
+    # two levels below it), so the path works on any machine.
+    project_root = Path(__file__).resolve().parents[2]
+
+    # Change this to the run you want to plot
+    run_dir = project_root / "output" / "montecarlo" / "scan_correlation"
     sim_id = "20260428_212445_seed42"
     main(run_dir/sim_id)
