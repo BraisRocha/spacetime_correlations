@@ -1,16 +1,19 @@
-# One job per line of grid_p50_params.txt (flare_duration, flare_intensity, seed).
+# One job per line of params.txt (flare_duration, flare_intensity, seed).
 # Submit with: bash condor/grid_p50/submit_grid_p50.sh
 #
 # Paths are absolute because the executable is copied to the worker node, so
 # nothing can be located relative to this file. Update them if the repository
 # moves. The Python environment is picked by run_grid_p50.sh, not here.
+#
+# submission_id is set by the submitting script and names the scratch
+# directory of this batch. There is no "log" command: the event log of the
+# whole batch is one of the files DAGMan keeps, next to the .dag.
 
 getenv     = PATH,HOME,LD_LIBRARY_PATH,CONDA_PREFIX,CONDA_DEFAULT_ENV
 executable = /lustre/Auger/brais.rocha/spacetime_correlations/condor/grid_p50/run_grid_p50.sh
 
-output = /lustre/Auger/brais.rocha/spacetime_correlations/logs/condor/grid_p50/grid_p50_$(submission_id)_$(Process).out
-error  = /lustre/Auger/brais.rocha/spacetime_correlations/logs/condor/grid_p50/grid_p50_$(submission_id)_$(Process).err
-log    = /lustre/Auger/brais.rocha/spacetime_correlations/logs/condor/grid_p50/grid_p50_$(submission_id)_$(Process).log
+output = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/grid_p50/$(submission_id)/grid_p50_$(Process).out
+error  = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/grid_p50/$(submission_id)/grid_p50_$(Process).err
 
 should_transfer_files   = Yes
 when_to_transfer_output = ON_EXIT
@@ -18,4 +21,4 @@ when_to_transfer_output = ON_EXIT
 arguments               = $(flare_duration) $(flare_intensity) $(seed) $(Process) $(submission_id)
 request_memory          = 2G
 
-queue flare_duration, flare_intensity, seed from /lustre/Auger/brais.rocha/spacetime_correlations/condor/grid_p50/grid_p50_params.txt
+queue flare_duration, flare_intensity, seed from /lustre/Auger/brais.rocha/spacetime_correlations/scratch/grid_p50/params.txt

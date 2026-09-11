@@ -18,7 +18,8 @@ grid cell. Each job:
 The ``flare_duration`` (in days), ``flare_intensity`` (S/N), ``seed``,
 and an optional ``job_id`` are passed in as command-line arguments by
 the Condor submit file. Outputs are written to
-``output/montecarlo/grid_p50/<run_name>/``.
+``<output_base>/grid_p50/<run_name>/``, where ``output_base`` defaults to
+``output/montecarlo/`` and is pointed at the scratch tree by Condor jobs.
 """
 
 from __future__ import annotations
@@ -74,6 +75,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--output-base",
+        type=Path,
+        default=None,
+        help=(
+            "Directory under which <run_code>/<submission_id>/ is created. "
+            "Defaults to output/montecarlo/ in the repository. Condor jobs "
+            "point it at the scratch tree instead, so that output/ holds "
+            "nothing until the submission has been finalized."
+        ),
+    )
+    parser.add_argument(
         "--submission-id",
         type=str,
         default=None,
@@ -92,6 +104,7 @@ def main(
     flare_intensity_value: float,
     job_id: str | None,
     submission_id: str | None,
+    output_base: Path | None = None,
 ) -> None:
     start_time = time.time()
 
@@ -125,7 +138,7 @@ def main(
     # Output directory
     # ------------------------------------------------------------------
     project_root = Path(__file__).resolve().parents[2]
-    base_dir = project_root / "output" / "montecarlo"
+    base_dir = output_base or project_root / "output" / "montecarlo"
 
     outdir, sim_ID = make_run_dir(
         base_dir=base_dir,
@@ -375,4 +388,5 @@ if __name__ == "__main__":
         flare_intensity_value=args.flare_intensity,
         job_id=args.job_id,
         submission_id=args.submission_id,
+        output_base=args.output_base,
     )

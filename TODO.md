@@ -84,7 +84,14 @@ fix right now, but which should be revisited.
   My question now is why this has to be done separately from the rest.
   Wouldn't be possible to include these lines in _subset()?
 
-- **event_sample.py line 831: POTENTIAL FATAL BUG**
+- **[SOLVED] event_sample.py line 831: POTENTIAL FATAL BUG**
+  Fixed: `inject_flare` now computes the mean number of removed background
+  events directly as
+  `self.window.expected_n_in_window(n_events=flare.n_flare, exposure_model=self.exposure_model)`,
+  so the exposure weight `omega(dec_centre) / <omega>` is folded in. Still
+  to be confirmed with Miguel. Original description below.
+
+
   In the method EventSample.inject_flare() could there be a fatal bug
   related to the injection of flares in windowed samples.
   When a flare is injected in these cases, a number of background events have to be removed to maintaing n_total constant. As we only 
@@ -104,3 +111,52 @@ fix right now, but which should be revisited.
 
   -**Very Important Change in the ExposureModel**
 Change the units, take into account observatory's area (km²), target's surface (sr) and time (yr)
+
+## Found while reviewing the new inject_flare bkg-removal (2026-09-11)
+
+- **`select_subsample` drops the exposure model when setting `expected_n`**
+  `EventSample.select_subsample` (event_sample.py:549) does
+  `expected_n = window.expected_n_in_window(self.n_total)` with **no**
+  exposure model, i.e. the bare sky fraction. But `_subset` *does* copy
+  `self.exposure_model` onto the new sample. So a subsample now carries an
+  *unweighted* `expected_n` next to an *exposure-weighted* `mu_removed` in
+  `inject_flare`: the two disagree about the same window.
+  Passing `self.exposure_model` there would make them consistent, but
+  `expected_n` also feeds `expected_exposure_rate` in
+  `generate_directional_exposure` (event_sample.py:601), so the change
+  propagates into the exposure sampling and must be thought through rather
+  than just applied. Directly connected to "Why EventSample._subset() does
+  not change expected_n?" and to the full_sky-needs-an-ExposureModel item
+  above — all three are the same underlying question: *who owns the
+  exposure weighting of `expected_n`?*
+
+- **Two stale tests describing the old removal formula**
+  Both still pass, but they no longer test what the code does:
+  - `test_inject_flare_requires_expected_n`
+    (tests/test_event_sample.py:439) asserts that a sample without
+    `expected_n` raises. The new code never reads `expected_n` in
+    overdensity mode — it requires `window`. The test only passes because
+    the bare-constructor sample happens to have *both* unset. Rename to
+    `test_inject_flare_overdensity_requires_window` and assert on the
+    window, otherwise a future regression here goes undetected.
+  - `test_inject_flare_mean_n_removed_matches_poisson`
+    (tests/test_event_sample.py:450) builds its expectation as
+    `expected_n / n_total * n_flare`, i.e. the old formula. It should call
+    `window.expected_n_in_window(n_flare, exposure_model)` directly.
+  Neither is covered by a test today: injecting into a `full_sky` sample in
+  overdensity mode (the `AttributeError` that motivated the guard) has no
+  test at all. Worth adding one.
+
+- **`pytest` is not installed in `stc_venv`**
+  `python -m pytest` fails with `No module named pytest`, so the suite
+  cannot currently be run in the project venv. The inject_flare changes were
+  verified with a standalone script instead. `pip install pytest` in
+  `stc_venv` before the next review round.
+
+- **Minor: the `min(n_removed, n_bkg)` clip biases the removal low**
+  In overdensity mode `n_removed` is clipped at the number of available
+  background events. When the flare is large relative to the in-window
+  background, the realised mean removal sits below `mu_removed`. Harmless in
+  the small-window / large-`n_total` regime we work in, and already
+  documented in the docstring Notes, but it is a real (small) bias if the
+  regime ever changes.

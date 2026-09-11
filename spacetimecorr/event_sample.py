@@ -681,13 +681,18 @@ class EventSample:
             legacy "full-sky → carve window" pipeline in the
             per-window pipeline: a flare would overwrite
             ``n_flare`` random slots in a hypothetical full-sky parent
-            of size ``n_total``; on average ``p * n_flare`` of those
-            slots happened to lie inside the window (where
-            ``p = expected_n / n_total``), and those events are no
+            of size ``n_total``; each such slot lies inside the window
+            with probability ``p = sky_fraction * omega(delta_centre)
+            / <omega>``, so on average ``p * n_flare`` of them are no
             longer in the in-window sample::
 
-                n_removed ~ Poisson(p * n_flare)        # clipped at n_sample
+                mu_removed = window.expected_n_in_window(n_flare, exposure_model)
+                n_removed  ~ Poisson(mu_removed)   # clipped at the background count
                 n_sample_after = n_sample_before - n_removed + n_flare
+
+            The expected count is taken straight from
+            :meth:`SkyWindow.expected_n_in_window`, using the sample's
+            own ``exposure_model``.
 
             Tests both spatial and temporal anisotropy: the window
             count goes up *and* the flare events cluster in time.
@@ -724,8 +729,8 @@ class EventSample:
             - If ``mode`` is not one of the two accepted strings.
             - If coordinates have not been assigned.
             - If the flare has not been fully generated.
-            - In ``"overdensity"`` mode: if ``expected_n`` is unset,
-              ``n_total <= 0``, or ``n_flare > n_total``.
+            - In ``"overdensity"`` mode: if the sample carries no
+              ``window``, ``n_total <= 0``, or ``n_flare > n_total``.
             - In ``"no_overdensity"`` mode: if ``n_flare`` exceeds the
               number of background (non-flare) events available to remove.
 
@@ -745,6 +750,9 @@ class EventSample:
           the underlying Hypergeometric draw; accurate when the
           window covers a small fraction of the sky, which is the
           regime of interest.
+        - ``mu_removed`` is weighted by ``self.exposure_model``. If the
+          sample carries none (e.g. a subsample of a full-sky parent),
+          the weight falls back to the bare sky fraction.
         """
         from .flare import Flare
 
@@ -812,11 +820,12 @@ class EventSample:
 
         # ---- Mode-specific n_removed ------------------------------------
         if mode == "overdensity":
-            if self.expected_n is None:
+            if self.window is None:
                 raise ValueError(
-                    "Sample expected_n is not set; cannot determine the "
-                    "background-overlap probability used for overdensity-mode "
-                    "flare thinning."
+                    "Sample carries no window; cannot determine the expected "
+                    "number of background events displaced by the flare. "
+                    "Build the sample with EventSample.in_window(...) or "
+                    "select_subsample(...), or use mode='no_overdensity'."
                 )
             if self.n_total <= 0:
                 raise ValueError(
@@ -828,8 +837,10 @@ class EventSample:
                     f"exceed n_total ({self.n_total}): the flare is drawn "
                     f"from a hypothetical full-sky sample of that size."
                 )
-            p_in_window = float(self.expected_n) / float(self.n_total)
-            mu_removed = p_in_window * flare.n_flare
+            mu_removed = self.window.expected_n_in_window(
+                n_events=flare.n_flare,
+                exposure_model=self.exposure_model,
+            )
             n_removed = int(self.rng.poisson(mu_removed))
             n_removed = min(n_removed, n_bkg)
         else:  # mode == "no_overdensity"

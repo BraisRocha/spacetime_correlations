@@ -79,9 +79,8 @@ spacetime_correlations/
 │       ├── grid_p50.sub                # condor_submit file (absolute cluster paths)
 │       ├── run_grid_p50.sh             # wrapper HTCondor runs, once per grid point
 │       ├── submit_grid_p50.sh          # builds the grid and submits it
-│       └── grid_p50_params.txt         # parameter grid (rebuilt by submit_grid_p50.sh)
-├── logs/
-│   └── condor/                         # job stdout/stderr/log (gitignored)
+│       └── finalize_grid_p50.sh        # merges the results once every job is done
+├── scratch/                            # One folder per running submission (gitignored)
 ├── output/                             # Scientific results (gitignored)
 │   ├── montecarlo/                     # one folder per run, mirrors scripts/montecarlo/
 │   └── diagnostics/                    # mirrors scripts/diagnostics/
@@ -176,89 +175,64 @@ print(f"Lambda (+flare):  {lam_flare:.3f}")
 
 ## Running the 2-D (duration, intensity) grid on HTCondor
 
-`run_grid_p50.py` evaluates the sensitivity of the Lambda and Poisson
-tests over a 2-D grid of flare **duration** × flare **intensity**, with
-**one Condor job per grid cell**. Each job injects a flare on top of
-`n_simulations` background realizations and stores the full
-per-simulation p-value distribution for both tests. The end-to-end
-workflow has three steps: **submit → merge → plot**.
+`run_grid_p50.py` evaluates the sensitivity of the Lambda and Poisson tests
+over a 2-D grid of flare **duration** x flare **intensity**, with **one
+Condor job per grid cell**.
 
-### 1. Submit the grid
+The submission layer lives in `condor/grid_p50/` and has three parts:
 
-From the submit host, with the `stc_env` conda environment active (it is
-needed here to build the grid):
+| File | Role |
+|------|------|
+| `submit_grid_p50.sh` | what you run: builds the parameter grid and submits it |
+| `run_grid_p50.sh` | what HTCondor runs on a worker node, once per grid cell |
+| `finalize_grid_p50.sh` | what runs at the end, once every job has finished |
+
+### Submit
+
+From the submit host, with the `stc_env` conda environment active:
 
 ```bash
 bash condor/grid_p50/submit_grid_p50.sh
 ```
 
-This script:
-1. Regenerates the parameter grid `condor/grid_p50/grid_p50_params.txt`
-   (durations × intensities × seed — edit the ranges inside the script
-   if needed).
-2. Creates the log directory `logs/condor/grid_p50/`.
-3. Builds a **submission ID** from the current timestamp
-   (e.g. `20260525_153127`) and submits all cells to HTCondor.
+It prints a **submission ID** (a timestamp) that names the run from there on.
+The grid ranges are set inside the script; edit them there if needed.
 
-To test a single grid point first, run the very same wrapper HTCondor uses
-(arguments: duration in days, intensity, seed, job id, submission id):
+### What happens next
 
-```bash
-bash condor/grid_p50/run_grid_p50.sh 1.0 0.5 42 0 test
-```
+While the jobs run, everything they produce goes to
+`scratch/grid_p50/<ID>/`: the parameter grid, the per-job `.out` / `.err`,
+and one set of results per cell. Nothing is written to `output/` yet.
 
-The submission ID is printed to the terminal and is also the name of the
-output directory. **Write it down — you need it for the plot step.**
+When the last job finishes, HTCondor itself launches the final step, so you
+do not have to wait around for it. It checks that every cell arrived, merges
+the per-cell results, writes them to `output/montecarlo/grid_p50/<ID>/`, and
+deletes the scratch directory.
 
-The `.out`, `.err` and `.log` of every job land in
-`logs/condor/grid_p50/grid_p50_<ID>_<N>.*`. `condor_q` shows what is still
-queued or running, and `condor_q -better-analyze` why a job is not starting.
+**A scratch directory that is still there is the sign that a submission
+needs looking at.** It is kept whenever a cell is missing, with the failed
+jobs' tracebacks and logs, and with the results of the cells that did work
+so the grid can be rebuilt once they have been rerun. Use `--keep-scratch`
+at submission time to keep it in any case.
 
-The paths inside `grid_p50.sub` and `run_grid_p50.sh` are absolute cluster
-paths (`/lustre/Auger/brais.rocha/spacetime_correlations`, and the `stc_env`
-interpreter): the executable is copied to the worker node, so nothing can be
-found relative to those files. They are the two places to edit if the
-repository or the environment moves.
+### Results
 
-Each job writes into `output/montecarlo/grid_p50/<ID>/data/` and produces
-four files (`N` = the job/process number):
+`output/montecarlo/grid_p50/<ID>/` ends up holding four files:
 
 | File | Contents |
 |------|----------|
-| `run_job{N}.log` | Per-job run log |
-| `metadata_job{N}.json` | Per-job metadata (`expected_n`, `T_obs`, flare params, …) |
-| `pvalues_lambda_job{N}.pkl` | Lambda p-values for that cell, as `(durations, intensities, pvalues)` with `pvalues` of shape `(1, 1, n_simulations)` |
-| `pvalues_poisson_job{N}.pkl` | Poisson p-values for that cell, same layout |
+| `pvalues_lambda_merged.pkl` | `(durations, intensities, pvalues)`, `pvalues` of shape `(n_durations, n_intensities, n_simulations)` |
+| `pvalues_poisson_merged.pkl` | same layout |
+| `metadata.json` | the settings shared by every job, plus one row per grid cell |
+| `run.log` | short report: cells delivered, `expected_n`, runtimes |
 
-### 2. Merge the per-job pickles (from the terminal)
+A cell whose job failed is `NaN` in the merged arrays, and the plotting
+script renders it blank, so an incomplete grid can still be plotted.
 
-Once all jobs have finished, collapse the per-cell pickles into one
-pickle per statistic:
+### Plot
 
-```bash
-python -m spacetimecorr.io.merge output/montecarlo/grid_p50/<ID> --mode grid-pvalues
-```
-
-Replace `<ID>` with your submission ID. The command auto-detects the
-`data/` subdirectory and writes, next to the per-job files:
-
-- `pvalues_lambda_merged.pkl`
-- `pvalues_poisson_merged.pkl`
-
-Each merged file holds a tuple `(durations, intensities, pvalues)` where
-`durations` and `intensities` are the sorted grid axes and `pvalues` has
-shape `(n_durations, n_intensities, n_simulations)`.
-
-> By default both statistics are merged (`--stat both`). Use
-> `--stat lambda` or `--stat poisson` to merge only one.
-
-### 3. Plot the results
-
-The percentile (median by default) is now computed **inside the plot
-script** from the merged p-value distributions, so you only need to point
-it at the run. Open `scripts/plots/plot_grid_p50.py` and edit the bottom
-`__main__` block to set **your submission ID** and the desired output
-path:
+Open `scripts/plots/plot_grid_p50.py` and set your submission ID in the
+bottom `__main__` block:
 
 ```python
 if __name__ == "__main__":
@@ -268,18 +242,8 @@ if __name__ == "__main__":
     main(run_dir=run_dir, output_dir=output_dir)
 ```
 
-Then run it:
-
 ```bash
 python scripts/plots/plot_grid_p50.py
-```
-
-**Finding the ID:** it is the name of the run directory, and it is also
-printed in every per-job log. Open any `output/montecarlo/grid_p50/<ID>/data/run_job*.log`
-and read the line:
-
-```text
-Simulation ID: 20260525_153127
 ```
 
 ## Script naming convention
@@ -295,8 +259,8 @@ Monte-Carlo scripts follow a two-part scheme: `<mode>_<what_varies>.py`.
 
 Plot scripts mirror the same root name (`plot_null.py`, `plot_scan_intensity.py`, …).
 Condor files in `condor/` are grouped in a folder with the same root name
-(`condor/grid_p50/`, holding `grid_p50.sub`, `run_grid_p50.sh` and
-`submit_grid_p50.sh`).
+(`condor/grid_p50/`, holding `grid_p50.sub` and the `submit_`, `run_` and
+`finalize_` scripts).
 
 The scripts under `scripts/` are provided as worked examples of the
 analysis workflows the package supports; new studies are expected to
