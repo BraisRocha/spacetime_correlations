@@ -250,10 +250,10 @@ class Flare:
         numpy.ndarray
             Boolean array matching the shape of ``time``.
         """
-        acceptance = self.exposure_model.instantaneous_acceptance(
+        p_det = self.exposure_model.detection_probability(
             t=time, centre=self.centre
         )
-        return np.asarray(acceptance) > 0.0
+        return np.asarray(p_det) > 0.0
 
     def _sample_gaussian_cluster(
         self,
@@ -330,7 +330,7 @@ class Flare:
         """
 
         return np.asarray(
-            self.exposure_model.cumulative_directional_exposure(time, direction),
+            self.exposure_model.norm_cumul_exposure(time, direction),
             dtype=float,
         )
     
@@ -472,8 +472,14 @@ class Flare:
         # Clean up and slice to exact target
         ra = np.concatenate(ra_acc)[:target]
         dec = np.concatenate(dec_acc)[:target]
+        # Concatenate the two halves of astropy's time representation
+        # separately. Going through `.jd` would collapse them into one
+        # float64, whose spacing at JD ~ 2.46e6 is 40 us — enough to give
+        # two events in a short flare exactly equal times, hence exactly
+        # equal exposure, which `lambda_estimator` rejects.
         time = Time(
-            np.concatenate([t.jd for t in time_acc])[:target],
+            np.concatenate([t.jd1 for t in time_acc])[:target],
+            np.concatenate([t.jd2 for t in time_acc])[:target],
             format="jd",
             scale=flare_start.scale,
         )

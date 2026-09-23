@@ -597,7 +597,7 @@ class EventSample:
             Identifier of the sampling method used.
         """
 
-        max_exposure = exposure_model.max_directional_exposure(window.centre)
+        max_exposure = exposure_model.max_norm_cumul_exposure(window.centre)
         expected_exposure_rate = self.expected_n/ max_exposure
 
         if self.has_flare:
@@ -607,10 +607,9 @@ class EventSample:
 
         n_target = int(np.count_nonzero(isotropy_mask))
 
-        eps, method = exposure_model.sample_directional_exposure(
+        eps, method = exposure_model.sample_iso_cumul_exposure(
             n_events=n_target,
             expected_exposure_rate=expected_exposure_rate,
-            max_dir_exposure=max_exposure,
         )
 
         eps = np.asarray(eps, dtype=float)
@@ -682,9 +681,10 @@ class EventSample:
             per-window pipeline: a flare would overwrite
             ``n_flare`` random slots in a hypothetical full-sky parent
             of size ``n_total``; each such slot lies inside the window
-            with probability ``p = sky_fraction * omega(delta_centre)
-            / <omega>``, so on average ``p * n_flare`` of them are no
-            longer in the in-window sample::
+            with probability ``p = E(window) / E_sky``, the window's
+            share of the observatory's total exposure, so on average
+            ``p * n_flare`` of them are no longer in the in-window
+            sample::
 
                 mu_removed = window.expected_n_in_window(n_flare, exposure_model)
                 n_removed  ~ Poisson(mu_removed)   # clipped at the background count

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from spacetimecorr import SkyWindow
+from spacetimecorr import SkyWindow, SkyGrid
 
 
 # -------------------------------------------------------------------------
@@ -161,14 +161,22 @@ def test_expected_n_in_window_unweighted_matches_formula():
     assert result == pytest.approx(10_000 * win.sky_fraction)
 
 
-def test_expected_n_in_window_with_exposure_model_includes_omega(exposure_model):
+def test_expected_n_in_window_with_exposure_model_uses_exposure_share(exposure_model):
     win = SkyWindow(centre=[180.0, -30.0], radius=15.0)
-    # The weight is the relative exposure normalised by its sky average, so
-    # that the per-window counts sum to n_events over a full-sky tiling.
-    omega = exposure_model.relative_exposure(win.centre)
-    omega_bar = exposure_model.mean_relative_exposure
+    # The weight is the window's share of the observatory's total exposure.
+    share = exposure_model.relative_window_exposure(win)
     result = win.expected_n_in_window(n_events=10_000, exposure_model=exposure_model)
-    assert result == pytest.approx(10_000 * win.sky_fraction * omega / omega_bar)
+    assert result == pytest.approx(10_000 * share)
+
+
+def test_expected_n_in_window_matches_exposure_ratio(exposure_model):
+    win = SkyWindow(centre=[180.0, -30.0], radius=15.0)
+    ratio = (
+        exposure_model.cumul_exposure(exposure_model.tf, win)
+        / exposure_model.total_exposure()
+    )
+    result = win.expected_n_in_window(n_events=10_000, exposure_model=exposure_model)
+    assert result == pytest.approx(10_000 * ratio, rel=1e-12)
 
 
 def test_expected_n_in_window_scales_linearly_in_n_events():
@@ -176,3 +184,48 @@ def test_expected_n_in_window_scales_linearly_in_n_events():
     a = win.expected_n_in_window(n_events=100)
     b = win.expected_n_in_window(n_events=300)
     assert b == pytest.approx(3.0 * a)
+
+
+# -------------------------------------------------------------------------
+# SkyGrid.expected_n_in_window
+# -------------------------------------------------------------------------
+
+
+GRID_CENTRES = np.array([[180.0, -30.0], [10.0, -60.0], [200.0, 50.0]])
+
+
+def test_grid_expected_n_unweighted_matches_per_window():
+    grid = SkyGrid(centres=GRID_CENTRES, radii=5.0)
+    expected = [
+        SkyWindow(centre=c, radius=5.0).expected_n_in_window(10_000)
+        for c in GRID_CENTRES
+    ]
+    assert grid.expected_n_in_window(10_000) == pytest.approx(expected)
+
+
+def test_grid_expected_n_weighted_matches_per_window(exposure_model):
+    grid = SkyGrid(centres=GRID_CENTRES, radii=5.0)
+    expected = [
+        SkyWindow(centre=c, radius=5.0).expected_n_in_window(10_000, exposure_model)
+        for c in GRID_CENTRES
+    ]
+    result = grid.expected_n_in_window(10_000, exposure_model)
+    assert result == pytest.approx(expected)
+
+
+def test_grid_expected_n_honours_per_window_radii(exposure_model):
+    radii = np.array([1.0, 5.0, 10.0])
+    grid = SkyGrid(centres=GRID_CENTRES, radii=radii)
+    expected = [
+        SkyWindow(centre=c, radius=r).expected_n_in_window(10_000, exposure_model)
+        for c, r in zip(GRID_CENTRES, radii)
+    ]
+    assert grid.expected_n_in_window(10_000, exposure_model) == pytest.approx(expected)
+
+
+def test_grid_expected_n_zero_for_never_visible_window(exposure_model):
+    # dec = +50 never enters the field of view from Auger with theta_max = 60.
+    grid = SkyGrid(centres=GRID_CENTRES, radii=5.0)
+    result = grid.expected_n_in_window(10_000, exposure_model)
+    assert result[2] == 0.0
+    assert np.all(result[:2] > 0.0)

@@ -386,8 +386,13 @@ def lambda_estimator(sample: EventSample) -> float:
             "values; check the upstream sampling for quantisation."
         )
 
-    # Computation of the Lambda estimator
-    lambda_stat = float(-np.sum(np.log(1.0 - np.exp(-delta_exp * sample.expected_exposure_rate))))
+    # Computation of the Lambda estimator.
+    # `-expm1(-x)` rather than `1 - exp(-x)`: the latter underflows to
+    # exactly 0.0 once x < 2**-53, sending Lambda to +inf silently, since
+    # the duplicate guard above only catches delta_exp <= 0. The two agree
+    # to ~1e-12 at ordinary spacings.
+    x = delta_exp * sample.expected_exposure_rate
+    lambda_stat = float(-np.sum(np.log(-np.expm1(-x))))
 
     return lambda_stat
 

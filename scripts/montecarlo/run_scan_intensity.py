@@ -37,11 +37,11 @@ def main(seed: int) -> None:
     # Simulation parameters
     # ------------------------------------------------------------------
     n_total = int(3e5)
-    n_simulations = int(1e4)
+    n_simulations = int(1e4) 
     max_attempts = int(5 * n_simulations)
 
     # Observation interval
-    T_obs = 10 * u.year
+    T_obs = 12 * u.year
     t0 = Time("2013-01-01T00:00:00", scale="utc")
     tf = t0 + T_obs
 
@@ -55,7 +55,7 @@ def main(seed: int) -> None:
     altitude_pa = 1425
 
     # Flare parameters
-    flare_duration = 1 * u.hour
+    flare_duration = 1 * u.min
     flare_sigma = 1.0  # deg
     flare_intensity = np.array([0.5, 1., 1.5, 2.])  # S/N ratio
 
@@ -92,6 +92,7 @@ def main(seed: int) -> None:
     window = stc.SkyWindow(centre=centre, radius=radius)
     observatory = stc.Observatory(
         latitude=latitude_pa, longitude=longitude_pa, altitude=altitude_pa,
+        area=3000.0,
     )
     exposure_model = stc.ExposureModel(
         observatory=observatory, t0=t0, tf=tf, rng=rng_exposure,

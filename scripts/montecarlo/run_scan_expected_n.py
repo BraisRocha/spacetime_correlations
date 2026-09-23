@@ -38,6 +38,7 @@ def main(seed:int) -> None:
         latitude=latitude_pa,
         longitude=longitude_pa,
         altitude=altitude_pa,
+        area=3000.0,
     )
 
     # Observation interval

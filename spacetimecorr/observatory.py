@@ -31,11 +31,14 @@ class Observatory:
         Longitude in degrees, must be in [-180, 180].
     altitude : float
         Altitude in meters (non-negative).
+    area : float
+        Area in km**2 (non-negative)
     """
 
     latitude: float
     longitude: float
     altitude: float
+    area: float
     location: EarthLocation = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -56,10 +59,16 @@ class Observatory:
         if self.altitude < 0:
             raise ValueError("Altitude must be non-negative.")
 
+        if not isinstance(self.area, (int, float)) or isinstance(self.area, bool):
+            raise TypeError("Area must be a numeric value in km**2.")
+        if self.area <= 0:
+            raise ValueError("Area must be positive.")
+
         # Enforce internal float consistency
         object.__setattr__(self, "latitude", float(self.latitude))
         object.__setattr__(self, "longitude", float(self.longitude))
         object.__setattr__(self, "altitude", float(self.altitude))
+        object.__setattr__(self, "area", float(self.area))
 
         # Create EarthLocation once (cached geometry)
         location = EarthLocation(

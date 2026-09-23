@@ -50,7 +50,7 @@ def tf() -> Time:
 @pytest.fixture
 def observatory() -> Observatory:
     """Pierre Auger Observatory."""
-    return Observatory(latitude=-35.15, longitude=-69.15, altitude=1425.0)
+    return Observatory(latitude=-35.15, longitude=-69.15, altitude=1425.0, area=3000.0)
 
 
 @pytest.fixture

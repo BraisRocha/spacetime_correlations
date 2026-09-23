@@ -5,12 +5,12 @@ Two parts:
 
 1. **Acceptance diagnostic** — sample candidate times uniformly over
    ``[t0, tf]``, run them through ``ExposureModel.detect_times``, and plot
-   the instantaneous acceptance / cumulative directional exposure curves,
+   the detection probability / cumulative directional exposure curves,
    together with histograms of candidate-vs-accepted times and of the
    accepted-event exposure values.
 
 2. **Exposure-space sampling diagnostic** — call
-   ``ExposureModel.sample_directional_exposure`` directly, then plot the
+   ``ExposureModel.sample_iso_cumul_exposure`` directly, then plot the
    sampled-exposure histogram and the exposure-gap distribution against
    the analytic ``Exponential(rate=expected_exposure_rate)`` law.
 
@@ -28,24 +28,14 @@ from astropy.time import Time, TimeDelta
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
-from spacetimecorr import ExposureModel, Observatory, RNGManager
+from spacetimecorr import ExposureModel, Observatory, RNGManager, SkyWindow
 
 
 # -------------------------------------------------------------------------
-# Provisional physical conversion (seconds -> km^2 sr yr)
+# Array and target geometry
 # -------------------------------------------------------------------------
-# ExposureModel.cumulative_directional_exposure returns seconds (no area or
-# solid angle folded in, see TODO.md). These constants are used only to
-# convert the diagnostic plot below into physical units; they are not part
-# of the exposure model itself yet.
 DETECTOR_AREA_KM2 = 3000.0
 TARGET_RADIUS_DEG = 1.05
-SECONDS_PER_YEAR = 365.25 * 86400.0
-
-
-def _target_solid_angle_sr(radius_deg: float) -> float:
-    """Solid angle (sr) of a circular cap of angular radius `radius_deg`."""
-    return 2.0 * np.pi * (1.0 - np.cos(np.deg2rad(radius_deg)))
 
 
 # -------------------------------------------------------------------------
@@ -92,7 +82,7 @@ def exposure_acceptance_summary_text(
     else:
         lines.append("acceptance fraction      : nan")
 
-    max_exp = float(exposure.max_directional_exposure(centre))
+    max_exp = float(exposure.max_norm_cumul_exposure(centre))
     lines.append(f"max directional exposure : {max_exp:.6g}")
 
     lines.append("")
@@ -288,15 +278,11 @@ def save_exposure_acceptance_plots(
     grid_times: Time,
     grid_acceptance: np.ndarray,
     grid_exposure: np.ndarray,
+    grid_exposure_physical: np.ndarray,
 ) -> list[Path]:
     saved = []
 
     grid_offsets = (grid_times - grid_times[0]).to_value(u.day)
-
-    target_solid_angle_sr = _target_solid_angle_sr(TARGET_RADIUS_DEG)
-    grid_exposure_physical = (
-        grid_exposure * DETECTOR_AREA_KM2 * target_solid_angle_sr / SECONDS_PER_YEAR
-    )
 
     fig, ax = plt.subplots(1, 2, figsize=(5, 2), constrained_layout=True)
 
@@ -407,7 +393,7 @@ def save_exposure_sampling_plots(
              edgecolor="black", linewidth=0.8)
     plt.xlabel("Sampled directional exposure")
     plt.ylabel("Counts")
-    plt.title("Sample from sample_directional_exposure")
+    plt.title("Sample from sample_iso_cumul_exposure")
     plt.tight_layout()
     p = outdir / "dir_exposure_hist.png"
     plt.savefig(p, dpi=150, bbox_inches="tight")
@@ -483,10 +469,14 @@ def run_exposure_diagnostic(
     grid_offsets = np.linspace(0.0, total_sec, grid_size)
     grid_times = exposure.t0 + TimeDelta(grid_offsets, format="sec")
     grid_acceptance = np.asarray(
-        exposure.instantaneous_acceptance(grid_times, centre), dtype=float
+        exposure.detection_probability(grid_times, centre), dtype=float
     )
     grid_exposure = np.asarray(
-        exposure.cumulative_directional_exposure(grid_times, centre), dtype=float
+        exposure.norm_cumul_exposure(grid_times, centre), dtype=float
+    )
+    target_window = SkyWindow(centre=centre, radius=TARGET_RADIUS_DEG)
+    grid_exposure_physical = np.asarray(
+        exposure.cumul_exposure(grid_times, target_window), dtype=float
     )
 
     summary = exposure_acceptance_summary_text(
@@ -515,6 +505,7 @@ def run_exposure_diagnostic(
         candidate_times=candidate_times, accepted_times=accepted_times,
         accepted_exposure=accepted_exposure,
         grid_times=grid_times, grid_acceptance=grid_acceptance, grid_exposure=grid_exposure,
+        grid_exposure_physical=grid_exposure_physical,
     )
 
     print("\nSaved acceptance diagnostic files:")
@@ -526,19 +517,18 @@ def run_exposure_diagnostic(
     # ------------------------------------------------------------------
     # Exposure-space sampling diagnostic
     # ------------------------------------------------------------------
-    max_dir_exposure = float(exposure.max_directional_exposure(centre))
+    max_dir_exposure = float(exposure.max_norm_cumul_exposure(centre))
     if max_dir_exposure <= 0.0:
         print(
-            "\nSkipping exposure-space sampling: max_directional_exposure is 0 "
+            "\nSkipping exposure-space sampling: max_norm_cumul_exposure is 0 "
             "(direction is never inside the acceptance cone)."
         )
         return
 
     expected_exposure_rate = float(n_candidates) / max_dir_exposure
-    sample_exposure, method_name = exposure.sample_directional_exposure(
+    sample_exposure, method_name = exposure.sample_iso_cumul_exposure(
         n_events=n_candidates,
         expected_exposure_rate=expected_exposure_rate,
-        max_dir_exposure=max_dir_exposure,
     )
     exposure_gaps = np.diff(np.sort(sample_exposure))
 
@@ -588,7 +578,10 @@ if __name__ == "__main__":
 
     centre = np.array([0.0, -35.0])
 
-    observatory = Observatory(latitude=-35.15, longitude=-69.15, altitude=1425.0)
+    observatory = Observatory(
+        latitude=-35.15, longitude=-69.15, altitude=1425.0,
+        area=DETECTOR_AREA_KM2,
+    )
     exposure_model = ExposureModel(
         observatory=observatory, t0=t0, tf=tf, rng=rng_exposure, theta_max_deg=80
     )

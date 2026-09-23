@@ -204,7 +204,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
 
     import matplotlib.gridspec as gridspec
 
-    fig = plt.figure(figsize=(5, 2.2))
+    fig = plt.figure(figsize=(5.5, 2.42))
     gs = gridspec.GridSpec(
         1, 3,
         width_ratios=[1, 1, 0.05],  # last column = colorbar
@@ -299,8 +299,8 @@ if __name__ == "__main__":
     # Edit these paths to point at the two runs you want to combine
     base = project_root / "output" / "montecarlo" / "scan_intensity"
     run_dirs = [
-        base / "20260909_152715_seed42", # run 1 hour
-        base / "20260909_152239_seed42", # run 1 week
+        base / "20260922_170804_seed42", # run 1 hour
+        base / "20260922_165918_seed42", # run 1 week
     ]
     output_dir = base / "figures"
     main(run_dirs=run_dirs, output_dir=output_dir)

@@ -95,6 +95,7 @@ def main(seed: int) -> None:
     window = stc.SkyWindow(centre=centre, radius=radius)
     observatory = stc.Observatory(
         latitude=latitude_pa, longitude=longitude_pa, altitude=altitude_pa,
+        area=3000.0,
     )
     exposure_model = stc.ExposureModel(
         observatory=observatory, t0=t0, tf=tf, rng=rng_exposure,

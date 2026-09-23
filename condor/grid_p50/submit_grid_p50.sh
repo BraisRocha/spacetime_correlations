@@ -64,12 +64,12 @@ python3 <<EOF > "${PARAMS}"
 import numpy as np
 
 # dT = flare_duration / (10 years)
-# log10(dT) from -3.9 to 0
+# log10(dT) from -5.25 (~30 min) to log10(1.2) (12 years)
 
-durations = 3650 * 10**np.arange(-3.9, 0.0001, 0.1)
+durations = 3650 * 10**np.arange(-5., np.log10(1.2) + 0.0001, 0.1)
 
-# intensity from 0.025 to 0.5 in steps of 0.025
-intensities = np.arange(0.025, 0.5001, 0.025)
+# intensity from 0.05 to 2.0 in steps of 0.1
+intensities = np.arange(0.05, 2.0001, 0.1)
 
 seed = ${seed}
 

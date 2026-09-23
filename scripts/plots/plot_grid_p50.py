@@ -45,6 +45,7 @@ THRESHOLD_LEVELS = (1.0, 2.0, 3.0, 5.0)
 REF_LABELS = ["hour", "day", "week", "mth", "year"]
 REF_DAYS = [1.0 / 24.0, 1.0, 7.0, 30.0, 365.0]
 
+
 # ------------------------------------------------------------------
 # Style
 # ------------------------------------------------------------------
@@ -323,6 +324,14 @@ def _style_colorbar(cbar, label):
     cbar.ax.tick_params(direction="out")
 
 
+def _xlabel(T_obs_years: float) -> str:
+    """x-axis label. Durations are normalised to the run's own ``T_obs``,
+    so the label has to follow it rather than name a fixed number of years."""
+    return (
+        rf"$\log_{{10}}(\Delta t_{{\rm flare}}/{int(T_obs_years)}\,{{\rm years}})$"
+    )
+
+
 def _add_suptitle(fig, expected_n, T_obs_years):
     """Add the shared ``mu`` / ``T_obs`` figure title."""
     fig.suptitle(
@@ -378,7 +387,7 @@ def _plot_ratio(
             label=rf"$|\sigma_\Lambda/\sigma_{{\rm Poisson}} - 1| < {unity_tol:g}$",
         )
         ax.legend(loc="best", fontsize=5, framealpha=0.9)
-    ax.set_xlabel(r"$\log_{10}(\Delta t_{\rm flare}/10\,{\rm years})$")
+    ax.set_xlabel(_xlabel(T_obs_years))
     ax.set_ylabel(r"SNR")
 
     _draw_reference_lines(ax, ref_x)
@@ -420,7 +429,7 @@ def _plot_lambda_only(
 
     _draw_thresholds(ax, sig_lam_grid, x_edges, y_edges)
     ax.set_title(r"$\Lambda$", pad=8)
-    ax.set_xlabel(r"$\log_{10}(\Delta t_{\rm flare}/10\,{\rm years})$")
+    ax.set_xlabel(_xlabel(T_obs_years))
     ax.set_ylabel(r"SNR")
 
     _draw_reference_lines(ax, ref_x)
@@ -471,7 +480,7 @@ def main(
     x_edges = _cell_edges(x_log)
     y_edges = _cell_edges(intensities_snr)
 
-    # Reference vertical lines (positions depend on the run's T_obs).
+    # Reference vertical lines, on the same fixed normalisation as the x axis.
     T_obs_days = T_obs_years * 365.25
     ref_x = [np.log10(d / T_obs_days) for d in REF_DAYS]
 
@@ -487,7 +496,7 @@ def main(
     # ------------------------------------------------------------------
     # Combined Poisson + Lambda figure with a shared colorbar.
     # ------------------------------------------------------------------
-    fig = plt.figure(figsize=(5, 2.2))
+    fig = plt.figure(figsize=(5.5, 2.42))
     gs = gridspec.GridSpec(1, 3, width_ratios=[1, 1, 0.05], wspace=0.08)
 
     ax0 = fig.add_subplot(gs[0])
@@ -506,12 +515,12 @@ def main(
         ax.set_ylim(y_edges[0], y_edges[-1])
 
         if ax == ax0:
-            _draw_thresholds(ax0, Z, x_edges, y_edges, label_dx= -0.04)
+            _draw_thresholds(ax0, Z, x_edges, y_edges, label_dx= -0.025)
         elif ax == ax1:
             _draw_thresholds(ax1, Z, x_edges, y_edges)
 
         ax.set_title(title, pad=8)
-        ax.set_xlabel(r"$\log_{10}(\Delta t_{\rm flare}/10\,{\rm years})$")
+        ax.set_xlabel(_xlabel(T_obs_years))
 
         _draw_reference_lines(ax, ref_x)
 
@@ -525,7 +534,7 @@ def main(
     _add_suptitle(fig, expected_n, T_obs_years)
     fig.subplots_adjust(left=0.1, right=0.95, bottom=0.15, top=0.83)
 
-    out_path = output_dir / "grid_p50.png"
+    out_path = output_dir / "grid_p50.pdf"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
@@ -564,6 +573,6 @@ if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[2]
 
     # Change this to the run you want to plot
-    run_dir = project_root / "output" / "montecarlo" / "grid_p50" / "20260525_153127"
+    run_dir = project_root / "output" / "montecarlo" / "grid_p50" / "20260911_162106"
     output_dir = run_dir / "figures"
     main(run_dir=run_dir, output_dir=output_dir)

@@ -317,7 +317,7 @@ def test_assign_directional_exposure_sets_exposure_type(window, exposure_model, 
         t0=t0, tf=tf, rng=rng,
     )
     s.assign_directional_exposure(window, exposure_model)
-    assert s.exposure_type == "free_maximum_exposure_method"
+    assert s.exposure_type == "exponential_delta_exposure_method"
 
 
 def test_assign_directional_exposure_sets_rate(window, exposure_model, t0, tf, rng):

@@ -126,6 +126,15 @@ class SkyWindow:
         """Fraction of the full sky covered by this window (spherical cap)."""
         return self._sky_fraction
 
+    @property
+    def solid_angle(self) -> float:
+        """
+        Solid angle subtended by the window, in steradians::
+
+            Omega = 4 pi * sky_fraction = 2 pi (1 - cos radius)
+        """
+        return 4.0 * np.pi * self._sky_fraction
+
     # -------------------------------------------------------------------------
     # Geometric selection
     # -------------------------------------------------------------------------
@@ -241,21 +250,19 @@ class SkyWindow:
         """
         Expected number of events in the window.
 
-        When an :class:`ExposureModel` is supplied, the count is weighted by
-        the analytical relative directional exposure ``omega(delta_centre)``
-        evaluated at the window centre (see
-        :meth:`ExposureModel.relative_exposure`), normalised by its sky
-        average ``<omega>`` (see
-        :attr:`ExposureModel.mean_relative_exposure`)::
+        When an :class:`ExposureModel` is supplied, the count follows the
+        share of the observatory's exposure that falls on this window::
 
-            expected_n = n_events * sky_fraction * omega(delta_centre) / <omega>
+            expected_n = n_events * E(window) / E_sky
 
-        so that windows at well-exposed declinations get more events and
-        poorly-exposed ones get fewer.  The ``/ <omega>`` normalisation makes
-        the weight a proper probability density (unit sky average), so the
-        per-window counts sum to ``n_events`` over a full-sky tiling.  If no
-        exposure model is provided, all declinations are weighted equally and
-        the formula reduces to::
+        i.e. :meth:`ExposureModel.relative_window_exposure`, so windows at
+        well-exposed declinations get more events and poorly-exposed ones
+        fewer.  Both exposures run over the full interval ``[t0, tf]``, and
+        because ``∫_sky eps_norm dOmega`` is analytic the per-window counts
+        sum to ``n_events`` exactly over a full-sky tiling.
+
+        If no exposure model is provided, all directions are weighted
+        equally and the formula reduces to::
 
             expected_n = n_events * sky_fraction
 
@@ -265,7 +272,7 @@ class SkyWindow:
             Total number of events in the full sky.
         exposure_model : ExposureModel or None, optional
             If provided, weights the result by
-            ``exposure_model.relative_exposure(self.centre)``.  If ``None``
+            ``exposure_model.relative_window_exposure(self)``.  If ``None``
             (default), assumes uniform full-sky exposure.
 
         Returns
@@ -276,9 +283,7 @@ class SkyWindow:
         if exposure_model is None:
             return float(n_events) * self._sky_fraction
 
-        weight = exposure_model.relative_exposure(self.centre)
-        weight /= exposure_model.mean_relative_exposure
-        return float(n_events) * self._sky_fraction * weight
+        return float(n_events) * exposure_model.relative_window_exposure(self)
 
 
 class SkyGrid:
@@ -637,9 +642,9 @@ class SkyGrid:
 
         Mirrors :meth:`SkyWindow.expected_n_in_window` for every window.
         With no exposure model the result is ``n_events * sky_fraction``;
-        with one it is additionally weighted by the relative directional
-        exposure at each centre, normalised by its sky average ``<omega>``
-        (see :attr:`ExposureModel.mean_relative_exposure`) so the counts sum
+        with one, each window takes its share of the observatory's total
+        exposure (see
+        :meth:`ExposureModel.relative_window_exposure`), so the counts sum
         to ``n_events`` over a full-sky tiling.
 
         Notes
@@ -652,8 +657,12 @@ class SkyGrid:
             return float(n_events) * self.sky_fraction
 
         weights = np.array(
-            [exposure_model.relative_exposure(c) for c in self._centres],
+            [
+                exposure_model.relative_window_exposure(
+                    SkyWindow(centre=c, radius=r)
+                )
+                for c, r in zip(self._centres, self._radii)
+            ],
             dtype=float,
         )
-        weights /= exposure_model.mean_relative_exposure
-        return float(n_events) * self.sky_fraction * weights
+        return float(n_events) * weights

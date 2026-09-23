@@ -65,26 +65,26 @@ def test_invalid_theta_max_raises(observatory, t0, tf, rng, bad_theta):
 
 
 # -------------------------------------------------------------------------
-# Instantaneous acceptance
+# Detection probability
 # -------------------------------------------------------------------------
 
 
-def test_instantaneous_acceptance_in_zero_or_above_cut(exposure_model, t0):
+def test_detection_probability_in_zero_or_above_cut(exposure_model, t0):
     centre = np.array([180.0, -30.0])
-    a = exposure_model.instantaneous_acceptance(t0, centre)
+    a = exposure_model.detection_probability(t0, centre)
     cos_cut = np.cos(np.deg2rad(exposure_model.theta_max_deg))
     assert (a == 0.0) or (a >= cos_cut)
 
 
-def test_instantaneous_acceptance_array_shape(exposure_model, t0, tf):
+def test_detection_probability_array_shape(exposure_model, t0, tf):
     t = t0 + TimeDelta(np.linspace(0, (tf - t0).to_value(u.s), 50), format="sec")
-    a = exposure_model.instantaneous_acceptance(t, np.array([180.0, -30.0]))
+    a = exposure_model.detection_probability(t, np.array([180.0, -30.0]))
     assert a.shape == (50,)
 
 
-def test_instantaneous_acceptance_out_of_interval_raises(exposure_model, t0):
+def test_detection_probability_out_of_interval_raises(exposure_model, t0):
     with pytest.raises(ValueError):
-        exposure_model.instantaneous_acceptance(t0 - TimeDelta(1.0, format="sec"),
+        exposure_model.detection_probability(t0 - TimeDelta(1.0, format="sec"),
                                                 np.array([0.0, 0.0]))
 
 
@@ -93,82 +93,56 @@ def test_instantaneous_acceptance_out_of_interval_raises(exposure_model, t0):
 # -------------------------------------------------------------------------
 
 
-def test_cumulative_directional_exposure_zero_at_t0(exposure_model, t0):
-    eps = exposure_model.cumulative_directional_exposure(t0, np.array([180.0, -30.0]))
+def test_norm_cumul_exposure_zero_at_t0(exposure_model, t0):
+    eps = exposure_model.norm_cumul_exposure(t0, np.array([180.0, -30.0]))
     assert float(eps) == pytest.approx(0.0)
 
 
-def test_cumulative_directional_exposure_max_at_tf(exposure_model, tf):
+def test_norm_cumul_exposure_max_at_tf(exposure_model, tf):
     centre = np.array([180.0, -30.0])
-    eps = exposure_model.cumulative_directional_exposure(tf, centre)
-    max_eps = exposure_model.max_directional_exposure(centre)
+    eps = exposure_model.norm_cumul_exposure(tf, centre)
+    max_eps = exposure_model.max_norm_cumul_exposure(centre)
     assert float(eps) == pytest.approx(max_eps, rel=1e-9)
 
 
-def test_cumulative_directional_exposure_monotonic(exposure_model, t0, tf):
+def test_norm_cumul_exposure_monotonic(exposure_model, t0, tf):
     centre = np.array([180.0, -30.0])
     total_sec = (tf - t0).to_value(u.s)
     grid = t0 + TimeDelta(np.linspace(0.0, total_sec, 200), format="sec")
-    eps = exposure_model.cumulative_directional_exposure(grid, centre)
+    eps = exposure_model.norm_cumul_exposure(grid, centre)
     assert np.all(np.diff(np.asarray(eps)) >= -1e-9)
 
 
-def test_cumulative_directional_exposure_nonneg(exposure_model, t0, tf):
+def test_norm_cumul_exposure_nonneg(exposure_model, t0, tf):
     centre = np.array([180.0, -30.0])
     total_sec = (tf - t0).to_value(u.s)
     grid = t0 + TimeDelta(np.linspace(0.0, total_sec, 100), format="sec")
-    eps = exposure_model.cumulative_directional_exposure(grid, centre)
+    eps = exposure_model.norm_cumul_exposure(grid, centre)
     assert np.all(np.asarray(eps) >= -1e-12)
 
 
-def test_cumulative_directional_exposure_zero_for_always_invisible(exposure_model):
+def test_norm_cumul_exposure_zero_for_always_invisible(exposure_model):
     # From Auger (lat ~ -35°) with theta_max = 60°, the north celestial pole
     # is always below the horizon → cumulative exposure must stay at 0.
     invisible = np.array([0.0, 80.0])  # dec = +80°, never reaches zenith from Auger
-    eps = exposure_model.max_directional_exposure(invisible)
+    eps = exposure_model.max_norm_cumul_exposure(invisible)
     assert eps == pytest.approx(0.0)
 
 
 # -------------------------------------------------------------------------
-# Relative directional exposure (Sommers)
+# detect_times
 # -------------------------------------------------------------------------
 
 
-def test_relative_exposure_zero_for_always_invisible(exposure_model):
-    omega = exposure_model.relative_exposure(np.array([0.0, 80.0]))
-    assert omega == pytest.approx(0.0)
-
-
-def test_relative_exposure_nonneg_for_visible(exposure_model):
-    omega = exposure_model.relative_exposure(np.array([180.0, -30.0]))
-    assert omega >= 0.0
-
-
-def test_relative_exposure_independent_of_ra(exposure_model):
-    omega1 = exposure_model.relative_exposure(np.array([0.0, -30.0]))
-    omega2 = exposure_model.relative_exposure(np.array([180.0, -30.0]))
-    assert omega1 == pytest.approx(omega2)
-
-
-# -------------------------------------------------------------------------
-# Acceptance mask / detect_times
-# -------------------------------------------------------------------------
-
-
-def test_acceptance_mask_returns_bool_array(exposure_model, t0, tf):
+def test_detect_times_efficiency_zero_rejects_all(exposure_model, t0, tf):
     times = t0 + TimeDelta(
         np.linspace(0.0, (tf - t0).to_value(u.s), 200), format="sec"
     )
-    mask = exposure_model.acceptance_mask(times, np.array([180.0, -30.0]))
-    assert mask.dtype == bool and mask.shape == (200,)
-
-
-def test_acceptance_mask_efficiency_zero_rejects_all(exposure_model, t0, tf):
-    times = t0 + TimeDelta(
-        np.linspace(0.0, (tf - t0).to_value(u.s), 200), format="sec"
-    )
-    mask = exposure_model.acceptance_mask(
-        times, np.array([180.0, -30.0]), efficiency=lambda t: np.zeros(len(t)),
+    _, mask = exposure_model.detect_times(
+        times,
+        np.array([180.0, -30.0]),
+        efficiency=lambda t: np.zeros(len(t)),
+        return_mask=True,
     )
     assert not mask.any()
 
@@ -188,84 +162,88 @@ def test_detect_times_with_return_mask(exposure_model, t0, tf):
     accepted, mask = exposure_model.detect_times(
         times, np.array([180.0, -30.0]), return_mask=True,
     )
+    assert mask.dtype == bool
     assert mask.shape == (50,) and len(accepted) == mask.sum()
 
 
 # -------------------------------------------------------------------------
-# sample_directional_exposure
+# sample_iso_cumul_exposure
 # -------------------------------------------------------------------------
 
 
-def test_sample_directional_exposure_length(exposure_model):
+def test_sample_iso_cumul_exposure_length(exposure_model):
     centre = np.array([180.0, -30.0])
-    max_eps = exposure_model.max_directional_exposure(centre)
+    max_eps = exposure_model.max_norm_cumul_exposure(centre)
     rate = 1000.0 / max_eps
-    sample, _ = exposure_model.sample_directional_exposure(
-        n_events=1000, expected_exposure_rate=rate, max_dir_exposure=max_eps,
+    sample, _ = exposure_model.sample_iso_cumul_exposure(
+        n_events=1000, expected_exposure_rate=rate,
     )
     assert sample.size == 1000
 
 
-def test_sample_directional_exposure_sorted(exposure_model):
+def test_sample_iso_cumul_exposure_sorted(exposure_model):
     centre = np.array([180.0, -30.0])
-    max_eps = exposure_model.max_directional_exposure(centre)
+    max_eps = exposure_model.max_norm_cumul_exposure(centre)
     rate = 1000.0 / max_eps
-    sample, _ = exposure_model.sample_directional_exposure(
-        n_events=1000, expected_exposure_rate=rate, max_dir_exposure=max_eps,
+    sample, _ = exposure_model.sample_iso_cumul_exposure(
+        n_events=1000, expected_exposure_rate=rate,
     )
     assert np.all(np.diff(sample) >= 0.0)
 
 
-def test_sample_directional_exposure_within_bounds(exposure_model):
+def test_sample_iso_cumul_exposure_starts_at_zero(exposure_model):
     centre = np.array([180.0, -30.0])
-    max_eps = exposure_model.max_directional_exposure(centre)
+    max_eps = exposure_model.max_norm_cumul_exposure(centre)
     rate = 500.0 / max_eps
-    sample, _ = exposure_model.sample_directional_exposure(
-        n_events=500, expected_exposure_rate=rate, max_dir_exposure=max_eps,
+    sample, _ = exposure_model.sample_iso_cumul_exposure(
+        n_events=500, expected_exposure_rate=rate,
     )
-    assert np.all((sample >= 0.0) & (sample <= max_eps))
+    assert sample[0] == 0.0
+    assert np.all(sample >= 0.0)
 
 
-def test_sample_directional_exposure_method_label(exposure_model):
+def test_sample_iso_cumul_exposure_method_label(exposure_model):
     centre = np.array([180.0, -30.0])
-    max_eps = exposure_model.max_directional_exposure(centre)
+    max_eps = exposure_model.max_norm_cumul_exposure(centre)
     rate = 100.0 / max_eps
-    _, method = exposure_model.sample_directional_exposure(
-        n_events=100, expected_exposure_rate=rate, max_dir_exposure=max_eps,
+    _, method = exposure_model.sample_iso_cumul_exposure(
+        n_events=100, expected_exposure_rate=rate,
     )
-    assert method == "free_maximum_exposure_method"
+    assert method == "exponential_delta_exposure_method"
 
 
-def test_sample_directional_exposure_invalid_rate_raises(exposure_model):
+def test_sample_iso_cumul_exposure_invalid_rate_raises(exposure_model):
     with pytest.raises(ValueError):
-        exposure_model.sample_directional_exposure(
-            n_events=10, expected_exposure_rate=0.0, max_dir_exposure=1.0,
+        exposure_model.sample_iso_cumul_exposure(
+            n_events=10, expected_exposure_rate=0.0,
         )
 
 
-def test_sample_directional_exposure_nonpositive_n_raises(exposure_model):
+def test_sample_iso_cumul_exposure_nonpositive_n_raises(exposure_model):
     for n in (-1, 0):
         with pytest.raises(ValueError):
-            exposure_model.sample_directional_exposure(
-                n_events=n, expected_exposure_rate=1.0, max_dir_exposure=1.0,
+            exposure_model.sample_iso_cumul_exposure(
+                n_events=n, expected_exposure_rate=1.0,
             )
 
 
-def test_sample_directional_exposure_max_zero_raises(exposure_model):
-    with pytest.raises(ValueError):
-        exposure_model.sample_directional_exposure(
-            n_events=10, expected_exposure_rate=1.0, max_dir_exposure=0.0,
-        )
+def test_sample_iso_cumul_exposure_single_event(exposure_model):
+    """n_events=1 is a valid edge case: no gaps to draw, sample == [0.0]."""
+    sample, _ = exposure_model.sample_iso_cumul_exposure(
+        n_events=1, expected_exposure_rate=1.0,
+    )
+    assert sample.shape == (1,)
+    assert sample[0] == 0.0
 
 
-def test_sample_directional_exposure_mean_gap(exposure_model):
+def test_sample_iso_cumul_exposure_mean_gap(exposure_model):
     """Mean exposure gap is ≈ 1 / expected_exposure_rate (Poisson-process intervals)."""
     centre = np.array([180.0, -30.0])
-    max_eps = exposure_model.max_directional_exposure(centre)
+    max_eps = exposure_model.max_norm_cumul_exposure(centre)
     n = 5000
     rate = n / max_eps
-    sample, _ = exposure_model.sample_directional_exposure(
-        n_events=n, expected_exposure_rate=rate, max_dir_exposure=max_eps,
+    sample, _ = exposure_model.sample_iso_cumul_exposure(
+        n_events=n, expected_exposure_rate=rate,
     )
     mean_gap = float(np.mean(np.diff(sample)))
     assert mean_gap == pytest.approx(1.0 / rate, rel=0.05)

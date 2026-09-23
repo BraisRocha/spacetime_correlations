@@ -290,7 +290,7 @@ if __name__ == "__main__":
     radius = 2.0
 
     # Pierre Auger Observatory
-    observatory = Observatory(latitude=-35.15, longitude=-69.15, altitude=1425.0)
+    observatory = Observatory(latitude=-35.15, longitude=-69.15, altitude=1425.0, area=3000.0)
     window = SkyWindow(centre=centre, radius=radius)
     exposure_model = ExposureModel(
         observatory=observatory, t0=t0, tf=tf, rng=rng_exposure,

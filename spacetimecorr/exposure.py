@@ -1,23 +1,41 @@
 """
-Directional exposure for a fixed source direction.
+Exposure of a ground array, by direction and over the whole sky.
 
-Defines :class:`ExposureModel`, which encodes how the ground-based
-detector sees a single sky direction (RA, Dec) over an observation
-interval ``[t0, tf]``. From the observatory latitude and the source
-declination, the model produces:
+The exposure of a ground array is::
 
-- the instantaneous geometric acceptance ``a(t) = max(0, cos theta(t))``,
-  also usable as a per-time detection probability,
-- the cumulative directional exposure ``epsilon(t)`` and its inverse,
+    E = ∫_sky dOmega ∫_array ∫_{t0}^{tf}
+            P(E, theta, phi, t, ...) cos(theta) dA dt
+
+in km² sr yr, where ``cos(theta) dA`` is the effective area the array
+presents to a shower arriving at zenith angle ``theta``.
+
+Restricting the solid-angle integral to one region of sky, and the time
+integral to ``[t0, t]``, gives the *cumulative directional* exposure.
+That is what :class:`ExposureModel` evaluates, for a single sky direction
+(RA, Dec) over an observation interval ``[t0, tf]``, from the observatory
+latitude and the source declination. It provides:
+
+- the detection probability, the integrand of the expression above at
+  one time and direction, normalised to its maximum,
+- the cumulative directional exposure, either normalised to ``[0, 1]``
+  (:meth:`ExposureModel.norm_cumul_exposure`) or in km² sr yr
+  (:meth:`ExposureModel.cumul_exposure`),
+- the whole-sky exposure (:meth:`ExposureModel.total_exposure`) and the
+  share of it falling on one window
+  (:meth:`ExposureModel.relative_window_exposure`), which sets the
+  expected counts per sky window,
 - helpers for sampling event times under the directional-exposure
   distribution (used by :class:`~spacetimecorr.flare.Flare` and by
   :class:`~spacetimecorr.event_sample.EventSample` when assigning
   exposures).
 
-Events whose zenith angle exceeds ``theta_max_deg`` are rejected
-(``a = 0``); the default 60° matches the Auger SD standard analysis cut.
-Time-dependent effective-area effects (bad periods, array growth) are
-not modelled here — see ``TODO.md``.
+Events whose zenith angle exceeds ``theta_max_deg`` are rejected; the
+default 60° matches the Auger SD standard analysis cut.
+
+The efficiency ``P`` and the instrumented area ``A(t)`` may be supplied
+per event to :meth:`ExposureModel.detection_probability`, but the
+closed-form cumulative integral assumes ``P = 1`` and ``A(t) = A_max``
+throughout — see ``TODO.md``.
 """
 
 from __future__ import annotations
@@ -28,6 +46,7 @@ from typing import Tuple
 import numpy as np
 from astropy.time import Time
 
+from . import _exposure_math as _m
 from .observatory import Observatory
 
 
@@ -36,18 +55,21 @@ class ExposureModel:
     Directional exposure model for a fixed source direction.
 
     This class provides:
-      - instantaneous acceptance a(t) in [0, 1]
-      - cumulative directional exposure epsilon(t)
-      - Bernoulli thinning of sampled event times
+      - detection probability in [0, 1]
+      - cumulative directional exposure, normalised or in km² sr yr
+      - Bernoulli thinning of candidate event times
 
     Notes
     -----
-    In the current geometric model:
-        a(t) = max(0, cos theta(t))
-    so it can be used directly as a detection probability.
+    The exposure density normalised to its largest value lies in
+    [0, 1], so it doubles as a per-event detection probability: keeping
+    each candidate event with that probability reproduces the directional
+    exposure by Monte Carlo. See :meth:`detection_probability` and
+    :meth:`detect_times`.
     """
 
     SIDEREAL_DAY_SEC = 86164.0905
+    SECONDS_PER_YEAR = 365.25 * 86400.0   # Julian year
 
     def __init__(
         self,
@@ -62,7 +84,8 @@ class ExposureModel:
         Parameters
         ----------
         observatory : Observatory
-            Observatory whose latitude defines the local geometric acceptance.
+            Observatory supplying the latitude, which fixes the local
+            geometry, and the area, taken as ``A_max``.
         t0, tf : astropy.time.Time
             Start and end of the observation interval. Must satisfy ``tf > t0``.
         rng : numpy.random.Generator
@@ -70,7 +93,7 @@ class ExposureModel:
             samplers. Typically obtained from :class:`RNGManager`.
         theta_max_deg : float, optional
             Maximum zenith angle in degrees for the acceptance cut.  Events
-            with zenith angle ``theta > theta_max_deg`` are rejected (a = 0).
+            with zenith angle ``theta > theta_max_deg`` are rejected.
             Must be in ``(0, 90]``.  Defaults to 60°, matching the Auger SD
             standard analysis cut.
         """
@@ -97,6 +120,24 @@ class ExposureModel:
         self.rng = rng
         self.theta_max_deg = float(theta_max_deg)
         self._cos_theta_max = math.cos(math.radians(self.theta_max_deg))
+        self._lat_rad = math.radians(self.observatory.latitude)
+        self._sidereal_rate = 2.0 * math.pi / self.SIDEREAL_DAY_SEC
+
+        # Observation span, held in both units. The cumulative exposure
+        # integral comes out in seconds; dividing by `_t_obs_sec` is what
+        # makes it dimensionless, and multiplying that back by `_t_obs_yr`
+        # (with an area in km^2 and a solid angle in sr) is what rebuilds a
+        # physical exposure in km^2 sr yr. Using the same span on both sides
+        # is what makes the two cancel exactly.
+        self._t_obs_sec = float((self.tf - self.t0).to_value("sec"))
+        self._t_obs_yr = self._t_obs_sec / self.SECONDS_PER_YEAR
+
+        # Integral of cos(theta) over the field-of-view cap, in sr. Set by
+        # theta_max alone, and the same at every instant, which is what
+        # makes the whole-sky exposure a closed form (see `total_exposure`).
+        self._cap_cos_integral = (
+            math.pi * math.sin(math.radians(self.theta_max_deg)) ** 2
+        )
 
         # Cached sidereal time at t0 (function of observatory + t0 only).
         # Used by `_continuous_hour_angle`; precomputing it here avoids
@@ -108,16 +149,10 @@ class ExposureModel:
             .rad
         )
 
-        # Cache for `max_directional_exposure`, keyed by (RA_deg, Dec_deg).
+        # Cache for `max_norm_cumul_exposure`, keyed by (RA_deg, Dec_deg).
         # The value depends only on (observatory, t0, tf, centre), all of
         # which are immutable after construction.
         self._max_exposure_cache: dict[tuple[float, float], float] = {}
-
-        # Cached sky-average of the relative directional exposure, <omega>.
-        # Computed lazily (see `mean_relative_exposure`) the first time an
-        # expected count needs to be normalised. Depends only on the
-        # observatory latitude and theta_max, both immutable.
-        self._mean_rel_exposure: float | None = None
 
     # -------------------------------------------------------------------------
     # Private input / geometry helpers
@@ -136,6 +171,11 @@ class ExposureModel:
         scalar_input = bool(getattr(t, "isscalar", np.isscalar(t)))
         t_arr = t if not scalar_input else Time([t])
         return t_arr, scalar_input
+
+    def _check_in_interval(self, t: Time) -> None:
+        """Raise if any time falls outside the observation interval."""
+        if np.any(t < self.t0) or np.any(t > self.tf):
+            raise ValueError("All times must satisfy t0 <= t <= tf.")
 
     def _validate_centre(self, centre: np.ndarray) -> tuple[float, float]:
         """
@@ -169,160 +209,102 @@ class ExposureModel:
         return h0 + 2.0 * np.pi * dt_sec / self.SIDEREAL_DAY_SEC
     
     # -------------------------------------------------------------------------
-    # Instantaneous acceptance and thinning
+    # Detection probability and thinning
     # -------------------------------------------------------------------------
 
-    def instantaneous_acceptance(self, t: Time, centre: np.ndarray) -> np.ndarray | float:
-        """
-        Instantaneous geometric acceptance ``a(t)`` for a fixed sky direction.
-
-        In the current model::
-
-            a(t) = cos theta(t)   for cos(theta_max) <= cos theta(t) <= 1
-                   0              otherwise
-
-        where ``theta(t)`` is the local zenith angle of ``centre`` at the
-        observatory at time ``t`` and ``theta_max`` is set at construction.
-        The accepted region corresponds to ``theta(t) <= theta_max``, where
-        ``a(t)`` ranges from ``cos(theta_max)`` (at the cut boundary) to 1
-        (at the zenith).
-
-        Parameters
-        ----------
-        t : astropy.time.Time
-            Scalar or array of evaluation times. Must satisfy
-            ``t0 <= t <= tf`` for every entry.
-        centre : array-like of shape (2,)
-            Sky direction ``[RA_deg, Dec_deg]``.
-
-        Returns
-        -------
-        float or numpy.ndarray
-            Acceptance value(s) in ``{0} ∪ [cos(theta_max), 1]``. A float is
-            returned when ``t`` is scalar, otherwise an array of the same
-            shape as ``t``.
-        """
-        t_arr, scalar_input = self._as_time_array(t)
-
-        if np.any(t_arr < self.t0) or np.any(t_arr > self.tf):
-            raise ValueError("All times must satisfy t0 <= t <= tf.")
-
-        ra_deg, dec_deg = self._validate_centre(centre)
-
-        dec_rad = np.deg2rad(dec_deg)
-        lat_rad = np.deg2rad(self.observatory.latitude)
-
-        h = self._continuous_hour_angle(t_arr, ra_deg)
-
-        sin_lat = np.sin(lat_rad)
-        cos_lat = np.cos(lat_rad)
-        sin_dec = np.sin(dec_rad)
-        cos_dec = np.cos(dec_rad)
-
-        cos_theta = sin_lat * sin_dec + cos_lat * cos_dec * np.cos(h)
-        cos_theta = np.clip(cos_theta, -1.0, 1.0)
-        out = np.where(cos_theta >= self._cos_theta_max, cos_theta, 0.0)
-
-        return float(out[0]) if scalar_input else out
-    
     def detection_probability(
         self,
         t: Time,
         centre: np.ndarray,
         efficiency=None,
+        area=None,
     ) -> np.ndarray | float:
         """
-        Detection probability ``p_det(t)`` for candidate event times.
+        Detection probability ``p_det(t)`` in a given direction at a given
+        time.
 
-        The probability is computed as::
+        The exposure per unit solid angle and unit time is::
 
-            p_det(t) = a(t) * efficiency(t)
+            dE/(dOmega dt) = P(E, theta, phi, t, ...)
+                             * H(theta_max - theta(t))
+                             * cos(theta(t)) * A(t)          [km²]
 
-        where ``a(t)`` is the instantaneous geometric acceptance (see
-        :meth:`instantaneous_acceptance`) and ``efficiency(t)`` is an
-        optional time-dependent correction factor.  When no efficiency is
-        provided, ``p_det(t) = a(t)``.
+        Every factor is bounded, so::
 
-        Parameters
-        ----------
-        t : Time
-            Candidate event times.
-        centre : array-like
-            [RA_deg, Dec_deg].
-        efficiency : callable or None
-            Optional time-dependent efficiency correction.  Must accept ``t``
-            and return one value in ``[0, 1]`` per input time (same shape as
-            ``t``).
+            max{dE/(dOmega dt)} = A_max      (P = H = cos theta = 1,
+                                              A = A_max)
 
-        Returns
-        -------
-        array or float
-            Detection probability in ``[0, 1]``.
-        """
-        a = np.asarray(self.instantaneous_acceptance(t, centre), dtype=float)
+        and this method returns the ratio of the two::
 
-        if efficiency is None:
-            p = a
-        else:
-            eff = np.asarray(efficiency(t), dtype=float)
-            if eff.shape != a.shape:
-                raise ValueError("efficiency(t) must return an array with the same shape as t.")
-            if np.any(eff < 0.0) or np.any(eff > 1.0):
-                raise ValueError("efficiency(t) must lie in [0, 1].")
-            p = a * eff
+            p_det(t) = P(t) * H(theta_max - theta(t))
+                            * cos(theta(t)) * A(t)/A_max
 
-        p = np.clip(p, 0.0, 1.0)
+        Lying in ``[0, 1]``, ``p_det(t)`` acts as a detection probability:
+        keeping each candidate event with probability ``p_det(t)`` is the
+        Bernoulli thinning performed by :meth:`detect_times`.
 
-        if np.isscalar(p) or p.shape == ():
-            return float(p)
-        return p
-    
-    def acceptance_mask(
-        self,
-        t: Time,
-        centre: np.ndarray,
-        efficiency=None,
-    ) -> np.ndarray | bool:
-        """
-        Draw a Bernoulli thinning mask for candidate event times.
-
-        For each input time the detection probability is computed via
-        :meth:`detection_probability` and a Bernoulli trial is drawn from
-        ``self.rng``.
+        The two sky-geometry factors are always applied.  ``H`` is a hard
+        gate — outside the field of view the event is rejected outright —
+        while ``cos theta(t)`` is the projection of the array area onto
+        the arrival direction.  The two detector-state factors are opt-in:
+        with neither ``efficiency`` nor ``area`` given, both are 1 and the
+        result is the purely geometric ``cos theta(t)`` inside the cut,
+        ranging from ``cos(theta_max)`` at the boundary to 1 at the
+        zenith, and 0 outside.
 
         Parameters
         ----------
         t : astropy.time.Time
-            Scalar or array of candidate times.
+            Scalar or array of candidate times in ``[t0, tf]``.
         centre : array-like of shape (2,)
             Sky direction ``[RA_deg, Dec_deg]``.
-        efficiency : callable or None, optional
-            Optional time-dependent efficiency in ``[0, 1]``, see
-            :meth:`detection_probability`.
+        efficiency : callable or None
+            Hardware and reconstruction efficiency ``P``.  Must accept
+            ``t`` and return one value in ``[0, 1]`` per input time.
+        area : callable or None
+            Instrumented area ``A(t)``, in the units of
+            ``observatory.area``, which is taken as ``A_max``.  Must accept
+            ``t`` and return one value per input time, none exceeding
+            ``A_max``.
 
         Returns
         -------
-        bool or numpy.ndarray of bool
-            Mask with the same shape as ``t``: ``True`` for accepted times.
-
-        Notes
-        -----
-        Because this method consumes random draws from ``self.rng``, calling
-        it directly and then asking for ``return_prob=True`` from
-        :meth:`detect_times` would either redo the draw or recompute the
-        probability. :meth:`detect_times` therefore inlines the same logic
-        and is the preferred entry point for combined draws.
+        float or numpy.ndarray
+            Detection probability in ``[0, 1]``.  A float is returned when
+            ``t`` is scalar, otherwise an array shaped like ``t``.
         """
         t_arr, scalar_input = self._as_time_array(t)
-        p = np.asarray(self.detection_probability(t_arr, centre, efficiency=efficiency), dtype=float)
-        mask = self.rng.random(size=p.shape) < p
-        return bool(mask[0]) if scalar_input else mask
+        self._check_in_interval(t_arr)
+        ra_deg, dec_deg = self._validate_centre(centre)
+
+        A, B = _m.geometric_coefficients(self._lat_rad, math.radians(dec_deg))
+        h = self._continuous_hour_angle(t_arr, ra_deg)
+        p = _m.acceptance(h, A, B, self._cos_theta_max)
+
+        if efficiency is not None:
+            eff = np.asarray(efficiency(t_arr), dtype=float)
+            if eff.shape != p.shape:
+                raise ValueError("efficiency(t) must return an array with the same shape as t.")
+            if np.any(eff < 0.0) or np.any(eff > 1.0):
+                raise ValueError("efficiency(t) must lie in [0, 1].")
+            p = p * eff
+
+        if area is not None:
+            a_t = np.asarray(area(t_arr), dtype=float)
+            if a_t.shape != p.shape:
+                raise ValueError("area(t) must return an array with the same shape as t.")
+            if np.any(a_t < 0.0) or np.any(a_t > self.observatory.area):
+                raise ValueError("area(t) must lie in [0, observatory.area].")
+            p = p * (a_t / self.observatory.area)
+
+        return float(p[0]) if scalar_input else p
     
     def detect_times(
         self,
         t: Time,
         centre: np.ndarray,
         efficiency=None,
+        area=None,
         return_mask: bool = False,
         return_prob: bool = False,
         return_exposure: bool = False,
@@ -330,14 +312,19 @@ class ExposureModel:
         """
         Apply detector thinning to candidate times.
 
+        Each candidate is kept with probability ``p_det(t)`` from
+        :meth:`detection_probability`: a uniform ``u`` is drawn from
+        ``self.rng`` and the event survives when ``u < p_det(t)``.
+
         Parameters
         ----------
         t : astropy.time.Time
             Candidate event times (scalar or array).
         centre : array-like of shape (2,)
             ``[RA_deg, Dec_deg]``.
-        efficiency : callable or None
-            Optional time-dependent efficiency in ``[0, 1]``.
+        efficiency, area : callable or None
+            Detector-state factors forwarded to
+            :meth:`detection_probability`.
         return_mask, return_prob, return_exposure : bool
             Toggle extra outputs.
 
@@ -363,11 +350,12 @@ class ExposureModel:
 
         t_arr, scalar_input = self._as_time_array(t)
 
-        # Compute the detection probability once and reuse it for the
-        # Bernoulli draw and for the optional return value, instead of
-        # delegating to acceptance_mask (which would recompute it).
+        # Computed once and reused for the Bernoulli draw and the optional
+        # return value, so `return_prob` costs no extra evaluation.
         p = np.asarray(
-            self.detection_probability(t_arr, centre, efficiency=efficiency),
+            self.detection_probability(
+                t_arr, centre, efficiency=efficiency, area=area
+            ),
             dtype=float,
         )
         mask = self.rng.random(size=p.shape) < p
@@ -389,7 +377,7 @@ class ExposureModel:
                 extras.append(float(p[0]))
             if return_exposure:
                 if accepted:
-                    eps = self.cumulative_directional_exposure(
+                    eps = self.norm_cumul_exposure(
                         t_arr[mask], centre=centre
                     )
                     extras.append(float(np.asarray(eps).reshape(-1)[0]))
@@ -410,7 +398,7 @@ class ExposureModel:
             exp_acc = (
                 np.array([], dtype=float)
                 if len(t_acc) == 0
-                else self.cumulative_directional_exposure(t_acc, centre=centre)
+                else self.norm_cumul_exposure(t_acc, centre=centre)
             )
             outputs.append(exp_acc)
         return tuple(outputs)
@@ -419,37 +407,35 @@ class ExposureModel:
     # Cumulative directional exposure
     # -------------------------------------------------------------------------
     
-    def cumulative_directional_exposure(
+    def norm_cumul_exposure(
         self,
         t: Time,
         centre: np.ndarray,
     ) -> np.ndarray | float:
         """
-        Exact cumulative directional exposure relative to ``self.t0``::
+        Normalised cumulative directional exposure accumulated by ``t``.
 
-            epsilon(t) = ∫_{t0}^{t} max(0, cos(theta(u))) du
+        The cumulative directional exposure towards a region of sky is::
 
-        Computed analytically using the periodic primitive of the integrand
-        in the (continuous) hour-angle ``h``.
+            E(t) = ∫_window dOmega ∫_{t0}^{t} ∫_array
+                       P(E, theta, phi, t, ...) cos(theta) dA dt
 
-        The expression splits into three regimes depending on the relative
-        sign of the geometric coefficients
-        ``A = sin(lat) * sin(dec)`` and ``B = cos(lat) * cos(dec)``:
+        in km² sr yr, evaluated by :meth:`cumul_exposure`.  This method
+        drops the two outer integrals — the direction enters as the single
+        point ``centre`` — and divides by the span ``T_obs = tf - t0``::
 
-        With the zenith cut ``c = cos(theta_max)``, the integrand is
-        ``cos theta(t)`` only when ``cos theta(t) >= c``, i.e. when the
-        source is within the acceptance cone.  The three regimes become:
+            eps_norm(t) = (1 / T_obs) ∫_{t0}^{t} w(u) du
 
-        - ``A + B <= c``  (always outside cut)  -> ``epsilon(t) = 0``,
-        - ``A - B >= c``  (always inside cut)   -> the integrand is purely
-          sinusoidal and integrates to a closed form,
-        - otherwise (partial visibility)        -> the integrand is non-zero
-          only when ``|h| < h_star`` modulo ``2π`` with
-          ``h_star = arccos((c - A) / B)``; the integral is built piecewise
-          per sidereal cycle.
+        where ``w(u)`` is the geometric integrand, i.e.
+        :meth:`detection_probability` with no detector-state factors.  The result is dimensionless and
+        lies in ``[0, 1]``: what was accumulated relative to the ideal
+        case, a source held at the zenith for the whole interval.
+        ``T_obs`` does not depend on the direction, so values at different
+        directions stay comparable and a direction the array never sees
+        gives ``0.0``, not an undefined ``0/0``.
 
-        Setting ``c = 0`` (``theta_max = 90°``) recovers the original
-        horizon-only formula.
+        The integral is solved analytically in the hour angle — see
+        :func:`~spacetimecorr._exposure_math.cumulative_integral`.
 
         Parameters
         ----------
@@ -461,75 +447,33 @@ class ExposureModel:
         Returns
         -------
         float or numpy.ndarray
-            ``epsilon(t)`` in seconds (acceptance is dimensionless).
+            Dimensionless value(s) in ``[0, 1]``.  A float is returned when
+            ``t`` is scalar, otherwise an array shaped like ``t``.
         """
         t_arr, scalar_input = self._as_time_array(t)
-
-        if np.any(t_arr < self.t0) or np.any(t_arr > self.tf):
-            raise ValueError("All times must satisfy t0 <= t <= tf.")
-        
+        self._check_in_interval(t_arr)
         ra_deg, dec_deg = self._validate_centre(centre)
 
-        lat_rad = np.deg2rad(self.observatory.latitude)
-        dec_rad = np.deg2rad(dec_deg)
-
-        A = np.sin(lat_rad) * np.sin(dec_rad)
-        B = np.cos(lat_rad) * np.cos(dec_rad)
-
-        omega = 2.0 * np.pi / self.SIDEREAL_DAY_SEC
-        two_pi = 2.0 * np.pi
-
+        A, B = _m.geometric_coefficients(self._lat_rad, math.radians(dec_deg))
         h = np.asarray(self._continuous_hour_angle(t_arr, ra_deg), dtype=float)
         h0 = float(self._continuous_hour_angle(Time([self.t0]), ra_deg)[0])
 
-        c = self._cos_theta_max
-
-        # Case 1: source never enters the acceptance cone
-        if A + B <= c:
-            out = np.zeros_like(h, dtype=float)
-
-        # Case 2: source always inside the acceptance cone
-        elif A - B >= c:
-            out = (A * (h - h0) + B * (np.sin(h) - np.sin(h0))) / omega
-
-        # Case 3: partial visibility — generalised cut angle
-        else:
-            h_star = np.arccos((c - A) / B)
-            cycle_h = 2.0 * (A * h_star + B * np.sin(h_star))   # integral over one full cycle in h-space
-            plateau = A * h_star + B * np.sin(h_star)
-
-            def H(x: np.ndarray) -> np.ndarray:
-                n = np.floor(x / two_pi)
-                eta = x - two_pi * n   # eta in [0, 2π)
-
-                out_h = n * cycle_h
-
-                # The three masks cover [0, 2π) without overlap. The
-                # boundary `eta == h_star` is included in `m1` (rising
-                # edge) only, by virtue of `<` here vs. `>=` in `m2`;
-                # similarly `eta == 2π - h_star` is included in `m3`
-                # only. The integrand is continuous at both boundaries,
-                # so this assignment is consistent.
-                m1 = eta < h_star
-                m2 = (eta >= h_star) & (eta < two_pi - h_star)
-                m3 = eta >= two_pi - h_star
-
-                out_h = out_h.astype(float)
-
-                out_h[m1] += A * eta[m1] + B * np.sin(eta[m1])
-                out_h[m2] += plateau
-                out_h[m3] += cycle_h + A * (eta[m3] - two_pi) + B * np.sin(eta[m3])
-
-                return out_h
-
-            out = (H(h) - H(np.array([h0]))[0]) / omega
+        # `cumulative_integral` works in hour-angle; dividing by the sidereal
+        # rate converts it to seconds, and by the span normalises it to [0, 1].
+        out = _m.cumulative_integral(h, h0, A, B, self._cos_theta_max) / (
+            self._sidereal_rate * self._t_obs_sec
+        )
 
         return float(out[0]) if scalar_input else out
 
-    def max_directional_exposure(self, centre: np.ndarray) -> float:
+    def max_norm_cumul_exposure(self, centre: np.ndarray) -> float:
         """
-        Return ``epsilon(tf)``, the maximum cumulative directional exposure
-        accumulated over ``[t0, tf]`` for the direction ``centre``.
+        Normalised cumulative directional exposure over the whole interval,
+        i.e. :meth:`norm_cumul_exposure` evaluated at ``tf``.
+
+        Being the largest value the normalised exposure reaches for this
+        direction, it is what converts an expected number of events into a
+        rate per unit exposure. Results are cached per ``(RA, Dec)``.
 
         Parameters
         ----------
@@ -539,7 +483,8 @@ class ExposureModel:
         Returns
         -------
         float
-            Total accumulated exposure (in seconds).
+            Dimensionless, in ``[0, 1]``. Zero for a direction that never
+            enters the acceptance cone.
         """
         ra_deg, dec_deg = self._validate_centre(centre)
         key = (ra_deg, dec_deg)
@@ -548,170 +493,182 @@ class ExposureModel:
         if cached is not None:
             return cached
 
-        value = float(self.cumulative_directional_exposure(self.tf, centre))
+        value = float(self.norm_cumul_exposure(self.tf, centre))
         self._max_exposure_cache[key] = value
         return value
 
-    # -------------------------------------------------------------------------
-    # Relative directional exposure
-    # -------------------------------------------------------------------------
-
-    def relative_exposure(self, centre: np.ndarray) -> float:
+    def cumul_exposure(self, t: Time, window) -> np.ndarray | float:
         """
-        Time-integrated relative directional exposure ``omega(delta)`` for a
-        given sky direction, following the closed-form expression of
-        Sommers (2001).
+        Cumulative directional exposure towards ``window``, in km² sr yr.
 
-        The per-sidereal-cycle integral of ``cos(theta)`` over the visible
-        portion of the sky reduces analytically to::
+        Evaluates the full expression::
 
-            omega(delta) ∝ A * h_star + B * sin(h_star)
+            E(t) = ∫_window dOmega ∫_{t0}^{t} ∫_array
+                       P(E, theta, phi, t, ...) cos(theta) dA dt
 
-        with the geometric coefficients::
+        by taking the normalised integral at the window centre and
+        restoring the three factors :meth:`norm_cumul_exposure` leaves
+        out::
 
-            A      = sin(lat) * sin(dec)
-            B      = cos(lat) * cos(dec)
-            c      = cos(theta_max)
-            h_star = arccos((c - A) / B)
+            E(t) = A_max * Omega_window * T_obs * eps_norm(t, centre)
 
-        and three regimes selected by the relative magnitude of ``A``, ``B``
-        and ``c``:
+        with ``A_max = observatory.area`` in km², ``Omega_window =
+        window.solid_angle`` in sr and ``T_obs = tf - t0`` in years.
 
-        - ``A + B <= c``  (always outside the cut)  -> ``omega = 0``,
-        - ``A - B >= c``  (always inside the cut)   -> ``h_star = pi``,
-          so ``omega = A * pi``,
-        - otherwise (partial visibility)            -> the formula above
-          with ``h_star = arccos((c - A) / B)``.
-
-        Since ``omega`` is independent of RA (it averages over a sidereal
-        cycle), only the declination of ``centre`` enters the computation.
-        RA is validated for consistency with the rest of the API.
+        The angular extent of the window enters only through its solid
+        angle: the integrand is held at its value at ``window.centre``,
+        which holds while the zenith angle varies little across the window.
 
         Parameters
         ----------
-        centre : array-like of shape (2,)
-            Sky direction ``[RA_deg, Dec_deg]``.
+        t : astropy.time.Time
+            Scalar or array of evaluation times in ``[t0, tf]``.
+        window : SkyWindow
+            Region of sky; supplies ``centre`` and ``solid_angle``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            Cumulative directional exposure in km² sr yr.
+        """
+        return (
+            self.observatory.area
+            * window.solid_angle
+            * self._t_obs_yr
+            * self.norm_cumul_exposure(t, window.centre)
+        )
+
+    def total_exposure(self) -> float:
+        """
+        Exposure over the whole sky and the whole interval, in km² sr yr.
+
+        Integrating the array area out and swapping the two remaining
+        integrals::
+
+            E_sky = ∫_t A(t) [ ∫_sky H(theta_max - theta) cos(theta) dOmega ] dt
+
+        At fixed time the map from equatorial to local coordinates is a
+        rigid rotation, which preserves ``dOmega``, so the inner integral
+        equals the same integral over the field-of-view cap in local
+        coordinates — and that is the same at every instant::
+
+            ∫_cap cos(theta) dOmega = 2 pi ∫_0^{theta_max} cos sin dtheta
+                                    = pi sin²(theta_max)
+
+        With ``A(t) = A_max`` the time integral is then trivial::
+
+            E_sky = A_max * T_obs * pi sin²(theta_max)
+
+        A time-dependent ``A(t)`` would leave this structure intact: it
+        carries no direction dependence, so it factors out of the solid
+        angle integral and the last two factors become ``∫ A(t) dt``.
 
         Returns
         -------
         float
-            The relative directional exposure at ``centre``, as defined by
-            the analytical Sommers expression.
+            Total exposure in km² sr yr.
         """
-        _, dec_deg = self._validate_centre(centre)
+        return self.observatory.area * self._t_obs_yr * self._cap_cos_integral
 
-        lat_rad = math.radians(self.observatory.latitude)
-        dec_rad = math.radians(dec_deg)
-
-        A = math.sin(lat_rad) * math.sin(dec_rad)
-        B = math.cos(lat_rad) * math.cos(dec_rad)
-        c = self._cos_theta_max
-
-        if A + B <= c:
-            return 0.0
-        if A - B >= c:
-            return float(A * math.pi)
-
-        h_star = math.acos((c - A) / B)
-        return float(A * h_star + B * math.sin(h_star))
-
-    @property
-    def mean_relative_exposure(self) -> float:
-        r"""
-        Sky-averaged relative directional exposure ``<omega>``.
-
-        The raw weight returned by :meth:`relative_exposure` is the
-        *un-normalised* Sommers ``omega(delta)``; its average over the
-        celestial sphere is not 1, so multiplying it by ``sky_fraction``
-        does not yield a proper expected event count.  This property returns
-
-        .. math::
-
-            \langle\omega\rangle = \frac{1}{4\pi}\int \omega\,\mathrm{d}\Omega
-                                 = \frac{1}{2}\int_{-\pi/2}^{\pi/2}
-                                   \omega(\delta)\cos\delta\,\mathrm{d}\delta ,
-
-        the normalisation constant such that ``omega / <omega>`` has unit sky
-        average.  Dividing an expected count by ``<omega>`` guarantees that
-        the per-window counts sum to ``n_events`` over a full-sky tiling.
-
-        Depends only on the observatory latitude and ``theta_max``, so it is
-        evaluated once by declination quadrature and cached.
+    def relative_window_exposure(self, window) -> float:
         """
-        if self._mean_rel_exposure is None:
-            dec_deg = np.linspace(-90.0, 90.0, 4001)
-            omega = np.array(
-                [self.relative_exposure((0.0, d)) for d in dec_deg],
-                dtype=float,
-            )
-            dec_rad = np.deg2rad(dec_deg)
-            # np.trapz was renamed to np.trapezoid in NumPy 2.0.
-            trapz = getattr(np, "trapezoid", None) or np.trapz
-            self._mean_rel_exposure = 0.5 * float(
-                trapz(omega * np.cos(dec_rad), dec_rad)
-            )
-        return self._mean_rel_exposure
+        Exposure towards ``window`` relative to the whole sky, over the
+        full interval ``[t0, tf]``::
+
+            relative = E(window) / E_sky
+
+        ``A_max`` and ``T_obs`` are common to both and cancel, leaving::
+
+            relative = Omega_win * eps_norm(tf, centre) / (pi sin²(theta_max))
+
+        built from :attr:`SkyWindow.solid_angle` and
+        :meth:`max_norm_cumul_exposure` at the window centre.  Cancelling
+        the common factors rather than dividing :meth:`cumul_exposure` by
+        :meth:`total_exposure` also keeps the result defined when
+        ``observatory.area`` is zero.
+
+        Over a full-sky tiling these values sum to 1, and exactly so:
+        ``∫_sky eps_norm dOmega = pi sin²(theta_max)`` is analytic, with no
+        quadrature standing between the parts and the whole.
+
+        Parameters
+        ----------
+        window : SkyWindow
+            Region of sky; supplies ``centre`` and ``solid_angle``.
+
+        Returns
+        -------
+        float
+            Dimensionless, in ``[0, 1]``.
+        """
+        return (
+            window.solid_angle
+            * self.max_norm_cumul_exposure(window.centre)
+            / self._cap_cos_integral
+        )
 
     # -------------------------------------------------------------------------
     # Exposure-space sampling
     # -------------------------------------------------------------------------
-    
-    def sample_directional_exposure(
+
+    def sample_iso_cumul_exposure(
         self,
         n_events: int,
         expected_exposure_rate: float,
-        max_dir_exposure: float,
-        factor: int = 30,
     ) -> Tuple[np.ndarray, str]:
         """
         Generate sampled cumulative directional exposure values.
 
-        This method assumes that events follow a Poisson process in
-        *exposure space* with constant rate `expected_exposure_rate`. 
-        Under this assumption, event exposure values are uniformly 
-        distributed in [0, max_dir_exposure].
+        This method assumes that events follow a homogeneous Poisson
+        process in *exposure space* with constant rate
+        ``expected_exposure_rate``. Under this assumption, the gap between
+        consecutive events
 
-        The implementation oversamples the exposure interval by a
-        multiplicative `factor` to avoid biasing the Poisson rate,
-        sorts the sampled exposure values, and returns the first
-        `n_events`.
+            delta_exposure[i] = exposure[i+1] - exposure[i]
+
+        follows an exponential distribution
+
+            f(delta_exposure) = rate * exp(-rate * delta_exposure).
+
+        The implementation draws ``n_events - 1`` such gaps and cumulative-
+        sums them, anchoring ``exposure[0] = 0``. This is the direct way to
+        generate Poisson-process arrival points, and it applies no upper
+        cutoff: with::
+
+            expected_exposure_rate = n_events / max_norm_cumul_exposure
+
+        the cumulative sum has expectation close to
+        ``max_norm_cumul_exposure``, but individual draws are not bounded
+        by it, so some values exceed it.
+
+        That same expression fixes the units of the result: the values come
+        out normalised, because they carry the scale of
+        ``1 / expected_exposure_rate`` and that rate is built from
+        :meth:`max_norm_cumul_exposure`, placing them on the same scale as
+        :meth:`norm_cumul_exposure`.
 
         Parameters
         ----------
         n_events : int
             Number of exposure values to return (i.e., number of events
             in the target sample).
-
         expected_exposure_rate : float
             Event rate per unit cumulative exposure. Typically defined as
-            parent_sample.n_events / max_dir_exposure.
-
-        max_dir_exposure : float
-            Maximum cumulative directional exposure epsilon(tf) for the chosen
-            reference direction over the observation interval [t0, tf].
-
-        factor : int, optional
-            Oversampling factor used internally to generate a sufficiently
-            large uniform exposure pool before selecting the first
-            `n_events`. Normally does not need adjustment.
+            ``parent_sample.n_events / max_norm_cumul_exposure(centre)``.
 
         Returns
         -------
         sample : np.ndarray of shape (n_events,)
-            Sorted cumulative exposure values for each event.
-
+            Sorted cumulative exposure values for each event, with
+            ``sample[0] == 0``.
         method_name : str
             Identifier string describing the sampling strategy.
         """
-        
+
         if not isinstance(n_events, int) or isinstance(n_events, bool):
             raise TypeError("n_events must be an integer.")
         if n_events <= 0:
             raise ValueError("n_events must be > 0.")
-        if not isinstance(factor, int) or isinstance(factor, bool):
-            raise TypeError("factor must be an integer.")
-        if factor <= 0:
-            raise ValueError("factor must be > 0.")
         if not isinstance(expected_exposure_rate, (int, float)) or isinstance(expected_exposure_rate, bool):
             raise TypeError("expected_exposure_rate must be numeric.")
         if expected_exposure_rate <= 0:
@@ -720,27 +677,9 @@ class ExposureModel:
             # only when both are positive). We reject it loudly instead of
             # silently returning an empty sample.
             raise ValueError("expected_exposure_rate must be > 0.")
-        if not isinstance(max_dir_exposure, (int, float)) or isinstance(max_dir_exposure, bool):
-            raise TypeError("max_dir_exposure must be numeric.")
-        if max_dir_exposure <= 0:
-            raise ValueError(
-                "max_dir_exposure must be > 0. A value of 0 means the source never "
-                "enters the FoV (out of acceptance); a negative value is unphysical."
-            )
 
-        mu = float(factor) * float(expected_exposure_rate) * float(max_dir_exposure)
-        mu_expanded = int(math.floor(mu))
+        sample = np.zeros(shape=n_events)
+        delta_exp = self.rng.exponential(scale=1.0 / expected_exposure_rate, size=n_events - 1)
+        sample[1:] = np.cumsum(delta_exp)
 
-        if mu_expanded == 0:
-            raise ValueError(
-                "mu_expanded is 0 (factor * expected_exposure_rate * max_dir_exposure < 1). "
-                "Increase factor or check that the exposure product is meaningful."
-            )
-
-        # Exposure interval length used for uniform sampling
-        exposure_expanded = mu_expanded / float(expected_exposure_rate)
-
-        # Draw uniform exposure values and return the first n_events in "time" order
-        sample = np.sort(self.rng.uniform(0.0, exposure_expanded, size=mu_expanded))
-
-        return sample[:n_events], "free_maximum_exposure_method"
+        return sample, "exponential_delta_exposure_method"
