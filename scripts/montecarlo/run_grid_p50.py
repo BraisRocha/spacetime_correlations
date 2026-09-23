@@ -111,23 +111,24 @@ def main(
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_total = int(5e5)
+    n_total = int(3e5)
     n_simulations = int(1e4)
     max_attempts = int(3 * n_simulations)
 
     # Observation interval
-    T_obs = 10 * u.year
+    T_obs = 12 * u.year
     t0 = Time("2013-01-01T00:00:00", scale="utc")
     tf = t0 + T_obs
 
     # Sky window
-    centre = np.array([30.0, 0.0])
-    radius = 2
+    centre = np.array([0.0, -40.0])
+    radius = 1.05
 
     # Pierre Auger Observatory
     latitude_pa = -35.15
     longitude_pa = -69.15
     altitude_pa = 1425
+    area_pa = 3000
 
     # Flare parameters (single point in the grid)
     flare_duration = flare_duration_days * u.day
@@ -183,7 +184,7 @@ def main(
     window = stc.SkyWindow(centre=centre, radius=radius)
     observatory = stc.Observatory(
         latitude=latitude_pa, longitude=longitude_pa, altitude=altitude_pa,
-        area=3000.0,
+        area=area_pa,
     )
     exposure_model = stc.ExposureModel(
         observatory=observatory, t0=t0, tf=tf, rng=rng_exposure,
