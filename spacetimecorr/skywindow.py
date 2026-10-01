@@ -316,7 +316,7 @@ class SkyGrid:
         grid = SkyGrid(centres, radii)
         for window in grid:
             sample = EventSample.in_window(window=window, ...)
-            sample.assign_directional_exposure(window=window, ...)
+            sample.assign_cumul_exposure(window=window, ...)
             lam = lambda_estimator(sample)
 
     Validation mirrors :class:`SkyWindow` so that a window obtained via

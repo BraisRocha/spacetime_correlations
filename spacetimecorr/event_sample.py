@@ -13,7 +13,8 @@ for future extensions.
 End-user code constructs samples through the factory classmethods rather
 than ``__init__``:
 
-- :meth:`EventSample.full_sky` — isotropic background over the full sky.
+- :meth:`EventSample.full_sky` — background over the full sky, distributed
+  as the observatory's exposure per solid angle.
 - :meth:`EventSample.in_window` — Poisson-drawn events restricted to a
   :class:`~spacetimecorr.skywindow.SkyWindow`, with exposure weighting
   threaded through.
@@ -155,31 +156,37 @@ class EventSample:
     def full_sky(
         cls,
         n_total: int,
+        exposure_model: "ExposureModel",
         t0: Time,
         tf: Time,
         rng: np.random.Generator,
     ) -> "EventSample":
         """
-        Build a full-sky isotropic sample of ``n_total`` events.
+        Build a full-sky sample of ``n_total`` events distributed as the
+        observatory's exposure per solid angle.
 
-        ``n_sample == n_total`` and ``expected_n == n_total``. The sample
-        carries no window and no exposure model.
+        ``n_sample == n_total`` and ``expected_n == n_total``. The exposure
+        model is stored on the returned instance, so windows cut from it
+        later with :meth:`select_subsample` get exposure-weighted expected
+        counts.
 
         Parameters
         ----------
         n_total : int
-            Number of events in the full-sky sample (also the expected
-            count under the uniform isotropic model).
+            Number of events in the full-sky sample.
+        exposure_model : ExposureModel
+            Supplies the exposure per solid angle used to thin the
+            isotropic candidates (see :meth:`ExposureModel.detect_directions`).
         t0, tf : astropy.time.Time
             Observation interval.
         rng : numpy.random.Generator
-            Random generator used for the isotropic draw.
+            Random generator used for the isotropic candidates.
 
         Returns
         -------
         EventSample
-            Sample with ``ra``, ``dec``, ``expected_n`` and
-            ``spatial_type='full_sky'`` set.
+            Sample with ``ra``, ``dec``, ``expected_n``, ``exposure_model``
+            and ``spatial_type='full_sky'`` set.
         """
         obj = cls(
             n_sample=int(n_total),
@@ -188,8 +195,9 @@ class EventSample:
             tf=tf,
             rng=rng,
         )
-        obj._assign_full_sky_coordinates()
+        obj._assign_full_sky_coordinates(exposure_model)
         obj.expected_n = float(n_total)
+        obj.exposure_model = exposure_model
         return obj
 
     @classmethod
@@ -387,7 +395,7 @@ class EventSample:
 
         A True value does not imply all entries are finite — after
         ``inject_flare()`` the array exists but background slots remain NaN
-        until a subsequent ``assign_directional_exposure()`` is called.
+        until a subsequent ``assign_cumul_exposure()`` is called.
         Finite-value validity is enforced separately by ``lambda_estimator``.
         """
         return self.exposure is not None
@@ -401,20 +409,56 @@ class EventSample:
     # Core sampling and low-level data manipulation
     # -------------------------------------------------------------------------
 
-    def _generate_full_sky_coordinates(self) -> tuple[np.ndarray, np.ndarray]:
+    def _propose_isotropic_coordinates(self, n: int) -> tuple[np.ndarray, np.ndarray]:
         """
-        Draw ``self.n_sample`` isotropic coordinates over the whole sphere.
+        Draw ``n`` isotropic coordinates over the whole sphere, in degrees.
 
-        Right ascension is uniform in ``[0, 360)``.
-        Declination is distributed so that ``sin(dec)`` is uniform in
-        ``[-1, 1]`` (isotropic on the sphere). Coordinates are returned in
-        degrees.
+        Right ascension is uniform in ``[0, 360)`` and ``sin(dec)`` is
+        uniform in ``[-1, 1]``. Sampling ``sin(dec)`` rather than ``dec``
+        is what makes the points isotropic: the solid-angle element is
+        ``dOmega = cos(dec) d(dec) d(ra) = d(sin dec) d(ra)``, so equal
+        steps in ``sin(dec)`` enclose equal solid angle. Uniform ``dec``
+        would crowd the poles.
         """
-        ra = self.rng.uniform(0.0, 360.0, size=self.n_sample)
-        u_rand = self.rng.uniform(-1.0, 1.0, size=self.n_sample)
+        ra = self.rng.uniform(0.0, 360.0, size=n)
+        u_rand = self.rng.uniform(-1.0, 1.0, size=n)
         dec = np.degrees(np.arcsin(u_rand))
 
         return np.asarray(ra, dtype=float), np.asarray(dec, dtype=float)
+
+    def _generate_full_sky_coordinates(
+        self,
+        exposure_model: "ExposureModel",
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Draw ``self.n_sample`` coordinates over the whole sphere,
+        distributed as the observatory's exposure per solid angle.
+
+        Isotropic candidates from :meth:`_propose_isotropic_coordinates`
+        are thinned by :meth:`ExposureModel.detect_directions`, batch by
+        batch, until ``self.n_sample`` are accepted. The surplus of the
+        last batch is dropped; accepted events are independent, so this
+        does not bias the sample. Coordinates are returned in degrees.
+        """
+        ra_acc: list[np.ndarray] = [np.empty(0)]
+        dec_acc: list[np.ndarray] = [np.empty(0)]
+        n_kept = 0
+
+        while n_kept < self.n_sample:
+            # About one candidate in three survives at the Auger site, so
+            # four per missing event usually finishes in a single batch.
+            # The floor avoids many tiny batches when few are missing.
+            n_batch = max(1000, 4 * (self.n_sample - n_kept))
+            ra, dec = self._propose_isotropic_coordinates(n_batch)
+            ra, dec = exposure_model.detect_directions(ra, dec)
+
+            ra_acc.append(ra)
+            dec_acc.append(dec)
+            n_kept += ra.size
+
+        ra = np.concatenate(ra_acc)[: self.n_sample]
+        dec = np.concatenate(dec_acc)[: self.n_sample]
+        return ra, dec
 
     def _generate_window_coordinates(
         self,
@@ -429,14 +473,15 @@ class EventSample:
         """
         return window.sample_uniform(self.n_sample, self.rng)
 
-    def _assign_full_sky_coordinates(self) -> None:
+    def _assign_full_sky_coordinates(self, exposure_model: "ExposureModel") -> None:
         """
-        Generate isotropic full-sky coordinates and store them on ``self``.
+        Generate exposure-weighted full-sky coordinates and store them on
+        ``self``.
 
         Sets ``self.ra``, ``self.dec`` and tags ``self.spatial_type`` as
         ``"full_sky"``. Private helper invoked by :meth:`full_sky`.
         """
-        ra, dec = self._generate_full_sky_coordinates()
+        ra, dec = self._generate_full_sky_coordinates(exposure_model)
         self.ra = ra
         self.dec = dec
         self.spatial_type = "full_sky"
@@ -516,9 +561,10 @@ class EventSample:
         Return a new ``EventSample`` containing only events inside ``window``.
 
         The returned sample carries an updated ``expected_n`` set to
-        ``window.expected_n_in_window(self.n_total)`` (i.e. the expected
-        number of events inside the window under the *uniform full-sky*
-        assumption built into :class:`SkyWindow`).
+        ``window.expected_n_in_window(self.n_total, self.exposure_model)``,
+        the expected number of events inside the window given the
+        observatory's exposure (the bare sky fraction if this sample
+        carries no exposure model).
 
         Parameters
         ----------
@@ -546,12 +592,14 @@ class EventSample:
             raise ValueError("No events found inside the sky window.")
 
         subsample = self._subset(mask)
-        subsample.expected_n = window.expected_n_in_window(self.n_total)
+        subsample.expected_n = window.expected_n_in_window(
+            self.n_total, self.exposure_model
+        )
         subsample.window = window
 
         return subsample
 
-    def generate_directional_exposure(
+    def generate_cumul_exposure(
         self,
         window: "SkyWindow",
         exposure_model: "ExposureModel",
@@ -616,7 +664,7 @@ class EventSample:
 
         return eps, isotropy_mask, expected_exposure_rate, str(method)
 
-    def assign_directional_exposure(
+    def assign_cumul_exposure(
         self,
         window: "SkyWindow",
         exposure_model: "ExposureModel",
@@ -625,7 +673,7 @@ class EventSample:
         Generate and assign cumulative directional exposure values to this EventSample.
 
         This method is intended for *window-selected subsamples* and acts as an
-        in-place wrapper around `generate_directional_exposure(...)`.
+        in-place wrapper around `generate_cumul_exposure(...)`.
 
         Important notes
         ---------------
@@ -643,7 +691,7 @@ class EventSample:
             Model providing the exposure-space sampling machinery.
         """
         eps, target_mask, expected_exposure_rate, method = (
-            self.generate_directional_exposure(window, exposure_model)
+            self.generate_cumul_exposure(window, exposure_model)
         )
 
         if self.exposure is None:
@@ -740,7 +788,7 @@ class EventSample:
           for the surviving background slots and filled with
           ``flare.exposure`` at the appended tail.  The caller is
           responsible for a subsequent
-          :meth:`assign_directional_exposure` to populate the
+          :meth:`assign_cumul_exposure` to populate the
           background slots.
         - If ``self.exposure`` was already populated, surviving
           background entries keep their exposure values and the flare
@@ -751,8 +799,8 @@ class EventSample:
           window covers a small fraction of the sky, which is the
           regime of interest.
         - ``mu_removed`` is weighted by ``self.exposure_model``. If the
-          sample carries none (e.g. a subsample of a full-sky parent),
-          the weight falls back to the bare sky fraction.
+          sample carries none (e.g. one built with ``_from_arrays``), the
+          weight falls back to the bare sky fraction.
         """
         from .flare import Flare
 

@@ -245,7 +245,7 @@ def main(
                 flare.generate_in_window(window=window, sigma=flare_sigma)
                 sample.inject_flare(flare=flare, mode="overdensity")
 
-            sample.assign_directional_exposure(
+            sample.assign_cumul_exposure(
                 window=window, exposure_model=exposure_model,
             )
 

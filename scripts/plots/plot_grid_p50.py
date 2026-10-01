@@ -42,8 +42,8 @@ PERCENTILE = 50.0
 THRESHOLD_LEVELS = (1.0, 2.0, 3.0, 5.0)
 
 # Reference flare durations drawn as dashed vertical guides.
-REF_LABELS = ["hour", "day", "week", "mth", "year"]
-REF_DAYS = [1.0 / 24.0, 1.0, 7.0, 30.0, 365.0]
+REF_LABELS = ["min", "hour", "day", "week", "mth", "year"]
+REF_DAYS = [1.0 / 1440.0, 1.0 / 24.0, 1.0, 7.0, 30.0, 365.0]
 
 
 # ------------------------------------------------------------------
@@ -573,6 +573,6 @@ if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[2]
 
     # Change this to the run you want to plot
-    run_dir = project_root / "output" / "montecarlo" / "grid_p50" / "20260911_162106"
+    run_dir = project_root / "output" / "montecarlo" / "grid_p50" / "20260923_185135"
     output_dir = run_dir / "figures"
     main(run_dir=run_dir, output_dir=output_dir)

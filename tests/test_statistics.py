@@ -233,7 +233,7 @@ def test_lambda_estimator_returns_finite(window, exposure_model, t0, tf, rng):
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.assign_directional_exposure(window, exposure_model)
+    s.assign_cumul_exposure(window, exposure_model)
     assert np.isfinite(lambda_estimator(s))
 
 
@@ -251,7 +251,7 @@ def test_lambda_estimator_raises_with_nan_exposure(window, exposure_model, t0, t
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.assign_directional_exposure(window, exposure_model)
+    s.assign_cumul_exposure(window, exposure_model)
     s.exposure[0] = np.nan
     with pytest.raises(ValueError):
         lambda_estimator(s)
@@ -262,14 +262,14 @@ def test_lambda_estimator_raises_with_duplicate_exposure(window, exposure_model,
         window=window, n_total=20_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.assign_directional_exposure(window, exposure_model)
+    s.assign_cumul_exposure(window, exposure_model)
     s.exposure[1] = s.exposure[0]  # force a tie
     with pytest.raises(ValueError):
         lambda_estimator(s)
 
 
-def test_lambda_estimator_raises_with_too_few_events(t0, tf, rng):
-    s = stc.EventSample.full_sky(n_total=1, t0=t0, tf=tf, rng=rng)
+def test_lambda_estimator_raises_with_too_few_events(exposure_model, t0, tf, rng):
+    s = stc.EventSample.full_sky(n_total=1, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     s.exposure = np.array([1.0])  # bypass assign to test n_sample guard
     s.expected_exposure_rate = 1.0
     with pytest.raises(ValueError):

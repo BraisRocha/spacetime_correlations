@@ -24,6 +24,10 @@ latitude and the source declination. It provides:
   share of it falling on one window
   (:meth:`ExposureModel.relative_window_exposure`), which sets the
   expected counts per sky window,
+- the exposure per solid angle as a function of declination
+  (:meth:`ExposureModel.spatial_exposure`) and the thinning of candidate
+  directions by it (:meth:`ExposureModel.detect_directions`), used to
+  draw whole-sky samples,
 - helpers for sampling event times under the directional-exposure
   distribution (used by :class:`~spacetimecorr.flare.Flare` and by
   :class:`~spacetimecorr.event_sample.EventSample` when assigning
@@ -153,6 +157,14 @@ class ExposureModel:
         # The value depends only on (observatory, t0, tf, centre), all of
         # which are immutable after construction.
         self._max_exposure_cache: dict[tuple[float, float], float] = {}
+
+        # Largest `spatial_exposure` over the sky, the normalisation of the
+        # direction thinning. Found on a 0.01 deg grid that includes both
+        # poles, since the maximum can sit at one of them (at the Auger site
+        # it is the south pole, which never leaves the field of view).
+        self._max_spatial_exposure = float(
+            np.max(self.spatial_exposure(np.linspace(-90.0, 90.0, 18001)))
+        )
 
     # -------------------------------------------------------------------------
     # Private input / geometry helpers
@@ -606,6 +618,102 @@ class ExposureModel:
             * self.max_norm_cumul_exposure(window.centre)
             / self._cap_cos_integral
         )
+
+    # -------------------------------------------------------------------------
+    # Exposure per solid angle and direction thinning
+    # -------------------------------------------------------------------------
+
+    def spatial_exposure(self, dec_deg: np.ndarray) -> np.ndarray:
+        """
+        Normalised exposure per solid angle over the whole interval, as a
+        function of declination.
+
+        The exposure per solid angle towards a direction is::
+
+            dE/dOmega = ∫_{t0}^{tf} P(E, theta, phi, t, ...) A(t)
+                            H(theta_max - theta(t)) cos(theta(t)) dt
+
+        Its largest possible value, ``max(dE/dOmega) = A_max * T_obs``, is
+        that of a direction held at the zenith for the whole interval.
+        Dividing by it, with ``P = 1`` and ``A(t) = A_max``, over whole
+        sidereal days (see ``TODO.md``), leaves a function of declination
+        only::
+
+            spatial_exposure(dec) = [cos(lat) cos(dec) sin(h_m)
+                                     + h_m sin(lat) sin(dec)] / pi
+
+            cos(h_m) = (cos(theta_max) - sin(lat) sin(dec))
+                       / (cos(lat) cos(dec))
+
+        ``h_m`` is the half-width, in hour angle, of the arc of the
+        direction's daily circle inside the field of view. It is clipped
+        to ``[0, pi]``: 0 for a direction that never enters, and at most
+        pi, half a sidereal day, when the whole circle lies inside.
+
+        The normalisation is that of :meth:`norm_cumul_exposure`, and the
+        integral over the sky is ``pi sin²(theta_max)``, as in
+        :meth:`relative_window_exposure`.
+
+        Parameters
+        ----------
+        dec_deg : array-like
+            Declinations in degrees, in ``[-90, 90]``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Dimensionless values in ``[0, 1]``, shaped like ``dec_deg``.
+        """
+        dec_deg = np.asarray(dec_deg, dtype=float)
+        if np.any(np.abs(dec_deg) > 90.0):
+            raise ValueError("Dec must be in [-90, 90].")
+
+        dec = np.deg2rad(dec_deg)
+        a = math.sin(self._lat_rad) * np.sin(dec)
+        b = math.cos(self._lat_rad) * np.cos(dec)
+        c = self._cos_theta_max
+
+        # At the poles b = 0 and the division is undefined, but there one
+        # of the two clipped cases always holds, so `np.where` discards it.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            h_m = np.arccos(np.clip((c - a) / b, -1.0, 1.0))
+        h_m = np.where(a + b <= c, 0.0, np.where(a - b >= c, np.pi, h_m))
+
+        return (b * np.sin(h_m) + h_m * a) / np.pi
+
+    def detect_directions(
+        self,
+        ra: np.ndarray,
+        dec: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Apply exposure thinning to candidate directions.
+
+        Each candidate is kept with probability
+        ``spatial_exposure(dec) / max_sky spatial_exposure``: a uniform
+        ``u`` is drawn from ``self.rng`` and the direction survives when
+        ``u`` is below that ratio. Applied to isotropic candidates, the
+        survivors are distributed on the sky as the exposure per solid
+        angle.
+
+        Parameters
+        ----------
+        ra, dec : array-like
+            Candidate directions in degrees, same shape.
+
+        Returns
+        -------
+        ra, dec : numpy.ndarray
+            The accepted directions, in degrees.
+        """
+        ra = np.asarray(ra, dtype=float)
+        dec = np.asarray(dec, dtype=float)
+        if ra.shape != dec.shape:
+            raise ValueError("ra and dec must have the same shape.")
+
+        p = self.spatial_exposure(dec) / self._max_spatial_exposure
+        mask = self.rng.random(size=p.shape) < p
+        return ra[mask], dec[mask]
 
     # -------------------------------------------------------------------------
     # Exposure-space sampling

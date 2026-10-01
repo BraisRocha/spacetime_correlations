@@ -78,81 +78,87 @@ def test_init_has_coordinates_false(t0, tf, rng):
 # -------------------------------------------------------------------------
 
 
-def test_full_sky_n_sample_equals_n_total(t0, tf, rng):
-    s = EventSample.full_sky(n_total=500, t0=t0, tf=tf, rng=rng)
+def test_full_sky_n_sample_equals_n_total(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=500, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert s.n_sample == 500
 
 
-def test_full_sky_expected_n_equals_n_total(t0, tf, rng):
-    s = EventSample.full_sky(n_total=500, t0=t0, tf=tf, rng=rng)
+def test_full_sky_expected_n_equals_n_total(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=500, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert s.expected_n == pytest.approx(500.0)
 
 
-def test_full_sky_spatial_type(t0, tf, rng):
-    s = EventSample.full_sky(n_total=500, t0=t0, tf=tf, rng=rng)
+def test_full_sky_spatial_type(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=500, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert s.spatial_type == "full_sky"
 
 
-def test_full_sky_window_is_none(t0, tf, rng):
-    s = EventSample.full_sky(n_total=500, t0=t0, tf=tf, rng=rng)
+def test_full_sky_window_is_none(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=500, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert s.window is None
 
 
-def test_full_sky_exposure_model_is_none(t0, tf, rng):
-    s = EventSample.full_sky(n_total=500, t0=t0, tf=tf, rng=rng)
-    assert s.exposure_model is None
+def test_full_sky_stores_exposure_model(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=500, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
+    assert s.exposure_model is exposure_model
 
 
-def test_full_sky_ra_shape(t0, tf, rng):
-    s = EventSample.full_sky(n_total=500, t0=t0, tf=tf, rng=rng)
+def test_full_sky_ra_shape(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=500, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert s.ra.shape == (500,)
 
 
-def test_full_sky_dec_shape(t0, tf, rng):
-    s = EventSample.full_sky(n_total=500, t0=t0, tf=tf, rng=rng)
+def test_full_sky_dec_shape(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=500, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert s.dec.shape == (500,)
 
 
-def test_full_sky_ra_in_range(t0, tf, rng):
-    s = EventSample.full_sky(n_total=2000, t0=t0, tf=tf, rng=rng)
+def test_full_sky_ra_in_range(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=2000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert np.all((s.ra >= 0.0) & (s.ra < 360.0))
 
 
-def test_full_sky_dec_in_range(t0, tf, rng):
-    s = EventSample.full_sky(n_total=2000, t0=t0, tf=tf, rng=rng)
+def test_full_sky_dec_in_range(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=2000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert np.all((s.dec >= -90.0) & (s.dec <= 90.0))
 
 
-def test_full_sky_coordinates_finite(t0, tf, rng):
-    s = EventSample.full_sky(n_total=2000, t0=t0, tf=tf, rng=rng)
+def test_full_sky_coordinates_finite(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=2000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert np.all(np.isfinite(s.ra)) and np.all(np.isfinite(s.dec))
 
 
-def test_full_sky_has_coordinates_true(t0, tf, rng):
-    s = EventSample.full_sky(n_total=10, t0=t0, tf=tf, rng=rng)
+def test_full_sky_has_coordinates_true(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=10, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert s.has_coordinates
 
 
-def test_full_sky_has_exposure_false(t0, tf, rng):
-    s = EventSample.full_sky(n_total=10, t0=t0, tf=tf, rng=rng)
+def test_full_sky_has_exposure_false(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=10, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert not s.has_exposure
 
 
-def test_full_sky_has_flare_false(t0, tf, rng):
-    s = EventSample.full_sky(n_total=10, t0=t0, tf=tf, rng=rng)
+def test_full_sky_has_flare_false(exposure_model, t0, tf, rng):
+    s = EventSample.full_sky(n_total=10, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert not s.has_flare
 
 
-def test_full_sky_isotropy_mean_sin_dec(t0, tf, rng):
-    """For isotropic full-sky sampling, mean(sin Dec) ≈ 0."""
-    s = EventSample.full_sky(n_total=50_000, t0=t0, tf=tf, rng=rng)
-    mean_sin = float(np.mean(np.sin(np.deg2rad(s.dec))))
-    assert mean_sin == pytest.approx(0.0, abs=0.02)
+def test_full_sky_dec_follows_spatial_exposure(exposure_model, t0, tf, rng):
+    """Dec is distributed as spatial_exposure(dec) * cos(dec) (KS test)."""
+    s = EventSample.full_sky(n_total=50_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
+
+    grid = np.linspace(-90.0, 90.0, 20001)
+    pdf = exposure_model.spatial_exposure(grid) * np.cos(np.deg2rad(grid))
+    cdf = np.concatenate([[0.0], np.cumsum(0.5 * (pdf[1:] + pdf[:-1]))])
+    cdf /= cdf[-1]
+
+    result = scp.kstest(s.dec, lambda x: np.interp(x, grid, cdf))
+    assert result.pvalue > 1e-3
 
 
-def test_full_sky_isotropy_mean_ra(t0, tf, rng):
-    """For isotropic full-sky sampling, mean(RA) ≈ 180."""
-    s = EventSample.full_sky(n_total=50_000, t0=t0, tf=tf, rng=rng)
+def test_full_sky_mean_ra(exposure_model, t0, tf, rng):
+    """The exposure does not depend on RA, so mean(RA) ≈ 180."""
+    s = EventSample.full_sky(n_total=50_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert float(np.mean(s.ra)) == pytest.approx(180.0, abs=3.0)
 
 
@@ -240,9 +246,9 @@ def test_expected_temporal_rate_raises_when_expected_n_unset(t0, tf, rng):
         s.expected_temporal_rate
 
 
-def test_expected_temporal_rate_after_full_sky(t0, tf, rng):
+def test_expected_temporal_rate_after_full_sky(exposure_model, t0, tf, rng):
     import astropy.units as u
-    s = EventSample.full_sky(n_total=365, t0=t0, tf=tf, rng=rng)
+    s = EventSample.full_sky(n_total=365, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     assert s.expected_temporal_rate == pytest.approx(
         s.expected_n / s.T_obs.to(u.s).value
     )
@@ -253,32 +259,47 @@ def test_expected_temporal_rate_after_full_sky(t0, tf, rng):
 # -------------------------------------------------------------------------
 
 
-def test_select_subsample_all_events_inside(window, t0, tf, rng):
-    parent = EventSample.full_sky(n_total=20_000, t0=t0, tf=tf, rng=rng)
+def test_select_subsample_all_events_inside(window, exposure_model, t0, tf, rng):
+    parent = EventSample.full_sky(n_total=20_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     sub = parent.select_subsample(window)
     assert np.all(window.contains(sub.ra, sub.dec))
 
 
-def test_select_subsample_n_sample_matches_array_length(window, t0, tf, rng):
-    parent = EventSample.full_sky(n_total=20_000, t0=t0, tf=tf, rng=rng)
+def test_select_subsample_n_sample_matches_array_length(window, exposure_model, t0, tf, rng):
+    parent = EventSample.full_sky(n_total=20_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     sub = parent.select_subsample(window)
     assert sub.n_sample == len(sub.ra)
 
 
-def test_select_subsample_sets_expected_n(window, t0, tf, rng):
-    parent = EventSample.full_sky(n_total=20_000, t0=t0, tf=tf, rng=rng)
+def test_select_subsample_sets_expected_n(window, exposure_model, t0, tf, rng):
+    parent = EventSample.full_sky(n_total=20_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     sub = parent.select_subsample(window)
-    assert sub.expected_n == pytest.approx(window.expected_n_in_window(20_000))
+    assert sub.expected_n == pytest.approx(
+        window.expected_n_in_window(20_000, exposure_model)
+    )
 
 
-def test_select_subsample_sets_window(window, t0, tf, rng):
-    parent = EventSample.full_sky(n_total=20_000, t0=t0, tf=tf, rng=rng)
+def test_select_subsample_count_matches_in_window_expectation(
+    small_window, exposure_model, t0, tf, rng,
+):
+    """Whole-sky sampling followed by a window cut reproduces the count
+    that the in-window pipeline draws its Poisson number from."""
+    parent = EventSample.full_sky(
+        n_total=200_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng,
+    )
+    sub = parent.select_subsample(small_window)
+    expected = small_window.expected_n_in_window(200_000, exposure_model)
+    assert abs(sub.n_sample - expected) < 5.0 * np.sqrt(expected)
+
+
+def test_select_subsample_sets_window(window, exposure_model, t0, tf, rng):
+    parent = EventSample.full_sky(n_total=20_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     sub = parent.select_subsample(window)
     assert sub.window is window
 
 
-def test_select_subsample_propagates_n_total(window, t0, tf, rng):
-    parent = EventSample.full_sky(n_total=20_000, t0=t0, tf=tf, rng=rng)
+def test_select_subsample_propagates_n_total(window, exposure_model, t0, tf, rng):
+    parent = EventSample.full_sky(n_total=20_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     sub = parent.select_subsample(window)
     assert sub.n_total == 20_000
 
@@ -290,7 +311,7 @@ def test_select_subsample_no_coordinates_raises(window, t0, tf, rng):
 
 
 def test_select_subsample_no_events_inside_raises(exposure_model, t0, tf, rng):
-    parent = EventSample.full_sky(n_total=10, t0=t0, tf=tf, rng=rng)
+    parent = EventSample.full_sky(n_total=10, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
     invisible = SkyWindow(centre=[180.0, 89.999], radius=0.001)
     # Almost certainly no random events land in such a tiny cap.
     with pytest.raises(ValueError):
@@ -298,44 +319,44 @@ def test_select_subsample_no_events_inside_raises(exposure_model, t0, tf, rng):
 
 
 # -------------------------------------------------------------------------
-# assign_directional_exposure
+# assign_cumul_exposure
 # -------------------------------------------------------------------------
 
 
-def test_assign_directional_exposure_sets_exposure(window, exposure_model, t0, tf, rng):
+def test_assign_cumul_exposure_sets_exposure(window, exposure_model, t0, tf, rng):
     s = EventSample.in_window(
         window=window, n_total=10_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.assign_directional_exposure(window, exposure_model)
+    s.assign_cumul_exposure(window, exposure_model)
     assert s.has_exposure
 
 
-def test_assign_directional_exposure_sets_exposure_type(window, exposure_model, t0, tf, rng):
+def test_assign_cumul_exposure_sets_exposure_type(window, exposure_model, t0, tf, rng):
     s = EventSample.in_window(
         window=window, n_total=10_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.assign_directional_exposure(window, exposure_model)
+    s.assign_cumul_exposure(window, exposure_model)
     assert s.exposure_type == "exponential_delta_exposure_method"
 
 
-def test_assign_directional_exposure_sets_rate(window, exposure_model, t0, tf, rng):
+def test_assign_cumul_exposure_sets_rate(window, exposure_model, t0, tf, rng):
     s = EventSample.in_window(
         window=window, n_total=10_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.assign_directional_exposure(window, exposure_model)
+    s.assign_cumul_exposure(window, exposure_model)
     assert s.expected_exposure_rate is not None
     assert s.expected_exposure_rate > 0.0
 
 
-def test_assign_directional_exposure_array_length(window, exposure_model, t0, tf, rng):
+def test_assign_cumul_exposure_array_length(window, exposure_model, t0, tf, rng):
     s = EventSample.in_window(
         window=window, n_total=10_000, exposure_model=exposure_model,
         t0=t0, tf=tf, rng=rng,
     )
-    s.assign_directional_exposure(window, exposure_model)
+    s.assign_cumul_exposure(window, exposure_model)
     assert len(s.exposure) == s.n_sample
 
 
@@ -425,7 +446,7 @@ def test_inject_flare_overdensity_n_flare_exceeds_n_total_raises(
     notionally drawn from a hypothetical full-sky sample of size n_total),
     and must raise."""
     import astropy.units as u
-    s = EventSample.full_sky(n_total=5, t0=t0, tf=tf, rng=rng_manager.get("sample"))
+    s = EventSample.full_sky(n_total=5, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng_manager.get("sample"))
     big_flare = Flare(
         n_flare=10, duration=1.0 * u.day,
         t0=t0, tf=tf, centre=window.centre,
@@ -672,7 +693,7 @@ def test_inject_flare_no_overdensity_n_flare_exceeds_n_sample_raises(
     window, exposure_model, t0, tf, rng_manager,
 ):
     import astropy.units as u
-    s = EventSample.full_sky(n_total=5, t0=t0, tf=tf, rng=rng_manager.get("sample"))
+    s = EventSample.full_sky(n_total=5, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng_manager.get("sample"))
     big_flare = Flare(
         n_flare=10, duration=1.0 * u.day,
         t0=t0, tf=tf, centre=window.centre,
@@ -747,7 +768,7 @@ def test_in_window_pvalue_uniform_under_h0(
             window=window, n_total=n_total, exposure_model=exposure_model,
             t0=t0, tf=tf, rng=rng,
         )
-        s.assign_directional_exposure(window, exposure_model)
+        s.assign_cumul_exposure(window, exposure_model)
         lambdas[i] = lambda_estimator(s)
 
     pvals = lambda_marginal_sf(lambdas, mu=float(s.expected_n))

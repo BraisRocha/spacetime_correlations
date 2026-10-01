@@ -303,7 +303,7 @@ def main(seed: int) -> None:
     for i, window in enumerate(tqdm(grid, total=n_windows, desc="Windows scanned")):
         try:
             subsample = sample.select_subsample(window)
-            subsample.assign_directional_exposure(
+            subsample.assign_cumul_exposure(
                 window=window, exposure_model=exposure_model,
             )
 

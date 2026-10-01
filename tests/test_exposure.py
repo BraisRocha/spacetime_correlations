@@ -167,6 +167,54 @@ def test_detect_times_with_return_mask(exposure_model, t0, tf):
 
 
 # -------------------------------------------------------------------------
+# spatial_exposure / detect_directions
+# -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dec", [-90.0, -60.0, -35.15, 0.0, 20.0])
+def test_spatial_exposure_matches_max_norm_cumul_exposure(exposure_model, dec):
+    """Same quantity, computed per direction through the time integral.
+    They differ only by the leftover partial sidereal day."""
+    assert float(exposure_model.spatial_exposure(dec)) == pytest.approx(
+        exposure_model.max_norm_cumul_exposure(np.array([180.0, dec])),
+        rel=1e-3,
+    )
+
+
+def test_spatial_exposure_sky_integral(exposure_model):
+    """∫_sky spatial_exposure dOmega = pi sin²(theta_max)."""
+    dec = np.linspace(-90.0, 90.0, 200_001)
+    integrand = exposure_model.spatial_exposure(dec) * np.cos(np.deg2rad(dec))
+    integral = 2.0 * np.pi * np.trapezoid(integrand, np.deg2rad(dec))
+    assert integral == pytest.approx(np.pi * np.sin(np.deg2rad(60.0)) ** 2, rel=1e-6)
+
+
+def test_spatial_exposure_zero_outside_fov(exposure_model):
+    assert float(exposure_model.spatial_exposure(40.0)) == 0.0
+
+
+def test_spatial_exposure_invalid_dec_raises(exposure_model):
+    with pytest.raises(ValueError):
+        exposure_model.spatial_exposure(91.0)
+
+
+def test_detect_directions_rejects_all_outside_fov(exposure_model):
+    ra = np.full(1000, 180.0)
+    dec = np.full(1000, 40.0)
+    ra_acc, dec_acc = exposure_model.detect_directions(ra, dec)
+    assert ra_acc.size == dec_acc.size == 0
+
+
+def test_detect_directions_keeps_all_at_maximum(exposure_model):
+    """At the Auger site the maximum sits at the south pole, where the
+    acceptance probability is exactly 1."""
+    ra = np.full(1000, 180.0)
+    dec = np.full(1000, -90.0)
+    ra_acc, _ = exposure_model.detect_directions(ra, dec)
+    assert ra_acc.size == 1000
+
+
+# -------------------------------------------------------------------------
 # sample_iso_cumul_exposure
 # -------------------------------------------------------------------------
 

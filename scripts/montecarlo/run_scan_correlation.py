@@ -149,7 +149,7 @@ def main(seed: int) -> None:
                 t0=t0, tf=tf,
                 rng=rng_events,
             )
-            bkg_sample.assign_directional_exposure(
+            bkg_sample.assign_cumul_exposure(
                 window=window, exposure_model=exposure_model,
             )
             lambda_stat_bkg = stc.lambda_estimator(sample=bkg_sample)
@@ -191,7 +191,7 @@ def main(seed: int) -> None:
 
             sample_ST = copy.deepcopy(bkg_sample)
             sample_ST.inject_flare(flare=flare_ST, mode="overdensity")
-            sample_ST.assign_directional_exposure(
+            sample_ST.assign_cumul_exposure(
                 window=window, exposure_model=exposure_model,
             )
             lambda_stat_ST = stc.lambda_estimator(sample=sample_ST)
@@ -199,7 +199,7 @@ def main(seed: int) -> None:
             # --- T: temporal-only (no_overdensity, short flare, same flare as ST) ---
             sample_T = copy.deepcopy(bkg_sample)
             sample_T.inject_flare(flare=flare_ST, mode="no_overdensity")
-            sample_T.assign_directional_exposure(
+            sample_T.assign_cumul_exposure(
                 window=window, exposure_model=exposure_model,
             )
             lambda_stat_T = stc.lambda_estimator(sample=sample_T)
@@ -214,7 +214,7 @@ def main(seed: int) -> None:
 
             sample_S = copy.deepcopy(bkg_sample)
             sample_S.inject_flare(flare=flare_S, mode="overdensity")
-            sample_S.assign_directional_exposure(
+            sample_S.assign_cumul_exposure(
                 window=window, exposure_model=exposure_model,
             )
             lambda_stat_S = stc.lambda_estimator(sample=sample_S)

@@ -140,7 +140,7 @@ def main(seed: int) -> None:
                 tf=tf,
                 rng=rng_events,
             )
-            bkg_sample.assign_directional_exposure(
+            bkg_sample.assign_cumul_exposure(
                 window=window, exposure_model=exposure_model,
             )
 
@@ -173,7 +173,7 @@ def main(seed: int) -> None:
 
                 flare_sample = copy.deepcopy(bkg_sample)
                 flare_sample.inject_flare(flare=flare, mode="overdensity")
-                flare_sample.assign_directional_exposure(
+                flare_sample.assign_cumul_exposure(
                     window=window, exposure_model=exposure_model,
                 )
 

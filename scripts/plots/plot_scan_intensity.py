@@ -136,6 +136,10 @@ def _format_duration(days: float) -> str:
         return r"$\Delta t_{\rm flare} = 1\,$month"
     if days < 1.0:
         hours = days * 24.0
+        if hours < 1.0:
+            minutes = hours * 60.0
+            unit = "min" if np.isclose(minutes, 1.0) else "mins"
+            return rf"$\Delta t_{{\rm flare}} = {minutes:g}\,${unit}"
         unit = "hour" if np.isclose(hours, 1.0) else "hours"
         return rf"$\Delta t_{{\rm flare}} = {hours:g}\,${unit}"
     return rf"$\Delta t_{{\rm flare}} = {days:g}\,$days"
@@ -299,8 +303,8 @@ if __name__ == "__main__":
     # Edit these paths to point at the two runs you want to combine
     base = project_root / "output" / "montecarlo" / "scan_intensity"
     run_dirs = [
-        base / "20260922_170804_seed42", # run 1 hour
-        base / "20260922_165918_seed42", # run 1 week
+        base / "20260923_122949_seed42", # run 1 hour
+        base / "20260923_123420_seed42", # run 1 week
     ]
     output_dir = base / "figures"
     main(run_dirs=run_dirs, output_dir=output_dir)

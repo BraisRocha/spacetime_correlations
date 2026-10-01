@@ -79,7 +79,7 @@ class Flare:
     -----
     Generated arrays (``ra``, ``dec``, ``time``, ``exposure``) are
     initialised to ``None`` and populated by the ``generate_*`` /
-    ``compute_directional_exposure`` methods, or in one go by
+    ``compute_cumul_exposure`` methods, or in one go by
     :meth:`generate_in_window`.
     """
 
@@ -308,7 +308,7 @@ class Flare:
         # Convert offsets into absolute event times
         return start + TimeDelta(offsets_sec, format="sec")
     
-    def _evaluate_directional_exposure(
+    def _evaluate_cumul_exposure(
         self,
         time: Time,
         direction: np.ndarray,
@@ -338,7 +338,7 @@ class Flare:
     # Public population methods
     # -------------------------------------------------------------------------
 
-    def compute_directional_exposure(self, direction: np.ndarray) -> None:
+    def compute_cumul_exposure(self, direction: np.ndarray) -> None:
         """
         Compute directional exposure for the generated flare times at a given direction.
 
@@ -354,7 +354,7 @@ class Flare:
         if self.time is None:
             raise ValueError("Flare times are not set; populate `self.time` first.")
 
-        self.exposure = self._evaluate_directional_exposure(self.time, direction)
+        self.exposure = self._evaluate_cumul_exposure(self.time, direction)
 
     # -------------------------------------------------------------------------
     # High-level realization methods
@@ -535,7 +535,7 @@ class Flare:
         Directional exposure for each generated event is evaluated at
         ``window.centre`` rather than at the event's own ``(ra, dec)``.
         This matches the convention used by
-        :meth:`EventSample.assign_directional_exposure` for in-window
+        :meth:`EventSample.assign_cumul_exposure` for in-window
         samples: every event inside the cap is treated as having the
         same directional exposure as the cap centre, which is a good
         approximation for the small radii relevant to this analysis.
@@ -558,7 +558,7 @@ class Flare:
         self.time_profile = "uniform_thinned"
 
         # Exposure attached to the final accepted events
-        self.compute_directional_exposure(window.centre)
+        self.compute_cumul_exposure(window.centre)
 
     def generate(
         self,
@@ -630,7 +630,7 @@ class Flare:
 
         # Exposure attached to the final accepted events, evaluated at the
         # flare centre (no window reference direction in the full-sky case).
-        self.compute_directional_exposure(self.centre)
+        self.compute_cumul_exposure(self.centre)
 
     @property
     def spatial_domain(self) -> str | None:

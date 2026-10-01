@@ -363,13 +363,13 @@ def lambda_estimator(sample: EventSample) -> float:
     # comparisons silently evaluate to False, so a partly-filled array
     # would slip through the duplicate check below and produce a NaN
     # statistic. This commonly happens when `inject_flare` is called and
-    # the caller forgets the follow-up `assign_directional_exposure`.
+    # the caller forgets the follow-up `assign_cumul_exposure`.
     exposure = np.asarray(sample.exposure, dtype=float)
     if not np.all(np.isfinite(exposure)):
         raise ValueError(
             "lambda_estimator: sample.exposure contains non-finite values. "
             "Did you call inject_flare() without a subsequent "
-            "assign_directional_exposure() to fill the background slots?"
+            "assign_cumul_exposure() to fill the background slots?"
         )
 
     # Spacings of sorted exposure values

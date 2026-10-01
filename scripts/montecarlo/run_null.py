@@ -39,7 +39,7 @@ def main(seed: int) -> None:
     # ------------------------------------------------------------------
     # Simulation parameters
     # ------------------------------------------------------------------
-    n_total = int(3e5)
+    n_total = int(6e5)
     n_simulations = int(1e4)
     max_attempts = int(3 * n_simulations)
 
@@ -129,7 +129,7 @@ def main(seed: int) -> None:
                 tf=tf,
                 rng=rng_events,
             )
-            sample.assign_directional_exposure(
+            sample.assign_cumul_exposure(
                 window=window, exposure_model=exposure_model,
             )
 

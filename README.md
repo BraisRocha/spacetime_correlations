@@ -146,7 +146,7 @@ sample = EventSample.in_window(
     tf=tf,
     rng=rng_events,
 )
-sample.assign_directional_exposure(window=window, exposure_model=exposure_model)
+sample.assign_cumul_exposure(window=window, exposure_model=exposure_model)
 
 lam_bkg = lambda_estimator(sample=sample)
 
@@ -163,7 +163,7 @@ flare = Flare(
 flare.generate_in_window(window=window, sigma=1.0)  # sigma in degrees
 
 sample.inject_flare(flare=flare, mode="overdensity")
-sample.assign_directional_exposure(window=window, exposure_model=exposure_model)
+sample.assign_cumul_exposure(window=window, exposure_model=exposure_model)
 
 lam_flare = lambda_estimator(sample=sample)
 

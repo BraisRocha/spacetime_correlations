@@ -312,7 +312,7 @@ def main(seed: int) -> None:
                     sample.inject_flare(flare=flare, mode="overdensity")
 
                 # --- Attach exposure and compute the statistic ---
-                sample.assign_directional_exposure(
+                sample.assign_cumul_exposure(
                     window=window, exposure_model=exposure_model,
                 )
 

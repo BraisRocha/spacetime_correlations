@@ -17,6 +17,16 @@ fix right now, but which should be revisited.
   visible-declination assumptions). Decide on the intended behaviour at the
   edge and enforce it uniformly.
 
+- **Declination-only exposure ignores the leftover partial sidereal day**
+  The closed form for the exposure per solid angle over the run assumes
+  `T_obs` is a whole number of sidereal days. With the real `t0`/`tf` there
+  is a leftover partial day, during which directions whose RA crosses the
+  meridian collect extra exposure, so the exact result depends weakly on RA.
+  `max_norm_cumul_exposure` (per direction) keeps this term; the
+  declination-only form used for whole-sky sampling drops it. The size is
+  at most `1 sidereal day / T_obs`: ~3e-4 for 10 yr, but ~3% for the 1-month
+  run in `sampling_diagnostic.py`. Revisit if short runs matter.
+
 ## Ideas for the future
 
 - **Particle-nature weighting in the estimator**
@@ -41,7 +51,22 @@ fix right now, but which should be revisited.
   steps and weight each segment by `A_k/A_max`. If it is smooth, it needs
   numerical quadrature. Same applies to `P` if it depends on `theta`.
 
+  *Whole-sky spatial sampling:* the exposure per solid angle over the run
+  splits into `(1/T_obs) ∫ A(t)/A_max dt` times a function of declination
+  only, **provided `A(t)` varies slowly compared to a sidereal day**. The
+  area factor is then a single constant that cancels in the declination
+  thinning and in `relative_window_exposure`. If `A(t)` ever has structure
+  on sidereal-day timescales, this no longer splits: the exposure per solid
+  angle must be integrated numerically and picks up an RA dependence.
+
 ## Current homework
+
+- **Update `run_blind_search.py` to the new whole-sky pipeline**
+  `EventSample.full_sky` now requires an `exposure_model` (signature
+  `full_sky(n_total, exposure_model, t0, tf, rng)`), so the script fails
+  at its `full_sky` call until it is updated. The script is unfinished and
+  has never been used; when it is picked up again, pass the exposure model
+  it already builds and check the rest of it against the new code.
 
 - **Effect of T_obs on signal significance**
   Produce a plot analogous to Fig. 1 of the paper comparing two scenarios:
@@ -59,30 +84,7 @@ fix right now, but which should be revisited.
   What remains open is why it has to be separate — couldn't those lines live
   in `_subset()` itself?
 
-- **EventSample.full_sky() pipeline needs ExposureModel implementation**
-  Connected to the previous point, currently no exposure model is implemented in
-  this pipeline. This generates a sample that doesn't follow Auger's spatial
-  exposure. For the paper we are still only using the in_window() pipeline
-  as is the one used for the targeted search. It is nevertheless crucial to 
-  solve this problem as soon as possible.
-
 ## Found while reviewing the new inject_flare bkg-removal (2026-09-11)
-
-- **`select_subsample` drops the exposure model when setting `expected_n`**
-  `EventSample.select_subsample` (event_sample.py:549) does
-  `expected_n = window.expected_n_in_window(self.n_total)` with **no**
-  exposure model, i.e. the bare sky fraction. But `_subset` *does* copy
-  `self.exposure_model` onto the new sample. So a subsample now carries an
-  *unweighted* `expected_n` next to an *exposure-weighted* `mu_removed` in
-  `inject_flare`: the two disagree about the same window.
-  Passing `self.exposure_model` there would make them consistent, but
-  `expected_n` also feeds `expected_exposure_rate` in
-  `generate_directional_exposure` (event_sample.py:601), so the change
-  propagates into the exposure sampling and must be thought through rather
-  than just applied. Directly connected to the `_subset()`/`expected_n`
-  question and to the full_sky-needs-an-ExposureModel item
-  above — all three are the same underlying question: *who owns the
-  exposure weighting of `expected_n`?*
 
 - **A stale test describing the old removal formula**
   It still passes, but no longer tests what the code does:
@@ -148,3 +150,53 @@ we saw 1. Plausible as a fluctuation, but the dead job was never identified.
 If it died at *long* duration the 40 us mechanism does not explain it and
 there is a second cause still unfound. Recover its `(duration, intensity)`
 from the Condor logs to close this properly.
+
+## Failure handling: "too few events" is not distinguished from real errors (2026-09-30)
+
+"Too few events in the window" and genuine bugs both raise `ValueError`,
+and the two MC scripts handle that differently. Problem only; no solution
+agreed yet.
+
+### The raise sites
+
+- `EventSample.in_window` (event_sample.py:255): `ValueError` if the
+  Poisson draw gives `n_sample == 0`. `n_sample == 1` passes through.
+- `lambda_estimator` (statistics.py:354-387): `RuntimeError` if exposure is
+  not set; `ValueError` for `n_sample < 2`, for non-finite exposures
+  (forgotten `assign_cumul_exposure`), and for duplicate exposures
+  (quantisation bug, see previous section).
+
+So `ValueError` mixes one *normal* outcome (too few events) with two
+*pathologies* (a caller mistake, a numerics bug).
+
+### How the scripts react
+
+- `run_grid_p50.py:264` catches only `RuntimeError` and then `continue`s,
+  i.e. discards the realization and draws a new one until `n_simulations`
+  successes. Any `ValueError` escapes and kills the whole Condor job.
+- `run_blind_search.py:320` catches `(ValueError, RuntimeError)`, logs it,
+  and records NaN for the window. Bugs and routine skips look identical.
+
+### Why "too few events" is not rare
+
+1.05 deg window, `n_total = 1e5`, Auger site:
+
+| dec  | expected_n | P(n < 2) |
+|------|-----------:|---------:|
+| -35  | 15.4       | 3e-6     |
+| 0    | 9.2        | 1e-3     |
+| +15  | 5.1        | 4e-2     |
+| +24  | 1.3        | 0.61     |
+| >=28 | 0 (outside FoV) | 1   |
+
+Negligible at the zenith, but the normal outcome across a large part of
+the sky in a blind search.
+
+### Why simply widening grid_p50's `except` is not neutral
+
+Its loop throws away failed realizations and draws new ones, so p50 becomes
+conditional on the realization being computable. For the duplicate-exposure
+failures those were the high-Lambda realizations, so p50 would be biased low
+with no sign of it. For too-few-events at high dec the conditioning changes
+what p50 means. The narrow `except` currently makes these failures loud,
+which is accidentally the safer behaviour.

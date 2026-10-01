@@ -55,9 +55,9 @@ def main(seed: int) -> None:
     altitude_pa = 1425
 
     # Flare parameters
-    flare_duration = 1 * u.min
+    flare_duration = 1 * u.hour
     flare_sigma = 1.0  # deg
-    flare_intensity = np.array([0.5, 1., 1.5, 2.])  # S/N ratio
+    flare_intensity = np.array([0.3, 1., 1.5, 2.])  # S/N ratio
 
     # ------------------------------------------------------------------
     # Output directory
@@ -133,7 +133,7 @@ def main(seed: int) -> None:
                 tf=tf,
                 rng=rng_events,
             )
-            bkg_sample.assign_directional_exposure(
+            bkg_sample.assign_cumul_exposure(
                 window=window, exposure_model=exposure_model,
             )
 
@@ -163,7 +163,7 @@ def main(seed: int) -> None:
 
                     sample = copy.deepcopy(bkg_sample)
                     sample.inject_flare(flare=flare, mode="overdensity")
-                    sample.assign_directional_exposure(
+                    sample.assign_cumul_exposure(
                         window=window, exposure_model=exposure_model,
                     )
 

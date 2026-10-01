@@ -16,7 +16,7 @@ Two generation pipelines, each in a *no-flare* and a *with-flare* variant
 2. **In-window pipeline** (``in_window/``) — events drawn directly inside
    a :class:`SkyWindow` via ``EventSample.in_window`` (a Poisson draw whose
    mean is the exposure-weighted expected count in the cap), with per-event
-   directional exposure attached via ``assign_directional_exposure``.
+   directional exposure attached via ``assign_cumul_exposure``.
 
    - ``in_window/no_flare``   : the bare in-window sample with exposure.
    - ``in_window/with_flare`` : the same sample with a *windowed* flare
@@ -624,7 +624,8 @@ if __name__ == "__main__":
     # ==================================================================
     # --- no flare ---
     full_no_flare = EventSample.full_sky(
-        n_total=n_total, t0=t0, tf=tf, rng=rng_full_sky,
+        n_total=n_total, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng_full_sky,
     )
     run_event_sample_diagnostic(
         full_no_flare,
@@ -668,7 +669,7 @@ if __name__ == "__main__":
         t0=t0, tf=tf,
         rng=rng_in_window,
     )
-    in_window_no_flare.assign_directional_exposure(
+    in_window_no_flare.assign_cumul_exposure(
         window=window, exposure_model=exposure_model,
     )
     run_event_sample_diagnostic(
