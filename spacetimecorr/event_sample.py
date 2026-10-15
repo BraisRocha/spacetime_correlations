@@ -37,7 +37,7 @@ from astropy.time import Time
 from astropy.coordinates import EarthLocation
 
 if TYPE_CHECKING:
-    from .skywindow import SkyWindow
+    from .skywindow import SkyWindow, HealpixWindow
     from .exposure import ExposureModel
     from .flare import Flare
 
@@ -507,25 +507,65 @@ class EventSample:
     # Public selection and exposure methods
     # -------------------------------------------------------------------------
 
-    def _subset(self, mask: np.ndarray) -> "EventSample":
+    def select_subsample(
+        self,
+        window: "SkyWindow | HealpixWindow",
+        mask: np.ndarray | None = None,
+    ) -> EventSample:
         """
-        Return a new ``EventSample`` containing only events where ``mask`` is True.
+        Return a new ``EventSample`` containing only events inside ``window``.
 
-        All optional per-event arrays present on ``self`` (``exposure``,
-        ``flare_mask``) are sliced consistently. Sample-level metadata
-        (``spatial_type``, ``exposure_type``, ``flare_type``,
-        ``expected_n``, ``expected_exposure_rate``) is propagated as-is.
-        Note that ``expected_n`` is *not* rescaled by the subset fraction
-        and should be set explicitly by the caller when its meaning changes
-        (e.g. by :meth:`select_subsample`).
+        The events kept are those where ``mask`` is True. Without a
+        ``mask`` it is computed here as ``window.contains(self.ra, self.dec)``.
+        Passing one skips that test, e.g. when the events of many
+        :class:`HealpixWindow` are assigned at once with a single
+        ``ang2pix`` call; it is then the caller's responsibility that the
+        mask matches ``window``.
+
+        The returned sample carries an updated ``expected_n`` set to
+        ``window.expected_n_in_window(self.n_total, self.exposure_model)``,
+        the expected number of events inside the window given the
+        observatory's exposure (the bare sky fraction if this sample
+        carries no exposure model), and ``window`` set to the selecting
+        window. All optional per-event arrays (``exposure``,
+        ``flare_mask``) are sliced consistently; the remaining metadata is
+        copied as-is.
+
+        Parameters
+        ----------
+        window : SkyWindow or HealpixWindow
+            Window used to define the subset and its expected count.
+        mask : np.ndarray of bool or None, optional
+            Events to keep, shaped like ``self.ra``. ``None`` (default)
+            selects the events inside ``window``.
+
+        Returns
+        -------
+        EventSample
+            New sample with sliced ``ra``, ``dec``, and any optional
+            per-event arrays.
+
+        Raises
+        ------
+        ValueError
+            If coordinates have not been generated, if ``mask`` has the
+            wrong shape, or if no event is selected.
         """
-
-        if self.ra is None or self.dec is None:
+        if not self.has_coordinates:
             raise ValueError("ra and dec are not available.")
 
-        mask = np.asarray(mask, dtype=bool)
-        if mask.shape != self.ra.shape:
-            raise ValueError(f"Mask must have shape {self.ra.shape}, got {mask.shape}.")
+        if mask is None:
+            mask = window.contains(self.ra, self.dec)
+        else:
+            mask = np.asarray(mask)
+            if mask.dtype != bool or mask.shape != self.ra.shape:
+                raise ValueError(
+                    f"mask must be a boolean array of shape {self.ra.shape}; "
+                    f"got dtype {mask.dtype} and shape {mask.shape}."
+                )
+
+        if not np.any(mask):
+            raise ValueError("No events found inside the sky window.")
 
         exposure = None
         if self.exposure is not None:
@@ -543,8 +583,10 @@ class EventSample:
             tf=self.tf,
             rng=self.rng,
             spatial_type=self.spatial_type,
-            expected_n=self.expected_n,
-            window=self.window,
+            expected_n=window.expected_n_in_window(
+                self.n_total, self.exposure_model
+            ),
+            window=window,
             exposure_model=self.exposure_model,
             exposure=exposure,
             exposure_type=self.exposure_type,
@@ -552,52 +594,6 @@ class EventSample:
             flare_mask=flare_mask,
             flare_type=self.flare_type,
         )
-
-    def select_subsample(
-        self,
-        window: SkyWindow,
-    ) -> EventSample:
-        """
-        Return a new ``EventSample`` containing only events inside ``window``.
-
-        The returned sample carries an updated ``expected_n`` set to
-        ``window.expected_n_in_window(self.n_total, self.exposure_model)``,
-        the expected number of events inside the window given the
-        observatory's exposure (the bare sky fraction if this sample
-        carries no exposure model).
-
-        Parameters
-        ----------
-        window : SkyWindow
-            Spherical-cap window used to define the subset.
-
-        Returns
-        -------
-        EventSample
-            New sample with sliced ``ra``, ``dec``, and any optional
-            per-event arrays.
-
-        Raises
-        ------
-        ValueError
-            If coordinates have not been generated, or if no event lies
-            inside the window.
-        """
-        if not self.has_coordinates:
-            raise ValueError("ra and dec are not available.")
-
-        mask = window.contains(self.ra, self.dec)
-
-        if not np.any(mask):
-            raise ValueError("No events found inside the sky window.")
-
-        subsample = self._subset(mask)
-        subsample.expected_n = window.expected_n_in_window(
-            self.n_total, self.exposure_model
-        )
-        subsample.window = window
-
-        return subsample
 
     def generate_cumul_exposure(
         self,

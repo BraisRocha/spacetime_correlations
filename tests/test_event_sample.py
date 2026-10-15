@@ -5,7 +5,7 @@ import pytest
 import scipy.stats as scp
 from astropy.time import Time
 
-from spacetimecorr import EventSample, Flare, SkyWindow
+from spacetimecorr import EventSample, Flare, HealpixWindow, SkyWindow
 from spacetimecorr.statistics import lambda_estimator, lambda_marginal_sf
 
 
@@ -318,6 +318,37 @@ def test_select_subsample_no_events_inside_raises(exposure_model, t0, tf, rng):
         parent.select_subsample(invisible)
 
 
+def test_select_subsample_with_mask_matches_filter(window, exposure_model, t0, tf, rng):
+    parent = EventSample.full_sky(n_total=20_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
+    filtered = parent.select_subsample(window)
+    masked = parent.select_subsample(window, mask=window.contains(parent.ra, parent.dec))
+    assert np.array_equal(masked.ra, filtered.ra)
+    assert np.array_equal(masked.dec, filtered.dec)
+    assert masked.expected_n == filtered.expected_n
+
+
+def test_select_subsample_healpix_window_without_mask(exposure_model, t0, tf, rng):
+    parent = EventSample.full_sky(n_total=20_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
+    pixel = HealpixWindow(nside=8, ipix=500)   # dec ~ -19.5, well inside the FoV
+    sub = parent.select_subsample(pixel)
+    assert sub.n_sample > 0
+    assert np.all(pixel.contains(sub.ra, sub.dec))
+    assert sub.expected_n == pytest.approx(pixel.expected_n_in_window(20_000, exposure_model))
+
+
+@pytest.mark.parametrize(
+    "make_mask",
+    [
+        lambda n: np.ones(n - 1, dtype=bool),   # wrong shape
+        lambda n: np.arange(n),                 # indices, not a boolean mask
+    ],
+)
+def test_select_subsample_bad_mask_raises(make_mask, window, exposure_model, t0, tf, rng):
+    parent = EventSample.full_sky(n_total=1_000, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng)
+    with pytest.raises(ValueError):
+        parent.select_subsample(window, mask=make_mask(parent.n_sample))
+
+
 # -------------------------------------------------------------------------
 # assign_cumul_exposure
 # -------------------------------------------------------------------------
@@ -446,25 +477,45 @@ def test_inject_flare_overdensity_n_flare_exceeds_n_total_raises(
     notionally drawn from a hypothetical full-sky sample of size n_total),
     and must raise."""
     import astropy.units as u
-    s = EventSample.full_sky(n_total=5, exposure_model=exposure_model, t0=t0, tf=tf, rng=rng_manager.get("sample"))
+    # Bare constructor with a window set by hand: a factory with n_total=5
+    # would leave the window (almost) empty and raise before injection.
+    s = EventSample(n_sample=3, n_total=5, t0=t0, tf=tf, rng=rng_manager.get("sample"))
+    s.ra = np.full(s.n_sample, window.centre[0])
+    s.dec = np.full(s.n_sample, window.centre[1])
+    s.window = window
     big_flare = Flare(
         n_flare=10, duration=1.0 * u.day,
         t0=t0, tf=tf, centre=window.centre,
         exposure_model=exposure_model, rng=rng_manager.get("flare"),
     )
     big_flare.generate_in_window(window=window, sigma=2.0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="n_total"):
         s.inject_flare(big_flare, mode="overdensity")
 
 
-def test_inject_flare_requires_expected_n(window, exposure_model, t0, tf, rng_manager, generated_flare):
-    """The Poisson thinning needs ``expected_n / n_total``; a bare-constructor
-    sample with coordinates but no expected_n must raise."""
+def test_inject_flare_overdensity_requires_window(window, exposure_model, t0, tf, rng_manager, generated_flare):
+    """The expected number of displaced background events needs the
+    sample's window; a sample with coordinates and ``expected_n`` but no
+    window must raise."""
     s = EventSample(n_sample=200, n_total=20_000, t0=t0, tf=tf, rng=rng_manager.get("sample"))
     s.ra = np.zeros(s.n_sample)
     s.dec = np.zeros(s.n_sample)
-    assert s.expected_n is None
-    with pytest.raises(ValueError):
+    s.expected_n = 200.0
+    assert s.window is None
+    with pytest.raises(ValueError, match="window"):
+        s.inject_flare(generated_flare, mode="overdensity")
+
+
+def test_inject_flare_overdensity_into_full_sky_raises(
+    exposure_model, t0, tf, rng_manager, generated_flare,
+):
+    """A ``full_sky`` sample has no window, so overdensity injection must
+    raise a clear ``ValueError`` rather than fail on ``self.window``."""
+    s = EventSample.full_sky(
+        n_total=500, exposure_model=exposure_model,
+        t0=t0, tf=tf, rng=rng_manager.get("sample"),
+    )
+    with pytest.raises(ValueError, match="window"):
         s.inject_flare(generated_flare, mode="overdensity")
 
 

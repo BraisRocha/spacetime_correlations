@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from spacetimecorr import SkyWindow, SkyGrid
+from spacetimecorr import SkyWindow, HealpixWindow, SkyGrid, HealpixGrid
 
 
 # -------------------------------------------------------------------------
@@ -229,3 +229,139 @@ def test_grid_expected_n_zero_for_never_visible_window(exposure_model):
     result = grid.expected_n_in_window(10_000, exposure_model)
     assert result[2] == 0.0
     assert np.all(result[:2] > 0.0)
+
+
+# -------------------------------------------------------------------------
+# HealpixWindow
+# -------------------------------------------------------------------------
+
+
+def test_healpix_window_centre_and_solid_angle():
+    hp = pytest.importorskip("healpy")
+    win = HealpixWindow(nside=32, ipix=5000)
+    ra, dec = hp.pix2ang(32, 5000, lonlat=True)
+    assert win.centre == pytest.approx([ra, dec])
+    assert win.solid_angle == pytest.approx(4.0 * np.pi / (12 * 32**2))
+
+
+@pytest.mark.parametrize("nside, ipix", [(0, 0), (32, -1), (32, 12 * 32**2)])
+def test_healpix_window_invalid_inputs_raise(nside, ipix):
+    with pytest.raises(ValueError):
+        HealpixWindow(nside=nside, ipix=ipix)
+
+
+def test_healpix_window_equality_by_nside_and_ipix():
+    assert HealpixWindow(32, 7) == HealpixWindow(32, 7)
+    assert HealpixWindow(32, 7) != HealpixWindow(32, 8)
+
+
+def test_healpix_window_contains_its_centre():
+    win = HealpixWindow(nside=32, ipix=5000)
+    assert win.contains(np.array([win.centre[0]]), np.array([win.centre[1]]))[0]
+
+
+def test_healpix_windows_partition_the_sky(rng):
+    """Every direction lies in exactly one pixel."""
+    nside = 2
+    ra = rng.uniform(0.0, 360.0, 5000)
+    dec = np.degrees(np.arcsin(rng.uniform(-1.0, 1.0, 5000)))
+    n_containing = sum(
+        HealpixWindow(nside, i).contains(ra, dec).astype(int)
+        for i in range(12 * nside**2)
+    )
+    assert np.all(n_containing == 1)
+
+
+def test_healpix_window_contains_shape_mismatch_raises():
+    with pytest.raises(ValueError):
+        HealpixWindow(32, 0).contains(np.zeros(3), np.zeros(4))
+
+
+def test_healpix_expected_n_unweighted_sums_to_n_events():
+    nside = 4
+    total = sum(
+        HealpixWindow(nside, i).expected_n_in_window(10_000)
+        for i in range(12 * nside**2)
+    )
+    assert total == pytest.approx(10_000)
+
+
+def test_healpix_expected_n_with_exposure_model_uses_exposure_share(exposure_model):
+    win = HealpixWindow(nside=32, ipix=5000)
+    share = exposure_model.relative_window_exposure(win)
+    result = win.expected_n_in_window(10_000, exposure_model)
+    assert result == pytest.approx(10_000 * share)
+
+
+def test_healpix_expected_n_weighted_sums_to_n_events(exposure_model):
+    """Pixels do not overlap, so their exposure shares add up to the whole
+    sky, up to the error of evaluating the exposure at each pixel centre."""
+    nside = 8
+    total = sum(
+        HealpixWindow(nside, i).expected_n_in_window(1.0, exposure_model)
+        for i in range(12 * nside**2)
+    )
+    assert total == pytest.approx(1.0, abs=2e-3)
+
+
+# -------------------------------------------------------------------------
+# HealpixGrid
+# -------------------------------------------------------------------------
+
+
+def test_healpix_grid_default_nside_is_32(exposure_model):
+    assert HealpixGrid(exposure_model).nside == 32
+
+
+def test_healpix_grid_invalid_nside_raises(exposure_model):
+    with pytest.raises(ValueError):
+        HealpixGrid(exposure_model, nside=0)
+
+
+def test_healpix_grid_keeps_exactly_the_pixels_with_centre_in_fov(exposure_model):
+    hp = pytest.importorskip("healpy")
+    nside = 16
+    grid = HealpixGrid(exposure_model, nside=nside)
+    _, dec = hp.pix2ang(nside, np.arange(12 * nside**2), lonlat=True)
+    dropped = np.setdiff1d(np.arange(12 * nside**2), grid.pixels)
+    assert np.all(exposure_model.spatial_exposure(dec[grid.pixels]) > 0.0)
+    assert np.all(exposure_model.spatial_exposure(dec[dropped]) == 0.0)
+    # Auger with theta_max = 60: the FoV ends at dec = -35.15 + 60.
+    assert grid.centres[:, 1].max() < -35.15 + 60.0
+
+
+def test_healpix_grid_indexing_builds_matching_window(exposure_model):
+    grid = HealpixGrid(exposure_model, nside=16)
+    window = grid[10]
+    assert isinstance(window, HealpixWindow)
+    assert window.ipix == grid.pixels[10]
+    assert window.centre == pytest.approx(grid.centres[10])
+    assert window.solid_angle == pytest.approx(grid.solid_angle)
+
+
+def test_healpix_grid_iterates_over_all_windows(exposure_model):
+    grid = HealpixGrid(exposure_model, nside=8)
+    assert [w.ipix for w in grid] == list(grid.pixels)
+
+
+def test_healpix_grid_pixel_of_agrees_with_window_contains(exposure_model, rng):
+    grid = HealpixGrid(exposure_model, nside=8)
+    ra = rng.uniform(0.0, 360.0, 2000)
+    dec = np.degrees(np.arcsin(rng.uniform(-1.0, 1.0, 2000)))
+    pix = grid.pixel_of(ra, dec)
+    for window in grid:
+        assert np.array_equal(pix == window.ipix, window.contains(ra, dec))
+
+
+def test_healpix_grid_expected_n_matches_per_window(exposure_model):
+    grid = HealpixGrid(exposure_model, nside=8)
+    expected = [w.expected_n_in_window(10_000, exposure_model) for w in grid]
+    assert grid.expected_n_in_window(10_000, exposure_model) == pytest.approx(expected)
+
+
+def test_healpix_grid_expected_n_sums_to_n_events(exposure_model):
+    """Dropped pixels have zero exposure at their centre, so the grid holds
+    the whole-sky total, up to the error of the centre approximation."""
+    grid = HealpixGrid(exposure_model, nside=8)
+    total = grid.expected_n_in_window(1.0, exposure_model).sum()
+    assert total == pytest.approx(1.0, abs=2e-3)

@@ -27,6 +27,129 @@ fix right now, but which should be revisited.
   at most `1 sidereal day / T_obs`: ~3e-4 for 10 yr, but ~3% for the 1-month
   run in `sampling_diagnostic.py`. Revisit if short runs matter.
 
+- **Marginal Lambda p-value and windows with fewer than 2 events**
+  Lambda needs `n >= 2`. The marginal functions in `statistics.py` do not
+  agree on what happens below that:
+  - `lambda_marginal_pdf` and `lambda_marginal_sf` put windows with
+    `n < 2` at a point mass `Lambda = 0`, of probability
+    `P(N < 2) = exp(-mu) (1 + mu)` (written in the `pdf` Notes). The `sf`
+    sum starts at `n = 2` and is not renormalised, so it returns
+    `P(Lambda >= x and N >= 2)` and tends to `P(N >= 2)`, not 1, as
+    `x -> 0`.
+  - `lambda_marginal_rvs` discards draws with `N < 2`, so it samples Lambda
+    *conditional* on `N >= 2`.
+
+  They differ by the factor `P(N >= 2)`. At the median of `rvs`, `sf`
+  gives 0.132 / 0.401 / 0.498 for `mu` = 1 / 3 / 8, instead of 0.5.
+
+  Which one is right depends on what is done with windows where `n < 2`:
+  - kept, with `Lambda = 0` and p-value 1: `sf` is right and `rvs` is not;
+  - dropped (the blind-search plan): the null is conditional, so the
+    p-value should be `sf / P(N >= 2)`. The current `sf` gives p-values
+    too small by `P(N >= 2)` (0.80 at `mu = 3`), overstating significance.
+
+  Negligible for `mu >~ 10`. It matters in low-exposure windows near the
+  FoV edge (`mu ~ 3` in the last HEALPix ring, nside 32, `n_total = 5e5`).
+  A possible fix for the dropped case is to subtract `log P(N >= 2)` in
+  `lambda_marginal_logsf`. Check which scripts ran at small `mu` before
+  changing it: `lambda_marginal_sf` is used by `run_null`,
+  `run_compare_bg_signal`, `run_targeted_search` and the plotting scripts.
+
+- **HEALPix windows at the FoV edge: exposure at the pixel centre**
+  `HealpixWindow.expected_n_in_window` takes the exposure towards the
+  pixel as `Omega_pix * eps(centre)`. Near the FoV edge
+  (`dec_max = lat + theta_max = 24.85 deg` at Auger) `spatial_exposure`
+  drops steeply to 0, and the centre value stops being the pixel average.
+  Ratio of centre value to pixel average at nside 32: 1.004 at dec 22.0,
+  1.016 at 23.3, and 1.06 at 24.6 (the last ring whose centre is inside
+  the FoV). The expected count is therefore too high, which is
+  conservative. On the last ring `mu ~ 3` for `n_total = 5e5`, so the
+  bias is ~0.2 events against a Poisson spread of ~1.7. Kept as is for
+  now. `run_blind_search_null.py` skips the pixels that straddle the FoV
+  edge, i.e. that worst ring; the outermost ring it tests is off by ~1.6%.
+
+  If it needs fixing: `spatial_exposure` depends on declination only, so
+  average it over the sub-pixels of the window at a finer nside. In NEST
+  ordering, the children of pixel `p` at `nside * 2^k` are
+  `p * 4^k ... (p + 1) * 4^k - 1`. That matches how `EventSample.full_sky`
+  draws the events.
+
+  Pixels whose centre lies outside the FoV are dropped. The ring just past
+  the edge has a mean `spatial_exposure` of ~1e-4, against ~0.3 in the
+  bulk, so the events lost there are negligible.
+
+- **Whole-sky direction sampling ignores A(t)**
+  `EventSample.full_sky` thins isotropic candidate directions with
+  `ExposureModel.detect_directions`, keeping each one with probability
+  `spatial_exposure / max over the sky`. `spatial_exposure` is the
+  closed form for a constant area: the integral of `H cos(theta)` over one
+  sidereal day, a function of declination only. With `A = A(t)` the
+  integrand is no longer periodic, and the exposure per solid angle over
+  the run,
+
+      dE/dOmega(tf) = ∫_{t0}^{tf} H(theta_max - theta(t')) cos(theta(t')) A(t') dt'
+
+  (`_directional_exposure_tf`), can also depend on RA: two directions at
+  the same declination are in the FoV at different sidereal hours, and see
+  `A(t)` at different moments. The expected counts
+  (`relative_window_exposure`) use this exact value; the full-sky samples
+  do not, so simulated null samples and expected counts can disagree.
+
+  Not needed to analyse data (mock samples): there `spatial_exposure` is
+  only used as a FoV test (`> 0`), which is geometric and unaffected.
+
+  *Plan.* Computing `dE/dOmega(tf)` exactly per candidate (~0.15-0.2 s
+  each, ~2e6 candidates for 1e6 events) would take days per sample.
+  Instead:
+  1. First measure how much `dE/dOmega(tf)` varies with RA at fixed
+     declination (a few declinations, every ~10 deg in RA). If far below
+     the Poisson fluctuations of a pixel, keeping the declination-only
+     form is enough and only the docstring needs updating.
+  2. Otherwise, compute `dE/dOmega(tf)` once at the centres of the
+     nside-32 HEALPix pixels in the FoV (~10,500, ~25-35 min on one core,
+     independent pixels so it parallelises) and save it to a file
+     (~100 KB) with what it was computed for: `t0`, `tf`, `theta_max`,
+     nside and the A(t) file. Check these on reading.
+  3. Store the ratio of that value to the declination-only closed form.
+     The steep fall at the FoV edge depends on declination only and is
+     exact in the closed form; the ratio is smooth, so it interpolates
+     well. For each candidate: closed form at its own declination times
+     the ratio interpolated with `healpy.get_interp_val` (bilinear, 4
+     nearest pixel centres). Check the interpolation error against the
+     exact integral at directions off the grid.
+  4. The same file holds the values the expected counts need at nside 32
+     (`relative_window_exposure` at the pixel centres), so reading them
+     from it saves one of the two passes over the A(t) steps per pixel in
+     the blind search (~half its run time). Only useful if all datasets
+     share a common `[t0, tf]`: `run_blind_search_mock.py` currently takes
+     `t0`, `tf` from each sample.
+
+  Also update the `spatial_exposure` docstring: it is the constant-area
+  (geometric) profile, and its normalisation is no longer that of
+  `norm_cumul_exposure` when `A` varies.
+
+- **Mock events in minutes with no active cells (`dataset_stcwg_vert`)**
+  `dataset_0` (and `dataset_1`, which shares its arrival times to the
+  second) has 5 events, all in 2009, in minutes where the hexagon files
+  give 0 cells of every type (6T5, 5T5, 4T5), outside any bad period, and
+  surrounded by minutes with hundreds of cells (e.g. 2009-08-02 14:48 UTC).
+  Our A(t) is 0 there, so the model gives them zero detection probability
+  and a flat cumulative exposure. The production apparently did not treat
+  those minutes as A = 0 (another version of the files, or a coarser time
+  resolution?). Ask whoever ran it. Harmless for now (5 in ~2e5 events; it
+  only breaks Lambda if two fall in the same such minute and pixel).
+
+- **Efficiency `P` in the detection probability but not in the exposure**
+  `ExposureModel.detection_probability` (and `detect_times`, which thins
+  events with it) can take an efficiency `P(t)`, but the cumulative
+  exposure (`norm_cumul_exposure`, `cumul_exposure`,
+  `relative_window_exposure`) always assumes `P = 1`. Events thinned with
+  a `P < 1` then carry exposures computed as if `P = 1`. No analysis uses a
+  `P` other than 1 yet, so it has no effect now. If one is used, `P` has to
+  enter the exposure integral too: piecewise constant in time it fits the
+  step integral as `A(t)` does; if it depends on the direction (`theta`) it
+  breaks the closed form.
+
 ## Ideas for the future
 
 - **Particle-nature weighting in the estimator**
@@ -36,37 +159,43 @@ fix right now, but which should be revisited.
   probability weights in their method. Extending our estimator in this
   direction is a natural next step once the current pipeline is stable.
 
-- **Time-dependent effective area A(t)**
-  Model bad periods, tanks offline and array growth as a factor
-  `A(t)/A_max` on the acceptance.
-
-  *Done:* per-event thinning. `detection_probability` takes an optional
-  `area` callable; `detect_times` forwards it. No real `A(t)` supplied
-  yet, so the factor is 1.
-
-  *Left:* the cumulative exposure. `cumulative_integral` is closed-form
-  only because the integrand is sinusoidal in the hour angle; `A(t)` is a
-  function of *time*, so it breaks the primitive. If `A(t)` is piecewise
-  constant (the realistic case) it stays analytic — split `[t0, t]` at the
-  steps and weight each segment by `A_k/A_max`. If it is smooth, it needs
-  numerical quadrature. Same applies to `P` if it depends on `theta`.
-
-  *Whole-sky spatial sampling:* the exposure per solid angle over the run
-  splits into `(1/T_obs) ∫ A(t)/A_max dt` times a function of declination
-  only, **provided `A(t)` varies slowly compared to a sidereal day**. The
-  area factor is then a single constant that cancels in the declination
-  thinning and in `relative_window_exposure`. If `A(t)` ever has structure
-  on sidereal-day timescales, this no longer splits: the exposure per solid
-  angle must be integrated numerically and picks up an RA dependence.
-
 ## Current homework
 
-- **Update `run_blind_search.py` to the new whole-sky pipeline**
-  `EventSample.full_sky` now requires an `exposure_model` (signature
-  `full_sky(n_total, exposure_model, t0, tf, rng)`), so the script fails
-  at its `full_sky` call until it is updated. The script is unfinished and
-  has never been used; when it is picked up again, pass the exposure model
-  it already builds and check the rest of it against the new code.
+- **Blind search with flares: decisions before injecting signal**
+  `run_blind_search_null.py` scans a background-only full-sky sample over a
+  `HealpixGrid`. Adding flares needs these decisions first:
+  1. *Positions.* The old script took catalogue sources. For random
+     positions: uniform in solid angle over the FoV band, or weighted by
+     exposure? How many flares, and can they overlap?
+  2. *Multiplicity.* The old `mu_flare = S/N * sqrt(expected_n)` used the
+     bare sky fraction of a 1.05 deg cap, the same for every flare. With
+     exposure, `expected_n` of the pixel holding the flare ranges from ~3
+     to ~125 (nside 32, `n_total = 5e5`). Fix the S/N (so `n_flare` varies
+     with position) or fix `n_flare`?
+  3. *Detection thinning.* `Flare._accumulate_events` thins every candidate
+     with the detection probability at the flare *centre*. Events up to a
+     few sigma away are kept even when they arrive from outside the
+     instantaneous FoV: 7-10% of events for 1 h flares, 0.4-7% for 1-30 d
+     flares (sigma = 1 deg; the larger values near the FoV edge). The
+     full-sky background uses each event's own direction. Thin flare
+     events at their own direction in `generate`?
+  4. *`no_overdensity` on a full-sky sample.* `inject_flare` removes its
+     background events at random from the *whole sky*
+     (event_sample.py:906), so `n_total` is kept but the pixel holding the
+     flare gains ~`n_flare` events. In the blind search a flare is then a
+     spatial *and* temporal excess, which the Poisson test also sees. A
+     temporal-only signal per pixel (the meaning of `no_overdensity` in the
+     targeted search) would need the removal to be local to the flare.
+  5. *Flare exposure.* Flare events carry the exposure evaluated at the
+     flare centre at generation time, while the background of a pixel is
+     sampled for the pixel centre. `EventSample` does not store event
+     times, so it cannot be re-evaluated per window. Expected to be small
+     (all events of one flare shift by about the same amount); accept, or
+     store times?
+
+  Also: a flare at a random position is split between neighbouring pixels.
+  At nside 32 the median S/N is ~0.81 of that of a 1.05 deg cap centred on
+  the flare (worst 10%: ~0.67).
 
 - **Effect of T_obs on signal significance**
   Produce a plot analogous to Fig. 1 of the paper comparing two scenarios:
@@ -77,35 +206,6 @@ fix right now, but which should be revisited.
   into 10 windows, p-values should be multiplied by 10.
 
 
-
-## THINGS OF MY OWN
-- **Why doesn't `_subset()` change `expected_n`? — answered, follow-up open**
-  Answered: it *is* done, but separately, in `EventSample.select_subsample()`.
-  What remains open is why it has to be separate — couldn't those lines live
-  in `_subset()` itself?
-
-## Found while reviewing the new inject_flare bkg-removal (2026-09-11)
-
-- **A stale test describing the old removal formula**
-  It still passes, but no longer tests what the code does:
-  - `test_inject_flare_requires_expected_n`
-    (tests/test_event_sample.py:439) asserts that a sample without
-    `expected_n` raises. The new code never reads `expected_n` in
-    overdensity mode — it requires `window`. The test only passes because
-    the bare-constructor sample happens to have *both* unset. Rename to
-    `test_inject_flare_overdensity_requires_window` and assert on the
-    window, otherwise a future regression here goes undetected.
-  Separately: injecting into a `full_sky` sample in overdensity mode (the
-  `AttributeError` that motivated the guard) has no test at all. Worth
-  adding one.
-
-- **Minor: the `min(n_removed, n_bkg)` clip biases the removal low**
-  In overdensity mode `n_removed` is clipped at the number of available
-  background events. When the flare is large relative to the in-window
-  background, the realised mean removal sits below `mu_removed`. Harmless in
-  the small-window / large-`n_total` regime we work in, and already
-  documented in the docstring Notes, but it is a real (small) bias if the
-  regime ever changes.
 
 ## `lambda_estimator` duplicate-exposure crash in grid_p50 (fixed 2026-09-22, one loose end)
 
@@ -174,8 +274,11 @@ So `ValueError` mixes one *normal* outcome (too few events) with two
 - `run_grid_p50.py:264` catches only `RuntimeError` and then `continue`s,
   i.e. discards the realization and draws a new one until `n_simulations`
   successes. Any `ValueError` escapes and kills the whole Condor job.
-- `run_blind_search.py:320` catches `(ValueError, RuntimeError)`, logs it,
-  and records NaN for the window. Bugs and routine skips look identical.
+- `run_blind_search_null.py` catches only `ValueError` and records NaN for
+  the window. It tells the two cases apart by the window's event count:
+  `n < 2` is counted as a routine drop, while `n >= 2` is logged with its
+  traceback and counted separately as a failure (a bug). `RuntimeError`
+  is not caught.
 
 ### Why "too few events" is not rare
 

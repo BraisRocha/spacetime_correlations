@@ -13,3 +13,9 @@ inputs/*
 inputs/catalogs/*
 !inputs/catalogs/.gitkeep
 !inputs/catalogs/README.md
+!inputs/mocksamples/
+inputs/mocksamples/*
+!inputs/mocksamples/.gitkeep
+!inputs/hexagon_data/
+inputs/hexagon_data/*
+!inputs/hexagon_data/.gitkeep

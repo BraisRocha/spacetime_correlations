@@ -234,11 +234,11 @@ class Flare:
     def _check_time_in_FoV(self, time: Time) -> np.ndarray:
         """
         Boolean mask, ``True`` where the flare centre is inside the FoV at
-        ``time``.
+        ``time`` and the array is available for detection.
 
-        The centre is considered visible when the observatory's instantaneous
-        geometric acceptance toward it is non-zero, i.e. its zenith angle is
-        below ``theta_max``.
+        The centre is considered visible when the detection probability
+        toward it is non-zero: its zenith angle is below ``theta_max`` and
+        the active area ``A(t)`` is not zero (e.g. not in a bad period).
 
         Parameters
         ----------

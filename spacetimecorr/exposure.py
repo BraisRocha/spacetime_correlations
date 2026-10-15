@@ -36,10 +36,10 @@ latitude and the source declination. It provides:
 Events whose zenith angle exceeds ``theta_max_deg`` are rejected; the
 default 60° matches the Auger SD standard analysis cut.
 
-The efficiency ``P`` and the instrumented area ``A(t)`` may be supplied
-per event to :meth:`ExposureModel.detection_probability`, but the
-closed-form cumulative integral assumes ``P = 1`` and ``A(t) = A_max``
-throughout — see ``TODO.md``.
+The area ``A(t)`` is taken from the observatory: constant, or piecewise
+constant when ``observatory.area`` is given as steps. The efficiency ``P``
+may be supplied per event to :meth:`ExposureModel.detection_probability`;
+the cumulative exposure assumes ``P = 1``.
 """
 
 from __future__ import annotations
@@ -89,7 +89,8 @@ class ExposureModel:
         ----------
         observatory : Observatory
             Observatory supplying the latitude, which fixes the local
-            geometry, and the area, taken as ``A_max``.
+            geometry, and the area ``A(t)``, constant or as steps, whose
+            largest value ``observatory.max_area`` is taken as ``A_max``.
         t0, tf : astropy.time.Time
             Start and end of the observation interval. Must satisfy ``tf > t0``.
         rng : numpy.random.Generator
@@ -143,6 +144,21 @@ class ExposureModel:
             math.pi * math.sin(math.radians(self.theta_max_deg)) ** 2
         )
 
+        # Active area A(t) as steps over [t0, tf]: the step edges in seconds
+        # since t0 (from 0 to T_obs) and A on each step, in km^2. A constant
+        # area is a single step over the run: given as starting at t0 and,
+        # for the end-of-data check in `_steps_in_run`, again at tf.
+        area = self.observatory.area
+        if not isinstance(area, tuple):
+            area = (Time([self.t0, self.tf]), np.array([area, area]))
+        self._area_edges_sec, self._area_km2 = self._steps_in_run(*area)
+
+        # Time average <A> of the active area over the run, in km^2. The
+        # whole-sky exposure is pi sin^2(theta_max) <A> T_obs.
+        self._mean_area_km2 = float(
+            np.sum(self._area_km2 * np.diff(self._area_edges_sec)) / self._t_obs_sec
+        )
+
         # Cached sidereal time at t0 (function of observatory + t0 only).
         # Used by `_continuous_hour_angle`; precomputing it here avoids
         # rebuilding an astropy `Time` object and re-evaluating
@@ -153,9 +169,10 @@ class ExposureModel:
             .rad
         )
 
-        # Cache for `max_norm_cumul_exposure`, keyed by (RA_deg, Dec_deg).
-        # The value depends only on (observatory, t0, tf, centre), all of
-        # which are immutable after construction.
+        # Exposure per solid angle over the whole run, dE/dOmega(tf), keyed
+        # by (RA_deg, Dec_deg). Internal, in km^2 yr: the public methods
+        # either normalise it or multiply it by the solid angle of a window.
+        # Filled by `_directional_exposure`, which reaches tf on every call.
         self._max_exposure_cache: dict[tuple[float, float], float] = {}
 
         # Largest `spatial_exposure` over the sky, the normalisation of the
@@ -183,6 +200,29 @@ class ExposureModel:
         scalar_input = bool(getattr(t, "isscalar", np.isscalar(t)))
         t_arr = t if not scalar_input else Time([t])
         return t_arr, scalar_input
+
+    def _steps_in_run(
+        self, start_times: Time, area: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Steps of ``A(t)`` over ``[t0, tf]``: the step edges in seconds since
+        ``t0`` (from 0 to ``T_obs``) and ``A`` on each step, in km^2.
+
+        The steps come from ``observatory.area``, already validated there.
+        """
+        starts = (start_times - self.t0).to_value("sec")
+        if starts[0] > 0.0:
+            raise ValueError("The active area must start at or before t0.")
+        # The last step has no recorded end: past its start there is no data.
+        if starts[-1] < self._t_obs_sec:
+            raise ValueError("tf is after the last start time of the active area.")
+
+        # Steps overlapping [t0, tf]: from the one holding t0 to the last one
+        # starting before tf, with the outer edges clipped to t0 and tf.
+        first = np.searchsorted(starts, 0.0, side="right") - 1
+        last = np.searchsorted(starts, self._t_obs_sec, side="left")
+        edges_sec = np.concatenate(([0.0], starts[first + 1:last], [self._t_obs_sec]))
+        return edges_sec, area[first:last]
 
     def _check_in_interval(self, t: Time) -> None:
         """Raise if any time falls outside the observation interval."""
@@ -229,7 +269,6 @@ class ExposureModel:
         t: Time,
         centre: np.ndarray,
         efficiency=None,
-        area=None,
     ) -> np.ndarray | float:
         """
         Detection probability ``p_det(t)`` in a given direction at a given
@@ -255,14 +294,13 @@ class ExposureModel:
         keeping each candidate event with probability ``p_det(t)`` is the
         Bernoulli thinning performed by :meth:`detect_times`.
 
-        The two sky-geometry factors are always applied.  ``H`` is a hard
-        gate — outside the field of view the event is rejected outright —
-        while ``cos theta(t)`` is the projection of the array area onto
-        the arrival direction.  The two detector-state factors are opt-in:
-        with neither ``efficiency`` nor ``area`` given, both are 1 and the
-        result is the purely geometric ``cos theta(t)`` inside the cut,
-        ranging from ``cos(theta_max)`` at the boundary to 1 at the
-        zenith, and 0 outside.
+        ``H`` is a hard gate — outside the field of view the event is
+        rejected outright — while ``cos theta(t)`` is the projection of the
+        array area onto the arrival direction.  ``A(t)`` is the area of the
+        observatory, with ``A_max = observatory.max_area``: the factor is 1
+        for a constant area, and 0 while the array is off (e.g. in a bad
+        period).  These three factors are always applied.  ``P`` is applied
+        only when given as ``efficiency``; otherwise it is 1.
 
         Parameters
         ----------
@@ -273,11 +311,6 @@ class ExposureModel:
         efficiency : callable or None
             Hardware and reconstruction efficiency ``P``.  Must accept
             ``t`` and return one value in ``[0, 1]`` per input time.
-        area : callable or None
-            Instrumented area ``A(t)``, in the units of
-            ``observatory.area``, which is taken as ``A_max``.  Must accept
-            ``t`` and return one value per input time, none exceeding
-            ``A_max``.
 
         Returns
         -------
@@ -301,13 +334,11 @@ class ExposureModel:
                 raise ValueError("efficiency(t) must lie in [0, 1].")
             p = p * eff
 
-        if area is not None:
-            a_t = np.asarray(area(t_arr), dtype=float)
-            if a_t.shape != p.shape:
-                raise ValueError("area(t) must return an array with the same shape as t.")
-            if np.any(a_t < 0.0) or np.any(a_t > self.observatory.area):
-                raise ValueError("area(t) must lie in [0, observatory.area].")
-            p = p * (a_t / self.observatory.area)
+        # A(t)/A_max from the step of the active area holding each time.
+        dt_sec = (t_arr - self.t0).to_value("sec")
+        k = np.searchsorted(self._area_edges_sec, dt_sec, side="right") - 1
+        k = np.clip(k, 0, self._area_km2.size - 1)
+        p = p * (self._area_km2[k] / self.observatory.max_area)
 
         return float(p[0]) if scalar_input else p
     
@@ -316,7 +347,6 @@ class ExposureModel:
         t: Time,
         centre: np.ndarray,
         efficiency=None,
-        area=None,
         return_mask: bool = False,
         return_prob: bool = False,
         return_exposure: bool = False,
@@ -334,8 +364,8 @@ class ExposureModel:
             Candidate event times (scalar or array).
         centre : array-like of shape (2,)
             ``[RA_deg, Dec_deg]``.
-        efficiency, area : callable or None
-            Detector-state factors forwarded to
+        efficiency : callable or None
+            Hardware and reconstruction efficiency ``P``, forwarded to
             :meth:`detection_probability`.
         return_mask, return_prob, return_exposure : bool
             Toggle extra outputs.
@@ -365,9 +395,7 @@ class ExposureModel:
         # Computed once and reused for the Bernoulli draw and the optional
         # return value, so `return_prob` costs no extra evaluation.
         p = np.asarray(
-            self.detection_probability(
-                t_arr, centre, efficiency=efficiency, area=area
-            ),
+            self.detection_probability(t_arr, centre, efficiency=efficiency),
             dtype=float,
         )
         mask = self.rng.random(size=p.shape) < p
@@ -427,27 +455,28 @@ class ExposureModel:
         """
         Normalised cumulative directional exposure accumulated by ``t``.
 
-        The cumulative directional exposure towards a region of sky is::
+        The exposure per solid angle towards ``centre`` accumulated from
+        ``t0`` to ``t`` is::
 
-            E(t) = ∫_window dOmega ∫_{t0}^{t} ∫_array
-                       P(E, theta, phi, t, ...) cos(theta) dA dt
+            dE/dOmega(t) = ∫_{t0}^{t} P(E, theta, phi, t', ...)
+                                      * H(theta_max - theta(t'))
+                                      * cos(theta(t')) * A(t') dt'   [km² yr]
 
-        in km² sr yr, evaluated by :meth:`cumul_exposure`.  This method
-        drops the two outer integrals — the direction enters as the single
-        point ``centre`` — and divides by the span ``T_obs = tf - t0``::
+        evaluated with ``P = 1`` by :meth:`_directional_exposure`.  Every
+        factor is bounded, so::
 
-            eps_norm(t) = (1 / T_obs) ∫_{t0}^{t} w(u) du
+            max{dE/dOmega} = A_max * T_obs      (P = H = cos theta = 1,
+                                                 A = A_max over the whole run)
 
-        where ``w(u)`` is the geometric integrand, i.e.
-        :meth:`detection_probability` with no detector-state factors.  The result is dimensionless and
-        lies in ``[0, 1]``: what was accumulated relative to the ideal
-        case, a source held at the zenith for the whole interval.
-        ``T_obs`` does not depend on the direction, so values at different
-        directions stay comparable and a direction the array never sees
-        gives ``0.0``, not an undefined ``0/0``.
+        with ``A_max = observatory.max_area`` and ``T_obs = tf - t0``, and
+        this method returns the ratio of the two::
 
-        The integral is solved analytically in the hour angle — see
-        :func:`~spacetimecorr._exposure_math.cumulative_integral`.
+            eps_norm(t) = dE/dOmega(t) / (A_max * T_obs)
+
+        The result is dimensionless and lies in ``[0, 1]``.  The
+        normalisation does not depend on the direction, so values at
+        different directions stay comparable, and a direction the array
+        never sees gives ``0.0``.
 
         Parameters
         ----------
@@ -466,17 +495,57 @@ class ExposureModel:
         self._check_in_interval(t_arr)
         ra_deg, dec_deg = self._validate_centre(centre)
 
-        A, B = _m.geometric_coefficients(self._lat_rad, math.radians(dec_deg))
-        h = np.asarray(self._continuous_hour_angle(t_arr, ra_deg), dtype=float)
-        h0 = float(self._continuous_hour_angle(Time([self.t0]), ra_deg)[0])
+        out = self._directional_exposure(t_arr, ra_deg, dec_deg) / (
+            self.observatory.max_area * self._t_obs_yr
+        )
+        return float(out[0]) if scalar_input else out
 
-        # `cumulative_integral` works in hour-angle; dividing by the sidereal
-        # rate converts it to seconds, and by the span normalises it to [0, 1].
-        out = _m.cumulative_integral(h, h0, A, B, self._cos_theta_max) / (
-            self._sidereal_rate * self._t_obs_sec
+    def _directional_exposure(
+        self, t: Time, ra_deg: float, dec_deg: float,
+    ) -> np.ndarray:
+        """
+        Exposure per solid angle towards ``(ra_deg, dec_deg)`` accumulated
+        from ``t0`` to each ``t``, in km² yr::
+
+            dE/dOmega(t) = ∫_{t0}^{t} P(E, theta, phi, t', ...)
+                                      * H(theta_max - theta(t'))
+                                      * cos(theta(t')) * A(t') dt'
+
+        with ``P = 1``.  ``A(t')`` is constant on each step of the active
+        area, so the integral is the sum over the steps of ``A`` times the
+        analytic integral of ``H cos(theta)`` — see
+        :func:`~spacetimecorr._exposure_math.area_weighted_integral`.
+
+        The integral is carried to ``tf`` in the same pass, and that value,
+        ``dE/dOmega(tf)``, is stored in ``_max_exposure_cache``.
+
+        ``t`` must be a ``Time`` array within ``[t0, tf]``.
+        """
+        A, B = _m.geometric_coefficients(self._lat_rad, math.radians(dec_deg))
+        h = np.asarray(self._continuous_hour_angle(t, ra_deg), dtype=float)
+        h0 = self._sidereal_t0_rad - math.radians(ra_deg)
+        h_edges = h0 + self._sidereal_rate * self._area_edges_sec
+
+        integral, total = _m.area_weighted_integral(
+            h, h0, A, B, self._cos_theta_max, h_edges, self._area_km2,
         )
 
-        return float(out[0]) if scalar_input else out
+        # The integral is in km² rad of hour angle; dividing by the sidereal
+        # rate converts it to km² s, and then to km² yr.
+        to_km2_yr = 1.0 / (self._sidereal_rate * self.SECONDS_PER_YEAR)
+        self._max_exposure_cache[(ra_deg, dec_deg)] = total * to_km2_yr
+        return integral * to_km2_yr
+
+    def _directional_exposure_tf(self, ra_deg: float, dec_deg: float) -> float:
+        """
+        ``dE/dOmega(tf)`` towards ``(ra_deg, dec_deg)``, in km² yr: the
+        exposure per solid angle over the whole run, from the cache, or
+        computed and stored there on the first call for the direction.
+        """
+        key = (ra_deg, dec_deg)
+        if key not in self._max_exposure_cache:
+            self._directional_exposure(Time([self.tf]), ra_deg, dec_deg)
+        return self._max_exposure_cache[key]
 
     def max_norm_cumul_exposure(self, centre: np.ndarray) -> float:
         """
@@ -485,7 +554,9 @@ class ExposureModel:
 
         Being the largest value the normalised exposure reaches for this
         direction, it is what converts an expected number of events into a
-        rate per unit exposure. Results are cached per ``(RA, Dec)``.
+        rate per unit exposure. ``dE/dOmega(tf)`` is cached per
+        ``(RA, Dec)``, also when :meth:`norm_cumul_exposure` was called
+        first for the same direction, so it is computed once.
 
         Parameters
         ----------
@@ -499,37 +570,25 @@ class ExposureModel:
             enters the acceptance cone.
         """
         ra_deg, dec_deg = self._validate_centre(centre)
-        key = (ra_deg, dec_deg)
-
-        cached = self._max_exposure_cache.get(key)
-        if cached is not None:
-            return cached
-
-        value = float(self.norm_cumul_exposure(self.tf, centre))
-        self._max_exposure_cache[key] = value
-        return value
+        return self._directional_exposure_tf(ra_deg, dec_deg) / (
+            self.observatory.max_area * self._t_obs_yr
+        )
 
     def cumul_exposure(self, t: Time, window) -> np.ndarray | float:
         """
-        Cumulative directional exposure towards ``window``, in km² sr yr.
+        Cumulative directional exposure towards ``window`` accumulated from
+        ``t0`` to ``t``, in km² sr yr::
 
-        Evaluates the full expression::
+            E(t) = ∫_window dE/dOmega(t) dOmega
 
-            E(t) = ∫_window dOmega ∫_{t0}^{t} ∫_array
-                       P(E, theta, phi, t, ...) cos(theta) dA dt
+        where ``dE/dOmega(t)`` is the exposure per solid angle, in km² yr,
+        defined in :meth:`norm_cumul_exposure`.  Holding it at its value at
+        ``window.centre`` gives::
 
-        by taking the normalised integral at the window centre and
-        restoring the three factors :meth:`norm_cumul_exposure` leaves
-        out::
+            E(t) = Omega_win * dE/dOmega(t, centre)
 
-            E(t) = A_max * Omega_window * T_obs * eps_norm(t, centre)
-
-        with ``A_max = observatory.area`` in km², ``Omega_window =
-        window.solid_angle`` in sr and ``T_obs = tf - t0`` in years.
-
-        The angular extent of the window enters only through its solid
-        angle: the integrand is held at its value at ``window.centre``,
-        which holds while the zenith angle varies little across the window.
+        with ``Omega_win = window.solid_angle`` in sr.  This holds while the
+        zenith angle varies little across the window.
 
         Parameters
         ----------
@@ -541,46 +600,48 @@ class ExposureModel:
         Returns
         -------
         float or numpy.ndarray
-            Cumulative directional exposure in km² sr yr.
+            Cumulative directional exposure in km² sr yr.  A float is
+            returned when ``t`` is scalar, otherwise an array shaped like
+            ``t``.
         """
-        return (
-            self.observatory.area
-            * window.solid_angle
-            * self._t_obs_yr
-            * self.norm_cumul_exposure(t, window.centre)
-        )
+        t_arr, scalar_input = self._as_time_array(t)
+        self._check_in_interval(t_arr)
+        ra_deg, dec_deg = self._validate_centre(window.centre)
+
+        out = window.solid_angle * self._directional_exposure(t_arr, ra_deg, dec_deg)
+        return float(out[0]) if scalar_input else out
 
     def total_exposure(self) -> float:
         """
         Exposure over the whole sky and the whole interval, in km² sr yr.
 
-        Integrating the array area out and swapping the two remaining
-        integrals::
+        With ``P = 1``, integrating the array area out and swapping the two
+        remaining integrals::
 
-            E_sky = ∫_t A(t) [ ∫_sky H(theta_max - theta) cos(theta) dOmega ] dt
+            E_sky = ∫_{t0}^{tf} A(t) [ ∫_sky H(theta_max - theta) cos(theta) dOmega ] dt
 
         At fixed time the map from equatorial to local coordinates is a
         rigid rotation, which preserves ``dOmega``, so the inner integral
         equals the same integral over the field-of-view cap in local
         coordinates — and that is the same at every instant::
 
-            ∫_cap cos(theta) dOmega = 2 pi ∫_0^{theta_max} cos sin dtheta
+            ∫_cap cos(theta) dOmega = 2 pi ∫_0^{theta_max} cos(theta) sin(theta) dtheta
                                     = pi sin²(theta_max)
 
-        With ``A(t) = A_max`` the time integral is then trivial::
+        The time integral is then that of the area alone::
 
-            E_sky = A_max * T_obs * pi sin²(theta_max)
+            E_sky = pi sin²(theta_max) ∫_{t0}^{tf} A(t) dt
+                  = pi sin²(theta_max) <A> T_obs
 
-        A time-dependent ``A(t)`` would leave this structure intact: it
-        carries no direction dependence, so it factors out of the solid
-        angle integral and the last two factors become ``∫ A(t) dt``.
+        with ``<A>`` the time average of the area over the run, in km²
+        (``A`` itself when the area is constant).
 
         Returns
         -------
         float
             Total exposure in km² sr yr.
         """
-        return self.observatory.area * self._t_obs_yr * self._cap_cos_integral
+        return self._cap_cos_integral * self._mean_area_km2 * self._t_obs_yr
 
     def relative_window_exposure(self, window) -> float:
         """
@@ -589,19 +650,23 @@ class ExposureModel:
 
             relative = E(window) / E_sky
 
-        ``A_max`` and ``T_obs`` are common to both and cancel, leaving::
+        with ``E(window)`` from :meth:`cumul_exposure` at ``tf`` and
+        ``E_sky`` from :meth:`total_exposure`::
 
-            relative = Omega_win * eps_norm(tf, centre) / (pi sin²(theta_max))
+            relative = Omega_win * dE/dOmega(tf, centre)
+                       / (pi sin²(theta_max) <A> T_obs)
 
-        built from :attr:`SkyWindow.solid_angle` and
-        :meth:`max_norm_cumul_exposure` at the window centre.  Cancelling
-        the common factors rather than dividing :meth:`cumul_exposure` by
-        :meth:`total_exposure` also keeps the result defined when
-        ``observatory.area`` is zero.
+                     = Omega_win ∫ A(t) H(theta_max - theta(t)) cos(theta(t)) dt
+                       / (pi sin²(theta_max) ∫ A(t) dt)
 
-        Over a full-sky tiling these values sum to 1, and exactly so:
-        ``∫_sky eps_norm dOmega = pi sin²(theta_max)`` is analytic, with no
-        quadrature standing between the parts and the whole.
+        When the area is constant, ``A`` comes out of both time integrals
+        and cancels, leaving a purely geometric ratio::
+
+            relative = Omega_win ∫ H(theta_max - theta(t)) cos(theta(t)) dt
+                       / (pi sin²(theta_max) T_obs)
+
+        Over a full-sky tiling these values sum to 1, up to the error of
+        holding each window at its centre.
 
         Parameters
         ----------
@@ -613,10 +678,11 @@ class ExposureModel:
         float
             Dimensionless, in ``[0, 1]``.
         """
+        ra_deg, dec_deg = self._validate_centre(window.centre)
         return (
             window.solid_angle
-            * self.max_norm_cumul_exposure(window.centre)
-            / self._cap_cos_integral
+            * self._directional_exposure_tf(ra_deg, dec_deg)
+            / self.total_exposure()
         )
 
     # -------------------------------------------------------------------------

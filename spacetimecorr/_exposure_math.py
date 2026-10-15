@@ -116,3 +116,39 @@ def cumulative_integral(
         return out
 
     return primitive(np.atleast_1d(h)) - primitive(np.atleast_1d(h0))[0]
+
+
+def area_weighted_integral(
+    h: np.ndarray,
+    h0: float,
+    A: float,
+    B: float,
+    c: float,
+    h_edges: np.ndarray,
+    area: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    """
+    Integral of :func:`acceptance` weighted by a piecewise-constant area,
+    from ``h0`` to ``h``, in h-space::
+
+        int_{h0}^{h} area(h') * acceptance(h') dh'
+
+    ``area[k]`` holds between ``h_edges[k]`` and ``h_edges[k + 1]``, with
+    ``h_edges`` running from ``h0`` to the end of the last step and every
+    ``h`` inside it. Each whole step before ``h`` adds its area times the
+    integral of :func:`acceptance` over it, from
+    :func:`cumulative_integral`; the step holding ``h`` adds the part of it
+    before ``h``.
+
+    Returns the integral at each ``h`` and over all the steps, in the
+    units of ``area`` times radians.
+    """
+    F_edges = cumulative_integral(h_edges, h0, A, B, c)
+
+    # Running integral at the step edges.
+    cum_edges = np.concatenate(([0.0], np.cumsum(area * np.diff(F_edges))))
+
+    # Step holding each h, plus the part of that step before it.
+    k = np.clip(np.searchsorted(h_edges, h, side="right") - 1, 0, area.size - 1)
+    F_h = cumulative_integral(h, h0, A, B, c)
+    return cum_edges[k] + area[k] * (F_h - F_edges[k]), float(cum_edges[-1])

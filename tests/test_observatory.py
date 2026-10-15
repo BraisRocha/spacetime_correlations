@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 from astropy.coordinates import EarthLocation
+from astropy.time import Time, TimeDelta
 
 from spacetimecorr import Observatory
 
@@ -69,3 +70,37 @@ def test_latitude_boundary_plus90_allowed():
 def test_zero_altitude_allowed():
     obs = Observatory(latitude=0.0, longitude=0.0, altitude=0.0, area=3000.0)
     assert obs.altitude == 0.0
+
+
+# -------------------------------------------------------------------------
+# Area: constant or A(t) steps
+# -------------------------------------------------------------------------
+
+
+def _steps(offsets_sec, values):
+    starts = Time("2020-01-01T00:00:00") + TimeDelta(offsets_sec, format="sec")
+    return starts, np.asarray(values, dtype=float)
+
+
+def test_constant_area_max_area():
+    obs = Observatory(latitude=0.0, longitude=0.0, altitude=0.0, area=3000.0)
+    assert obs.max_area == 3000.0
+
+
+def test_area_steps_max_area():
+    obs = Observatory(latitude=0.0, longitude=0.0, altitude=0.0,
+                      area=_steps([0.0, 60.0, 120.0], [1000.0, 2500.0, 0.0]))
+    assert obs.max_area == 2500.0
+
+
+@pytest.mark.parametrize(
+    "offsets, values",
+    [
+        ([0.0, 120.0, 60.0], [1.0, 1.0, 1.0]),     # start times out of order
+        ([0.0, 60.0], [1.0, -1.0]),                # negative area
+        ([0.0, 60.0], [0.0, 0.0]),                 # area zero throughout
+    ],
+)
+def test_invalid_area_steps_raise(offsets, values):
+    with pytest.raises(ValueError):
+        Observatory(latitude=0.0, longitude=0.0, altitude=0.0, area=_steps(offsets, values))

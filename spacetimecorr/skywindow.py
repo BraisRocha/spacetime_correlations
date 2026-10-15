@@ -19,6 +19,13 @@ No exposure or event-generation state is held here — those live on
 window is treated as small enough that the exposure at its centre is a
 good proxy for the exposure across the cap.
 
+:class:`HealpixWindow` is the same kind of window built from one HEALPix
+pixel instead of a cap. It offers the interface the exposure code reads
+from a window (``centre``, ``solid_angle``, ``contains``,
+``expected_n_in_window``), so either can be passed wherever a window is
+expected. :class:`HealpixGrid` holds all the pixels at one resolution
+whose centre lies inside the field of view.
+
 This module also defines :class:`SkyGrid`, a container for ``N`` such
 windows stored struct-of-arrays (``centres`` of shape ``(N, 2)`` and
 ``radii`` of shape ``(N,)``). Indexing a grid (``grid[i]``) materialises
@@ -29,7 +36,6 @@ deterministic per-window scalars behind that boundary.
 
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING, Iterator
 
 from .event_sample import EventSample
@@ -39,6 +45,23 @@ from dataclasses import dataclass, field
 
 if TYPE_CHECKING:
     from .exposure import ExposureModel
+
+
+def _healpy():
+    """Import ``healpy`` lazily, with a helpful message if it is missing.
+
+    ``healpy`` is an optional dependency (the ``skymap`` extra), only
+    needed by the HEALPix windows.
+    """
+    try:
+        import healpy as hp
+    except ImportError as exc:  # pragma: no cover - depends on environment
+        raise ImportError(
+            "HEALPix windows require the optional dependency 'healpy'. "
+            "Install it with `pip install healpy`."
+        ) from exc
+    return hp
+
 
 @dataclass(frozen=True)  # NOTE: no slots=True (requires Python >= 3.10)
 class SkyWindow:
@@ -286,6 +309,83 @@ class SkyWindow:
         return float(n_events) * exposure_model.relative_window_exposure(self)
 
 
+@dataclass(frozen=True)
+class HealpixWindow:
+    """One HEALPix pixel used as a window on the celestial sphere.
+
+    Parameters
+    ----------
+    nside : int
+        HEALPix resolution. All ``12 nside^2`` pixels have the same solid
+        angle, ``4 pi / (12 nside^2)`` sr.
+    ipix : int
+        Pixel index in RING ordering, in ``[0, 12 nside^2)``.
+
+    Notes
+    -----
+    As for a :class:`SkyWindow`, the exposure towards the pixel is
+    evaluated at its centre: the pixel enters only through ``centre`` and
+    ``solid_angle``.
+    """
+
+    nside: int
+    ipix: int
+
+    # Set in __post_init__ from (nside, ipix)
+    centre: np.ndarray = field(init=False, compare=False)            # [RA_deg, Dec_deg]
+    solid_angle: float = field(init=False, repr=False, compare=False)  # sr
+
+    def __post_init__(self) -> None:
+        hp = _healpy()
+        nside = int(self.nside)
+        ipix = int(self.ipix)
+
+        if not hp.isnsideok(nside):
+            raise ValueError(f"nside={self.nside} is not a valid HEALPix resolution.")
+        npix = hp.nside2npix(nside)
+        if not (0 <= ipix < npix):
+            raise ValueError(f"ipix must be in [0, {npix}) for nside={nside}; got {self.ipix}.")
+
+        ra, dec = hp.pix2ang(nside, ipix, lonlat=True)
+
+        object.__setattr__(self, "nside", nside)
+        object.__setattr__(self, "ipix", ipix)
+        object.__setattr__(self, "centre", np.array([float(ra), float(dec)]))
+        object.__setattr__(self, "solid_angle", float(hp.nside2pixarea(nside)))
+
+    def contains(self, ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
+        """Return a boolean mask, True for coordinates (deg) inside this pixel."""
+        ra = np.asarray(ra, dtype=float)
+        dec = np.asarray(dec, dtype=float)
+
+        if ra.shape != dec.shape:
+            raise ValueError(
+                f"ra and dec must have the same shape, got {ra.shape} vs {dec.shape}."
+            )
+
+        return _healpy().ang2pix(self.nside, ra, dec, lonlat=True) == self.ipix
+
+    def expected_n_in_window(
+        self,
+        n_events: int | float,
+        exposure_model: "ExposureModel | None" = None,
+    ) -> float:
+        """
+        Expected number of events in the pixel.
+
+        Same as :meth:`SkyWindow.expected_n_in_window`::
+
+            expected_n = n_events * E(pixel) / E_sky
+
+        with ``E(pixel)`` from the exposure at the pixel centre, or
+        ``n_events * solid_angle / 4 pi`` if no exposure model is given.
+        """
+        if exposure_model is None:
+            return float(n_events) * self.solid_angle / (4.0 * np.pi)
+
+        return float(n_events) * exposure_model.relative_window_exposure(self)
+
+
 class SkyGrid:
     """A collection of ``N`` spherical-cap windows.
 
@@ -373,9 +473,7 @@ class SkyGrid:
 
         Named factory parallel to the
         :class:`~spacetimecorr.event_sample.EventSample` constructors;
-        presently equivalent to ``SkyGrid(centres, radii)`` and present so
-        that future construction routes (e.g. a HEALPix tiling) can sit
-        alongside it as sibling classmethods.
+        equivalent to ``SkyGrid(centres, radii)``.
 
         Parameters
         ----------
@@ -390,172 +488,6 @@ class SkyGrid:
         SkyGrid
         """
         return cls(centres=centres, radii=radii)
-
-    # -------------------------------------------------------------------------
-    # HEALPix construction
-    # -------------------------------------------------------------------------
-
-    @staticmethod
-    def _healpy():
-        """Import ``healpy`` lazily, with a helpful message if it is missing.
-
-        ``healpy`` is only needed for the HEALPix factory, so the rest of the
-        module (and ``from_arrays``) stays dependency-free.
-        """
-        try:
-            import healpy as hp
-        except ImportError as exc:  # pragma: no cover - depends on environment
-            raise ImportError(
-                "SkyGrid.from_healpix / min_covering_nside require the optional "
-                "dependency 'healpy'. Install it with `pip install healpy`."
-            ) from exc
-        return hp
-
-    @staticmethod
-    def min_covering_nside(radius: float, nside_max: int = 1 << 20) -> int:
-        """Coarsest power-of-two ``nside`` whose pixels are covered by caps of ``radius``.
-
-        A cap of angular radius ``radius`` (deg) centred on a pixel fully
-        contains that pixel iff ``radius >= max_pixrad(nside)`` (the largest
-        centre-to-corner distance). Since HEALPix pixels tile the sphere with
-        no gaps, this guarantees the union of caps covers everything. The
-        smallest such ``nside`` is returned: the fewest, least-overlapping
-        windows that still leave no gaps at the given radius.
-
-        Parameters
-        ----------
-        radius : float
-            Search-cap angular radius in degrees, in ``(0, 180]``.
-        nside_max : int, optional
-            Upper bound on the search over powers of two (safety stop).
-
-        Returns
-        -------
-        int
-            The minimal covering ``nside``.
-        """
-        hp = SkyGrid._healpy()
-        radius = float(radius)
-        if not (0.0 < radius <= 180.0):
-            raise ValueError("radius must be in (0, 180] degrees.")
-
-        radius_rad = np.deg2rad(radius)
-        nside = 1
-        while nside <= nside_max:
-            if hp.max_pixrad(nside) <= radius_rad:
-                return int(nside)
-            nside *= 2
-        raise ValueError(
-            f"No power-of-two nside <= {nside_max} has pixels small enough to be "
-            f"covered by a cap of radius {radius} deg."
-        )
-
-    @classmethod
-    def from_healpix(
-        cls,
-        radius: float,
-        nside: int | None = None,
-        *,
-        observatory=None,
-        theta_max_deg: float = 60.0,
-        nest: bool = False,
-    ) -> "SkyGrid":
-        """Build a grid of fixed-radius windows on HEALPix pixel centres.
-
-        The windows all share the search radius ``radius``; their centres are
-        the centres of the HEALPix pixels at resolution ``nside``. The radius
-        is the physics-driven input (e.g. the SNR-optimal search scale), and
-        ``nside`` defaults to the coarsest grid that radius still covers
-        without gaps (see :meth:`min_covering_nside`).
-
-        Optionally restricts the grid to windows that lie *entirely* inside an
-        observatory field of view: given ``observatory`` (anything exposing a
-        ``latitude`` in degrees) and a zenith cut ``theta_max_deg``, the
-        visible declination band is
-
-            ``dec_lo = max(-90, latitude - theta_max_deg)``
-            ``dec_hi = min(+90, latitude + theta_max_deg)``
-
-        and a window survives only when its whole cap fits inside it,
-
-            ``min(90, dec_c + radius) <= dec_hi``  and
-            ``max(-90, dec_c - radius) >= dec_lo``,
-
-        i.e. the centre sits at least one radius from each FoV edge. This
-        drops the thin, near-zero-exposure strip at the FoV boundary where the
-        windows would otherwise sample directions outside the FoV and the
-        exposure-at-centre approximation is least reliable.
-
-        Parameters
-        ----------
-        radius : float
-            Window angular radius in degrees, in ``(0, 180]``.
-        nside : int or None, optional
-            HEALPix resolution. ``None`` (default) auto-selects the minimal
-            covering ``nside`` for ``radius``. An explicit value is used as
-            given, with a warning if its pixels are larger than the caps can
-            cover (possible gaps).
-        observatory : optional
-            If given, restrict the grid to windows fully inside the FoV
-            derived from ``observatory.latitude`` and ``theta_max_deg``.
-            ``None`` (default) keeps the full sky.
-        theta_max_deg : float, optional
-            Zenith-angle cut defining the FoV, in ``(0, 90]``. Defaults to
-            60 deg, matching :class:`~spacetimecorr.exposure.ExposureModel`.
-            Only used when ``observatory`` is provided.
-        nest : bool, optional
-            HEALPix ordering. Defaults to RING (``False``).
-
-        Returns
-        -------
-        SkyGrid
-        """
-        hp = cls._healpy()
-
-        radius = float(radius)
-        if not (0.0 < radius <= 180.0):
-            raise ValueError("radius must be in (0, 180] degrees.")
-
-        if nside is None:
-            nside = cls.min_covering_nside(radius)
-        else:
-            nside = int(nside)
-            if not hp.isnsideok(nside, nest=nest):
-                raise ValueError(f"nside={nside} is not a valid HEALPix resolution.")
-            if hp.max_pixrad(nside) > np.deg2rad(radius):
-                warnings.warn(
-                    f"radius={radius} deg is smaller than "
-                    f"max_pixrad(nside={nside})="
-                    f"{np.degrees(hp.max_pixrad(nside)):.3f} deg: caps do not fully "
-                    f"cover their pixels, so the tiling may leave gaps.",
-                    stacklevel=2,
-                )
-
-        ipix = np.arange(hp.nside2npix(nside))
-        ra, dec = hp.pix2ang(nside, ipix, nest=nest, lonlat=True)
-
-        if observatory is not None:
-            if not (0.0 < theta_max_deg <= 90.0):
-                raise ValueError("theta_max_deg must be in (0, 90].")
-            latitude = float(observatory.latitude)
-            dec_hi = min(90.0, latitude + theta_max_deg)
-            dec_lo = max(-90.0, latitude - theta_max_deg)
-
-            contained = (
-                (np.minimum(90.0, dec + radius) <= dec_hi)
-                & (np.maximum(-90.0, dec - radius) >= dec_lo)
-            )
-            ra, dec = ra[contained], dec[contained]
-            if ra.size == 0:
-                raise ValueError(
-                    f"No HEALPix windows of radius {radius} deg fit entirely "
-                    f"inside the FoV declination band "
-                    f"[{dec_lo:.2f}, {dec_hi:.2f}] deg "
-                    f"(latitude={latitude:.2f}, theta_max={theta_max_deg:.2f})."
-                )
-
-        centres = np.column_stack((ra, dec))
-        return cls(centres=centres, radii=radius)
 
     # -------------------------------------------------------------------------
     # Container protocol
@@ -666,3 +598,120 @@ class SkyGrid:
             dtype=float,
         )
         return float(n_events) * weights
+
+
+class HealpixGrid:
+    """All HEALPix pixels at resolution ``nside`` whose centre lies inside
+    the field of view.
+
+    Parameters
+    ----------
+    exposure_model : ExposureModel
+        Defines the field of view: a pixel is kept when the exposure per
+        solid angle at its centre, :meth:`ExposureModel.spatial_exposure`,
+        is positive, i.e. when its centre ever enters the zenith cut.
+    nside : int, optional
+        HEALPix resolution, RING ordering. Defaults to 32: pixels of
+        ~3.4 deg², about the area of a cap of radius 1.05 deg.
+
+    Notes
+    -----
+    Only the indices and centres of the kept pixels are stored;
+    ``grid[i]`` builds the :class:`HealpixWindow` of the ``i``-th one.
+    A pixel whose centre lies outside the FoV is dropped even if part of
+    it lies inside (see ``TODO.md``).
+
+    Assigning all events to their pixel at once, instead of filtering
+    the sample once per window::
+
+        grid = HealpixGrid(exposure_model)
+        pix = grid.pixel_of(sample.ra, sample.dec)
+        for window in grid:
+            subsample = sample.select_subsample(window, mask=pix == window.ipix)
+    """
+
+    def __init__(self, exposure_model: "ExposureModel", nside: int = 32):
+        hp = _healpy()
+        nside = int(nside)
+        if not hp.isnsideok(nside):
+            raise ValueError(f"nside={nside} is not a valid HEALPix resolution.")
+
+        ipix = np.arange(hp.nside2npix(nside))
+        ra, dec = hp.pix2ang(nside, ipix, lonlat=True)
+        #in_fov = exposure_model.spatial_exposure(dec) > 0.0
+        lat = exposure_model.observatory.latitude
+        in_fov = np.abs(dec - lat) < exposure_model.theta_max_deg
+
+        self._nside = nside
+        self._pixels = ipix[in_fov]
+        self._centres = np.column_stack((ra[in_fov], dec[in_fov]))
+
+    # -------------------------------------------------------------------------
+    # Container protocol
+    # -------------------------------------------------------------------------
+
+    def __len__(self) -> int:
+        return self._pixels.size
+
+    def __getitem__(self, index: int) -> HealpixWindow:
+        """The :class:`HealpixWindow` of the ``index``-th kept pixel."""
+        return HealpixWindow(nside=self._nside, ipix=int(self._pixels[index]))
+
+    def __iter__(self) -> Iterator[HealpixWindow]:
+        for i in range(len(self)):
+            yield self[i]
+
+    def __repr__(self) -> str:
+        return f"HealpixGrid(nside={self._nside}, n_windows={len(self)})"
+
+    # -------------------------------------------------------------------------
+    # Array accessors
+    # -------------------------------------------------------------------------
+
+    @property
+    def nside(self) -> int:
+        """HEALPix resolution."""
+        return self._nside
+
+    @property
+    def pixels(self) -> np.ndarray:
+        """RING indices of the kept pixels, shape ``(N,)``."""
+        return self._pixels
+
+    @property
+    def centres(self) -> np.ndarray:
+        """Pixel centres, shape ``(N, 2)`` -> ``[RA_deg, Dec_deg]``."""
+        return self._centres
+
+    @property
+    def solid_angle(self) -> float:
+        """Solid angle of every pixel, in sr."""
+        return float(_healpy().nside2pixarea(self._nside))
+
+    # -------------------------------------------------------------------------
+    # Event assignment and expected counts
+    # -------------------------------------------------------------------------
+
+    def pixel_of(self, ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
+        """RING index of the pixel containing each direction (deg).
+
+        Directions falling in a dropped pixel get an index that matches
+        no window of the grid.
+        """
+        return _healpy().ang2pix(self._nside, ra, dec, lonlat=True)
+
+    def expected_n_in_window(
+        self,
+        n_events: int | float,
+        exposure_model: "ExposureModel | None" = None,
+    ) -> np.ndarray:
+        """
+        Expected event count in each window, shape ``(N,)``.
+
+        :meth:`HealpixWindow.expected_n_in_window` evaluated for every
+        window of the grid.
+        """
+        return np.array(
+            [window.expected_n_in_window(n_events, exposure_model) for window in self],
+            dtype=float,
+        )

@@ -295,3 +295,107 @@ def test_sample_iso_cumul_exposure_mean_gap(exposure_model):
     )
     mean_gap = float(np.mean(np.diff(sample)))
     assert mean_gap == pytest.approx(1.0 / rate, rel=0.05)
+
+
+# -------------------------------------------------------------------------
+# Active area A(t)
+# -------------------------------------------------------------------------
+
+
+def _area_steps(t0, tf, step_sec, values):
+    """Piecewise-constant A(t): steps of ``step_sec`` from t0, values from
+    ``values(n)``, with the last step starting at or after tf (data up to tf)."""
+    n = int(np.ceil((tf - t0).to_value("sec") / step_sec)) + 1
+    starts = t0 + TimeDelta(np.arange(n) * step_sec, format="sec")
+    return starts, values(n)
+
+
+def _with_area(observatory, area):
+    """The same observatory, with ``area`` (a constant or A(t) steps)."""
+    return Observatory(
+        latitude=observatory.latitude, longitude=observatory.longitude,
+        altitude=observatory.altitude, area=area,
+    )
+
+
+CENTRES = [np.array([180.0, -30.0]), np.array([40.0, 10.0]), np.array([300.0, -80.0])]
+
+
+def test_active_area_full_reproduces_closed_form(observatory, t0, tf, rng, exposure_model):
+    steps = _area_steps(t0, tf, 3600.0, lambda n: np.full(n, observatory.area))
+    model = ExposureModel(_with_area(observatory, steps), t0, tf, rng)
+    times = t0 + TimeDelta(np.linspace(0.0, (tf - t0).to_value("sec"), 7), format="sec")
+    for centre in CENTRES:
+        assert model.norm_cumul_exposure(times, centre) == pytest.approx(
+            exposure_model.norm_cumul_exposure(times, centre), rel=1e-9, abs=1e-12,
+        )
+    assert model.total_exposure() == pytest.approx(exposure_model.total_exposure())
+
+
+def test_active_area_half_halves_exposure_but_not_window_share(observatory, t0, tf, rng, exposure_model):
+    """Half the area throughout: physical exposures halve; A_max halves too,
+    so the normalised exposure and the window share do not change."""
+    from spacetimecorr import SkyWindow
+
+    steps = _area_steps(t0, tf, 3600.0, lambda n: np.full(n, 0.5 * observatory.area))
+    model = ExposureModel(_with_area(observatory, steps), t0, tf, rng)
+    centre = CENTRES[0]
+    window = SkyWindow(centre=centre, radius=3.0)
+    assert model.total_exposure() == pytest.approx(0.5 * exposure_model.total_exposure())
+    assert model.cumul_exposure(tf, window) == pytest.approx(
+        0.5 * exposure_model.cumul_exposure(tf, window)
+    )
+    assert model.max_norm_cumul_exposure(centre) == pytest.approx(
+        exposure_model.max_norm_cumul_exposure(centre)
+    )
+    assert model.relative_window_exposure(window) == pytest.approx(
+        exposure_model.relative_window_exposure(window)
+    )
+
+
+def test_active_area_zero_stops_the_exposure(observatory, t0, tf, rng):
+    """Full area in the first half of the run, none in the second."""
+    half = 0.5 * (tf - t0).to_value("sec")
+    starts = t0 + TimeDelta([0.0, half, 2.0 * half], format="sec")
+    model = ExposureModel(
+        _with_area(observatory, (starts, np.array([observatory.area, 0.0, 0.0]))), t0, tf, rng,
+    )
+    centre = CENTRES[0]
+    later = t0 + TimeDelta(np.linspace(half, 2.0 * half, 5), format="sec")
+    eps = model.norm_cumul_exposure(later, centre)
+    assert np.all(eps == pytest.approx(eps[0], rel=1e-12))
+    assert eps[0] > 0.0
+
+
+def test_active_area_matches_numerical_integral(observatory, rng):
+    """eps_norm(tf) against a brute-force sum of p_det(t), which includes A(t)/A_max."""
+    t0 = Time("2020-01-01T00:00:00")
+    tf = t0 + 3 * u.day
+    # 72 hourly steps over the run, plus one starting at tf (data up to tf).
+    values = np.random.default_rng(1).uniform(0.0, observatory.area, size=73)
+    starts = t0 + TimeDelta(np.arange(73) * 3600.0, format="sec")
+    model = ExposureModel(_with_area(observatory, (starts, values)), t0, tf, rng)
+
+    dt = 10.0                                            # s
+    mid = (np.arange(int(3 * 86400 / dt)) + 0.5) * dt
+    times = t0 + TimeDelta(mid, format="sec")
+    area_ratio = values[(mid // 3600).astype(int)] / values.max()   # A_max = max(A)
+    geometric = ExposureModel(observatory, t0, tf, rng)             # constant area: factor 1
+    for centre in CENTRES[:2]:
+        p_geo = geometric.detection_probability(times, centre)
+        assert model.detection_probability(times, centre) == pytest.approx(p_geo * area_ratio)
+        expected = np.sum(p_geo * area_ratio) * dt / (tf - t0).to_value("sec")
+        assert model.max_norm_cumul_exposure(centre) == pytest.approx(expected, rel=1e-4)
+
+
+def test_active_area_starting_after_t0_raises(observatory, t0, tf, rng):
+    starts = t0 + TimeDelta([60.0, 120.0], format="sec")
+    with pytest.raises(ValueError):
+        ExposureModel(_with_area(observatory, (starts, np.array([1.0, 1.0]))), t0, tf, rng)
+
+
+def test_active_area_ending_before_tf_raises(observatory, t0, tf, rng):
+    """The last start time is the last minute of data: a run past it raises."""
+    starts = t0 + TimeDelta([0.0, 60.0], format="sec")
+    with pytest.raises(ValueError):
+        ExposureModel(_with_area(observatory, (starts, np.array([1.0, 1.0]))), t0, tf, rng)
