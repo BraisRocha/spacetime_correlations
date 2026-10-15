@@ -1,0 +1,25 @@
+# One job per line of datasets.txt (a mock sample name, e.g. dataset_0).
+# Submit with: bash condor/mocksamples/submit_blind_search_mock.sh
+#
+# Paths are absolute because the executable is copied to the worker node, so
+# nothing can be located relative to this file. Update them if the repository
+# moves. The Python environment is picked by run_blind_search_mock.sh, not here.
+#
+# submission_id is set by the submitting script (on the condor_submit command
+# line) and names both the output directory of this batch and the scratch
+# directory holding its HTCondor logs.
+
+getenv     = PATH,HOME,LD_LIBRARY_PATH,CONDA_PREFIX,CONDA_DEFAULT_ENV
+executable = /lustre/Auger/brais.rocha/spacetime_correlations/condor/mocksamples/run_blind_search_mock.sh
+
+log    = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/mocksamples/$(submission_id)/blind_search_mock.log
+output = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/mocksamples/$(submission_id)/$(dataset).out
+error  = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/mocksamples/$(submission_id)/$(dataset).err
+
+should_transfer_files   = Yes
+when_to_transfer_output = ON_EXIT
++flavour                = "short"
+arguments               = $(dataset) $(submission_id)
+request_memory          = 2G
+
+queue dataset from /lustre/Auger/brais.rocha/spacetime_correlations/scratch/mocksamples/datasets.txt

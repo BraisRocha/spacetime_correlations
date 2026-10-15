@@ -39,6 +39,7 @@ differences between the exposures of events in the same pixel; in
 about 580 times more than that.
 """
 
+import argparse
 import time
 from datetime import datetime
 from pathlib import Path
@@ -69,8 +70,13 @@ def load_mock_sample(path: Path) -> tuple[Time, np.ndarray, np.ndarray]:
     return times, ra, dec
 
 
-def main(dataset: str) -> None:
-    """Run the blind search on one mock sample, e.g. ``dataset="dataset_0"``."""
+def main(dataset: str, submission_id: str | None = None) -> None:
+    """Run the blind search on one mock sample, e.g. ``dataset="dataset_0"``.
+
+    With ``submission_id`` (an HTCondor batch), the run is written to
+    ``output/analysis/blind_search_mock/<submission_id>/<dataset>/``;
+    without it, to ``output/analysis/blind_search_mock/<dataset>_<timestamp>/``.
+    """
 
     start_time = time.time()
 
@@ -101,12 +107,20 @@ def main(dataset: str) -> None:
     # ------------------------------------------------------------------
     # Output directory and logger
     # ------------------------------------------------------------------
-    outdir, _ = make_run_dir(
-        base_dir=project_root / "output" / "analysis",
-        run_code="blind_search_mock",
-        seed=0,
-        submission_id=f"{dataset}_{datetime.now():%Y%m%d_%H%M%S}",
-    )
+    if submission_id is None:
+        outdir, _ = make_run_dir(
+            base_dir=project_root / "output" / "analysis",
+            run_code="blind_search_mock",
+            seed=0,
+            submission_id=f"{dataset}_{datetime.now():%Y%m%d_%H%M%S}",
+        )
+    else:
+        outdir, _ = make_run_dir(
+            base_dir=project_root / "output" / "analysis" / "blind_search_mock",
+            run_code=submission_id,
+            seed=0,
+            submission_id=dataset,
+        )
     logger = setup_logger(log_path=outdir / "run.log", name="blind_search_mock")
 
     logger.info("Starting blind search on mock sample %s", dataset)
@@ -191,7 +205,10 @@ def main(dataset: str) -> None:
     # ------------------------------------------------------------------
     # 4) Scan: exposure from the arrival times, then the Lambda method
     # ------------------------------------------------------------------
-    for i, window in enumerate(tqdm(grid, total=n_windows, desc="Pixels scanned")):
+    # disable=None turns the bar off when not on a terminal (HTCondor jobs).
+    for i, window in enumerate(
+        tqdm(grid, total=n_windows, desc="Pixels scanned", disable=None)
+    ):
         mask = event_pixel == window.ipix
         n_sample_array[i] = np.count_nonzero(mask)
 
@@ -281,6 +298,14 @@ def main(dataset: str) -> None:
             for j in above
         ]
 
+    # Expected number of pixels above the threshold by chance, and the
+    # probability of at least one, for n_tested pixels with uniform p-values.
+    # Pixels are treated as independent, which is approximate: neighbours
+    # share events, and the Poisson mid-p value is discrete.
+    p_threshold = float(stc.sigma_to_pvalue(sigma_threshold))
+    n_expected_above = n_tested * p_threshold
+    prob_any_above = 1.0 - (1.0 - p_threshold) ** n_tested
+
     # ------------------------------------------------------------------
     # Save outputs and metadata
     # ------------------------------------------------------------------
@@ -320,6 +345,9 @@ def main(dataset: str) -> None:
             "sigma_threshold": sigma_threshold,
             "n_above_threshold_lambda": len(above_threshold["lambda"]),
             "n_above_threshold_poisson": len(above_threshold["poisson"]),
+            "p_threshold": p_threshold,
+            "n_expected_above_threshold": n_expected_above,
+            "prob_any_above_threshold": prob_any_above,
             "pixels_above_threshold": above_threshold,
             "t0": t0.isot,
             "tf": tf.isot,
@@ -336,5 +364,28 @@ def main(dataset: str) -> None:
     logger.info("Run finished in %.2f seconds", elapsed)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Blind search on one mock sample over a HEALPix grid."
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="dataset_50",
+        help="Mock sample to analyse, the file name without .dat.",
+    )
+    parser.add_argument(
+        "--submission-id",
+        type=str,
+        default=None,
+        help=(
+            "Identifier shared by all jobs of one HTCondor batch. When given, "
+            "the run goes to blind_search_mock/<submission_id>/<dataset>/."
+        ),
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main(dataset="dataset_30")
+    args = parse_args()
+    main(dataset=args.dataset, submission_id=args.submission_id)

@@ -27,7 +27,7 @@ import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as scp
-
+import spacetimecorr as stc
 # ----------------------------------------------------------------------
 # Global style: load the matplotlibrc of the plots/ folder
 # ----------------------------------------------------------------------
@@ -217,6 +217,35 @@ def plot_skymap(data, metadata: dict, results_dir: Path) -> None:
     plt.close(fig)
 
 
+def plot_pvalues(data, metadata: dict, results_dir: Path) -> None:
+    """Histogram of the raw Lambda and Poisson p-values of one run.
+
+    With no signal the p-values are uniform on [0, 1], drawn for reference.
+    """
+    p_lambda = data["pvalues_lambda"][np.isfinite(data["pvalues_lambda"])]
+    p_poisson = data["pvalues_poisson"][np.isfinite(data["pvalues_poisson"])]
+
+    bins = np.linspace(0.0, 1.0, 41)
+
+    fig, ax = plt.subplots(figsize=(3.4, 2.5))
+    ax.hist(p_lambda, bins=bins, density=False, histtype="step",
+            linewidth=1.2, label=r"$\Lambda$")
+    ax.hist(p_poisson, bins=bins, density=False, histtype="step",
+            linewidth=1.2, label="Poisson")
+    #ax.axhline(1.0, color="black", linestyle="--", linewidth=0.8,
+               #label=r"$\mathcal{U}(0, 1)$")
+
+    ax.set_xlim(0.0, 1.0)
+    ax.set_xlabel(r"$p$-value")
+    ax.set_ylabel("Pixels")
+    ax.set_yscale("log")
+    ax.legend(loc="upper right")
+
+    fig.tight_layout()
+    fig.savefig(results_dir / "pvalues.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main(results_dir: str | Path) -> None:
     """
     Load a saved blind-search run on a mock sample and create the plots.
@@ -268,6 +297,7 @@ def main(results_dir: str | Path) -> None:
     ax.set_xlim(-sigma_lim, sigma_lim)
     ax.set_xlabel(r"Significance [$\sigma$]")
     ax.set_ylabel("Density")
+    ax.set_yscale("log")
     ax.legend(loc="upper left")
 
     info_text = (
@@ -289,6 +319,11 @@ def main(results_dir: str | Path) -> None:
     plt.close(fig)
 
     # ------------------------------------------------------------------
+    # p-value distribution
+    # ------------------------------------------------------------------
+    plot_pvalues(data, metadata, results_dir)
+
+    # ------------------------------------------------------------------
     # p-value sky map
     # ------------------------------------------------------------------
     plot_skymap(data, metadata, results_dir)
@@ -302,5 +337,5 @@ if __name__ == "__main__":
 
     # Change this to the run you want to plot
     run_dir = project_root / "output" / "analysis" / "blind_search_mock"
-    run_id = "dataset_1_20261005_175341"
+    run_id = "dataset_50_20261015_150812"
     main(run_dir / run_id)
