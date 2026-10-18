@@ -103,6 +103,48 @@ def test_contains_shape_mismatch_raises():
         win.contains(np.array([0.0, 1.0]), np.array([0.0]))
 
 
+def _exact_contains(win, ra, dec):
+    """Angular-distance test on every coordinate, with no box."""
+    ra_rad, dec_rad = np.deg2rad(ra), np.deg2rad(dec)
+    vec = np.stack(
+        [np.cos(dec_rad) * np.cos(ra_rad), np.cos(dec_rad) * np.sin(ra_rad), np.sin(dec_rad)]
+    )
+    return win._center_vec @ vec >= np.cos(np.deg2rad(win.radius))
+
+
+@pytest.mark.parametrize(
+    "centre, radius",
+    [
+        ([180.0, -30.0], 1.05),
+        ([0.3, 10.0], 1.05),      # box crosses RA = 0
+        ([359.7, -50.0], 1.05),   # box crosses RA = 360
+        ([45.0, -80.0], 1.05),    # RA half-width ~6 deg
+        ([90.0, -88.9], 1.05),    # just short of the pole, RA half-width ~80 deg
+        ([270.0, -89.5], 1.05),   # cap contains the south pole
+        ([120.0, 20.0], 40.0),
+    ],
+)
+@pytest.mark.parametrize("dec_sorted", [False, True])
+def test_contains_matches_exact_test(rng, centre, radius, dec_sorted):
+    win = SkyWindow(centre=centre, radius=radius)
+
+    # Full sky plus a dense cloud around the window, so many coordinates
+    # fall near the cap edge.
+    ra_sky = rng.uniform(0.0, 360.0, 20000)
+    dec_sky = np.degrees(np.arcsin(rng.uniform(-1.0, 1.0, 20000)))
+    ra_near, dec_near = SkyWindow(centre=centre, radius=min(3.0 * radius, 180.0)).sample_uniform(20000, rng)
+    ra = np.concatenate([ra_sky, ra_near])
+    dec = np.concatenate([dec_sky, dec_near])
+
+    if dec_sorted:
+        order = np.argsort(dec)
+        ra, dec = ra[order], dec[order]
+
+    np.testing.assert_array_equal(
+        win.contains(ra, dec, dec_sorted=dec_sorted), _exact_contains(win, ra, dec)
+    )
+
+
 # -------------------------------------------------------------------------
 # sample_uniform
 # -------------------------------------------------------------------------

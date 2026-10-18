@@ -1,26 +1,30 @@
 """
-Blind all-sky search on a mock data sample, over a HEALPix grid.
+Blind all-sky search on a mock data sample, over circular windows centred
+on a HEALPix grid.
 
 The sample is read from ``inputs/mocksamples/dataset_stcwg_vert/``. The
 pipeline is:
 
     1. Read the sample: arrival time (Unix UTC seconds plus nanoseconds),
-       RA and Dec. The last column (angular resolution) is not used.
-    2. Build the grid: every HEALPix pixel at resolution ``nside`` whose
-       centre lies inside the field of view. Pixels that straddle the FoV
-       edge are skipped.
-    3. Assign every event to its pixel with a single ``ang2pix`` call
-       (``HealpixGrid.pixel_of``).
-    4. For every pixel, convert the arrival times of its events into
-       normalised cumulative exposure at the pixel centre
+       RA and Dec. The last column (angular resolution) is not used. The
+       events are sorted by Dec, so that each window finds its events by
+       binary search (``SkyWindow.contains`` with ``dec_sorted=True``).
+    2. Build the grid: a cap of radius ``window_radius_deg`` around the
+       centre of every HEALPix pixel at resolution ``nside`` whose centre
+       lies inside the field of view. The pixel spacing is much smaller
+       than the cap radius, so neighbouring windows overlap heavily and
+       any flare lies close to the centre of some window. Windows that
+       straddle the FoV edge are skipped.
+    3. For every window, select its events, convert their arrival times
+       into normalised cumulative exposure at the window centre
        (``ExposureModel.norm_cumul_exposure``), and compute the Lambda and
        Poisson statistics, their p-values and their significances. The
-       exposure, and with it the expected count of each pixel, includes
+       exposure, and with it the expected count of each window, includes
        the active area of the array A(t), minute by minute, read from the
        file in ``inputs/active_area/`` built by
        ``scripts/preprocessing/process_active_area.py``.
 
-Pixels above ``sigma_threshold`` in either test are saved, with their
+Windows above ``sigma_threshold`` in either test are saved, with their
 direction, in ``metadata.json``.
 
 Time precision
@@ -34,7 +38,7 @@ The exposure of an event is computed from the time elapsed since ``t0``
 as one float64 in seconds, and is itself one float64. Over the ~19-year
 run of ``dataset_stcwg_vert`` both resolve ~120 ns, so the exposure values
 carry the arrival times to ~120 ns, not 1 ns. Lambda only uses the
-differences between the exposures of events in the same pixel; in
+differences between the exposures of events in the same window; in
 ``dataset_0`` the closest two events anywhere on the sky are ~69 us apart,
 about 580 times more than that.
 """
@@ -44,7 +48,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import healpy as hp
 import numpy as np
 
 from astropy.time import Time
@@ -83,8 +86,9 @@ def main(dataset: str, submission_id: str | None = None) -> None:
     # ------------------------------------------------------------------
     # Analysis parameters
     # ------------------------------------------------------------------
-    nside = 32                     # HEALPix resolution of the search grid
-    sigma_threshold = 5.0          # pixels above this significance are reported
+    nside = 128                    # HEALPix resolution of the window centres
+    window_radius_deg = 1.05       # angular radius of every window
+    sigma_threshold = 5.0          # windows above this significance are reported
 
     # Pierre Auger Observatory
     latitude_pa = -35.15
@@ -133,6 +137,11 @@ def main(dataset: str, submission_id: str | None = None) -> None:
     times, ra, dec = load_mock_sample(input_path)
     n_total = ra.size
 
+    # Sorted by Dec, all three arrays with the same permutation, so that
+    # SkyWindow.contains can find each window's Dec band by binary search.
+    order = np.argsort(dec)
+    times, ra, dec = times[order], ra[order], dec[order]
+
     # The observation interval is the span of the sample itself.
     t0 = times.min()
     tf = times.max()
@@ -165,51 +174,48 @@ def main(dataset: str, submission_id: str | None = None) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 2) HEALPix grid covering the FoV
+    # 2) Windows centred on the HEALPix pixels inside the FoV
     # ------------------------------------------------------------------
-    grid = stc.HealpixGrid(exposure_model, nside=nside)
+    healpix = stc.HealpixGrid(exposure_model, nside=nside)
+    grid = stc.SkyGrid(healpix.centres, window_radius_deg)
     n_windows = len(grid)
+    window_solid_angle = float(grid[0].solid_angle)
     logger.info(
-        "Built HEALPix grid: nside=%d, %d pixels with centre inside the FoV "
-        "(%.3f deg^2 each).",
-        nside, n_windows, grid.solid_angle * np.degrees(1.0) ** 2,
+        "Built grid: %d windows of radius %.2f deg (%.3f deg^2 each), "
+        "centred on the nside=%d HEALPix pixels inside the FoV.",
+        n_windows, window_radius_deg,
+        window_solid_angle * np.degrees(1.0) ** 2, nside,
     )
 
-    # Pixels lying entirely inside the FoV. The FoV is the declination band
-    # |dec - latitude| < theta_max, and a pixel's extreme declinations sit at
-    # its corners, so a pixel is inside when all four corners are. The others
-    # straddle the FoV edge and are skipped in the scan.
-    corners = hp.boundaries(nside, grid.pixels, step=1)   # (W, 3, 4) unit vectors
-    corners_dec = np.degrees(np.arcsin(corners[:, 2, :]))
-    inside_fov = np.all(np.abs(corners_dec - latitude_pa) < theta_max_deg, axis=1)
+    # Windows lying entirely inside the FoV, the declination band
+    # |dec - latitude| < theta_max. The others straddle the FoV edge and are
+    # skipped in the scan.
+    inside_fov = (
+        np.abs(grid.centres[:, 1] - latitude_pa) + window_radius_deg < theta_max_deg
+    )
     n_edge = int(np.count_nonzero(~inside_fov))
-    logger.info("%d pixels straddle the FoV edge and are skipped.", n_edge)
+    logger.info("%d windows straddle the FoV edge and are skipped.", n_edge)
 
     # ------------------------------------------------------------------
-    # 3) Assign every event to its pixel at once
-    # ------------------------------------------------------------------
-    event_pixel = grid.pixel_of(ra, dec)
-
-    # ------------------------------------------------------------------
-    # Storage (one entry per pixel, aligned with `grid`)
+    # Storage (one entry per window, aligned with `grid`)
     # ------------------------------------------------------------------
     lambda_array = np.full(n_windows, np.nan)
     n_sample_array = np.zeros(n_windows, dtype=int)
-    expected_n_array = np.full(n_windows, np.nan)   # NaN for pixels not tested
+    expected_n_array = np.full(n_windows, np.nan)   # NaN for windows not tested
     pvalues_lambda = np.full(n_windows, np.nan)
     pvalues_poisson = np.full(n_windows, np.nan)
 
-    n_dropped = 0   # pixels with fewer than 2 events (routine)
-    n_failed = 0    # pixels with >= 2 events that still raised
+    n_dropped = 0   # windows with fewer than 2 events (routine)
+    n_failed = 0    # windows with >= 2 events that still raised
 
     # ------------------------------------------------------------------
-    # 4) Scan: exposure from the arrival times, then the Lambda method
+    # 3) Scan: exposure from the arrival times, then the Lambda method
     # ------------------------------------------------------------------
     # disable=None turns the bar off when not on a terminal (HTCondor jobs).
     for i, window in enumerate(
-        tqdm(grid, total=n_windows, desc="Pixels scanned", disable=None)
+        tqdm(grid, total=n_windows, desc="Windows scanned", disable=None)
     ):
-        mask = event_pixel == window.ipix
+        mask = window.contains(ra, dec, dec_sorted=True)
         n_sample_array[i] = np.count_nonzero(mask)
 
         if not inside_fov[i]:
@@ -229,7 +235,7 @@ def main(dataset: str, submission_id: str | None = None) -> None:
             # rate below then read it from there, with no second pass.
             #
             # Exposure of every event from its arrival time, evaluated at the
-            # pixel centre.
+            # window centre.
             exposure = exposure_model.norm_cumul_exposure(times[mask], window.centre)
 
             subsample = sample.select_subsample(window, mask=mask)
@@ -244,7 +250,7 @@ def main(dataset: str, submission_id: str | None = None) -> None:
 
             lambda_array[i] = stc.lambda_estimator(sample=subsample)
 
-            # Clipped at 1: for pixels with far fewer events than expected
+            # Clipped at 1: for windows with far fewer events than expected
             # (the exposure model does not yet match the mock), the true
             # p-value is within ~1e-14 of 1 and rounding can push it above.
             pvalues_lambda[i] = min(
@@ -259,15 +265,15 @@ def main(dataset: str, submission_id: str | None = None) -> None:
             lambda_array[i] = np.nan
             n_failed += 1
             logger.exception(
-                "Pixel %d (centre=[%.2f, %.2f], n_sample=%d) failed; "
+                "Window %d (centre=[%.2f, %.2f], n_sample=%d) failed; "
                 "recorded as NaN.",
-                window.ipix, window.centre[0], window.centre[1],
+                i, window.centre[0], window.centre[1],
                 n_sample_array[i],
             )
 
     n_tested = n_windows - n_edge - n_dropped - n_failed
     logger.info(
-        "Scan finished: %d pixels | %d tested | %d on the FoV edge | "
+        "Scan finished: %d windows | %d tested | %d on the FoV edge | "
         "%d dropped (n < 2) | %d failed.",
         n_windows, n_tested, n_edge, n_dropped, n_failed,
     )
@@ -281,14 +287,14 @@ def main(dataset: str, submission_id: str | None = None) -> None:
     sigma_lambda[tested] = stc.pvalue_to_sigma(pvalues_lambda[tested])
     sigma_poisson[tested] = stc.pvalue_to_sigma(pvalues_poisson[tested])
 
-    # Pixels above the threshold, most significant first, for the metadata.
+    # Windows above the threshold, most significant first, for the metadata.
     above_threshold = {}
     for name, sigma in (("lambda", sigma_lambda), ("poisson", sigma_poisson)):
         above = np.flatnonzero(sigma > sigma_threshold)     # NaN compares False
         above = above[np.argsort(-sigma[above])]
         above_threshold[name] = [
             {
-                "pixel": int(grid.pixels[j]),
+                "pixel": int(healpix.pixels[j]),
                 "ra_deg": float(grid.centres[j, 0]),
                 "dec_deg": float(grid.centres[j, 1]),
                 "n_sample": int(n_sample_array[j]),
@@ -298,25 +304,34 @@ def main(dataset: str, submission_id: str | None = None) -> None:
             for j in above
         ]
 
-    # Expected number of pixels above the threshold by chance, and the
-    # probability of at least one, for n_tested pixels with uniform p-values.
-    # Pixels are treated as independent, which is approximate: neighbours
-    # share events, and the Poisson mid-p value is discrete.
+    # Probability of at least one window above the threshold by chance, for
+    # n_tested windows with uniform p-values. Windows are treated as
+    # independent, which they are not: neighbouring windows overlap heavily
+    # and share most of their events, and the Poisson mid-p value is discrete.
     p_threshold = float(stc.sigma_to_pvalue(sigma_threshold))
-    n_expected_above = n_tested * p_threshold
     prob_any_above = 1.0 - (1.0 - p_threshold) ** n_tested
+
+    # Number of windows above 3, 4 and 5 sigma in each test, and the number
+    # expected by chance, n_tested * p(sigma), under the same assumptions.
+    sigma_table = {}
+    for threshold in (3.0, 4.0, 5.0):
+        sigma_table[f"{threshold:g}sigma"] = {
+            "n_lambda": int(np.count_nonzero(sigma_lambda > threshold)),
+            "n_poisson": int(np.count_nonzero(sigma_poisson > threshold)),
+            "n_expected": n_tested * float(stc.sigma_to_pvalue(threshold)),
+        }
 
     # ------------------------------------------------------------------
     # Save outputs and metadata
     # ------------------------------------------------------------------
     np.savez_compressed(
         outdir / "results.npz",
-        pixels=grid.pixels,               # (W,)   HEALPix RING index of each pixel
-        centres=grid.centres,             # (W, 2) pixel centres [RA, Dec] (deg)
-        inside_fov=inside_fov,            # (W,)   False for pixels on the FoV edge (skipped)
+        pixels=healpix.pixels,            # (W,)   HEALPix RING index of each window centre
+        centres=grid.centres,             # (W, 2) window centres [RA, Dec] (deg)
+        inside_fov=inside_fov,            # (W,)   False for windows on the FoV edge (skipped)
         expected_n=expected_n_array,      # (W,)   exposure-weighted expected count (NaN if not tested)
-        lambda_array=lambda_array,        # (W,)   Lambda statistic per pixel
-        n_sample_array=n_sample_array,    # (W,)   event count per pixel
+        lambda_array=lambda_array,        # (W,)   Lambda statistic per window
+        n_sample_array=n_sample_array,    # (W,)   event count per window
         pvalues_lambda=pvalues_lambda,    # (W,)   marginal Lambda p-value
         pvalues_poisson=pvalues_poisson,  # (W,)   Poisson counting mid-p value
         sigma_lambda=sigma_lambda,        # (W,)   one-sided significance, Lambda
@@ -336,19 +351,18 @@ def main(dataset: str, submission_id: str | None = None) -> None:
             "runtime_seconds": elapsed,
             "n_total": n_total,
             "nside": nside,
-            "pixel_solid_angle_sr": grid.solid_angle,
+            "window_radius_deg": window_radius_deg,
+            "window_solid_angle_sr": window_solid_angle,
             "n_windows": n_windows,
             "n_windows_tested": n_tested,
             "n_windows_edge": n_edge,
             "n_windows_dropped": n_dropped,
             "n_windows_failed": n_failed,
             "sigma_threshold": sigma_threshold,
-            "n_above_threshold_lambda": len(above_threshold["lambda"]),
-            "n_above_threshold_poisson": len(above_threshold["poisson"]),
             "p_threshold": p_threshold,
-            "n_expected_above_threshold": n_expected_above,
             "prob_any_above_threshold": prob_any_above,
             "pixels_above_threshold": above_threshold,
+            "sigma_table": sigma_table,
             "t0": t0.isot,
             "tf": tf.isot,
             "T_obs_days": T_obs_days,
@@ -366,7 +380,10 @@ def main(dataset: str, submission_id: str | None = None) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Blind search on one mock sample over a HEALPix grid."
+        description=(
+            "Blind search on one mock sample over circular windows centred "
+            "on a HEALPix grid."
+        )
     )
     parser.add_argument(
         "--dataset",

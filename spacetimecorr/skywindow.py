@@ -162,8 +162,19 @@ class SkyWindow:
     # Geometric selection
     # -------------------------------------------------------------------------
 
-    def contains(self, ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
+    def contains(
+        self,
+        ra: np.ndarray,
+        dec: np.ndarray,
+        dec_sorted: bool = False,
+    ) -> np.ndarray:
         """Return boolean mask selecting coordinates inside the window.
+
+        The angular distance to the centre is only computed for the
+        coordinates inside the box that encloses the cap: Dec in
+        ``[dec_c - radius, dec_c + radius]`` and RA, modulo 360, within
+        ``arcsin(sin radius / cos dec_c)`` of ``ra_c``. When the cap
+        contains a pole the box spans all RA.
 
         Parameters
         ----------
@@ -171,6 +182,11 @@ class SkyWindow:
             Right ascension values in degrees.
         dec : np.ndarray
             Declination values in degrees.
+        dec_sorted : bool, optional
+            If True, ``ra`` and ``dec`` are 1-D with ``dec`` in ascending
+            order, and the Dec band of the box is found by binary search
+            instead of a pass over all coordinates. This is not checked:
+            an unsorted ``dec`` gives a wrong mask.
 
         Returns
         -------
@@ -185,8 +201,36 @@ class SkyWindow:
                 f"ra and dec must have the same shape, got {ra.shape} vs {dec.shape}."
             )
 
-        ra_rad  = np.deg2rad(ra)
-        dec_rad = np.deg2rad(dec)
+        ra_flat = ra.ravel()
+        dec_flat = dec.ravel()
+
+        ra_c, dec_c = self.centre
+        r = self.radius
+
+        # The box is widened by `pad` so that rounding never drops a
+        # coordinate the exact test below would keep.
+        pad = 1e-9  # deg
+        dec_min = dec_c - r - pad
+        dec_max = dec_c + r + pad
+
+        # --- Dec band ---
+        if dec_sorted:
+            lo = np.searchsorted(dec_flat, dec_min, side="left")
+            hi = np.searchsorted(dec_flat, dec_max, side="right")
+            idx = np.arange(lo, hi)
+        else:
+            idx = np.flatnonzero((dec_flat >= dec_min) & (dec_flat <= dec_max))
+
+        # --- RA band (all RA if the cap contains a pole) ---
+        if abs(dec_c) + r < 90.0:
+            sin_half = np.sin(np.deg2rad(r)) / np.cos(np.deg2rad(dec_c))
+            ra_half = np.rad2deg(np.arcsin(min(sin_half, 1.0))) + pad
+            dra = (ra_flat[idx] - ra_c + 180.0) % 360.0 - 180.0
+            idx = idx[np.abs(dra) <= ra_half]
+
+        # --- exact test on the coordinates left in the box ---
+        ra_rad  = np.deg2rad(ra_flat[idx])
+        dec_rad = np.deg2rad(dec_flat[idx])
 
         cos_dec = np.cos(dec_rad)
         sin_dec = np.sin(dec_rad)
@@ -202,7 +246,9 @@ class SkyWindow:
             + sin_dec * cz
         )
 
-        return dots >= self._cos_radius
+        mask = np.zeros(ra_flat.size, dtype=bool)
+        mask[idx[dots >= self._cos_radius]] = True
+        return mask.reshape(ra.shape)
 
     # -------------------------------------------------------------------------
     # Uniform sampling

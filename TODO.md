@@ -159,6 +159,22 @@ fix right now, but which should be revisited.
   probability weights in their method. Extending our estimator in this
   direction is a natural next step once the current pipeline is stable.
 
+- **Finer grid of window centres in the blind search (nside 256)**
+  For reference only, not planned. `run_blind_search_mock.py` centres the
+  1.05 deg windows on the nside-128 HEALPix pixels in the FoV. Estimated
+  per dataset (scaled from the nside-32 batch, same cost per window, which
+  is set by the exposure step):
+
+  | nside | spacing  | windows | time (cluster)   | `results.npz` |
+  |-------|----------|--------:|------------------|---------------|
+  | 128   | 0.46 deg | 139,520 | ~6-13 h (median ~9 h)  | ~7 MB  |
+  | 256   | 0.23 deg | 558,592 | ~24-50 h (median ~35 h) | ~28 MB |
+
+  At nside 256 the slowest datasets exceed the 48 h of the "medium"
+  flavour, so each dataset would have to be split over several jobs (e.g.
+  by window range). The gain: the largest distance from a flare to the
+  nearest window centre drops from ~0.3 to ~0.15 deg.
+
 ## Current homework
 
 - **Blind search with flares: decisions before injecting signal**
