@@ -5,7 +5,7 @@
 # Arguments: <dataset> <submission_id>
 #
 # Each job writes a complete run (results.npz, metadata.json, run.log) to
-# output/analysis/blind_search_mock/<submission_id>/<dataset>/. There is
+# output/analysis/mocksamples/blind_search_mock/<submission_id>/<dataset>/. There is
 # nothing to merge, so unlike grid_p50 there is no scratch tree.
 #
 # The project's Python is the interpreter of the conda environment stc_env,

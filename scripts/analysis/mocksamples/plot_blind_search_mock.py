@@ -232,14 +232,19 @@ def plot_pvalues(data, metadata: dict, results_dir: Path) -> None:
             linewidth=1.2, label=r"$\Lambda$")
     ax.hist(p_poisson, bins=bins, density=False, histtype="step",
             linewidth=1.2, label="Poisson")
-    #ax.axhline(1.0, color="black", linestyle="--", linewidth=0.8,
-               #label=r"$\mathcal{U}(0, 1)$")
+    # Uniform p-values: each bin expects N_pix / N_bins pixels. Both tests
+    # are run on the same pixels, so one line serves both.
+    ax.axhline(p_lambda.size / (bins.size - 1), color="black", linestyle="--",
+               linewidth=0.8, label=r"$\mathcal{U}(0, 1)$")
 
     ax.set_xlim(0.0, 1.0)
     ax.set_xlabel(r"$p$-value")
     ax.set_ylabel("Pixels")
     ax.set_yscale("log")
     ax.legend(loc="upper right")
+
+    i = metadata["dataset"].split("_")[-1]
+    ax.set_title(rf"mocksample\_{i}")
 
     fig.tight_layout()
     fig.savefig(results_dir / "pvalues.png", dpi=300, bbox_inches="tight")
@@ -336,6 +341,6 @@ if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[3]
 
     # Change this to the run you want to plot
-    run_dir = project_root / "output" / "analysis" / "blind_search_mock"
+    run_dir = project_root / "output" / "analysis" / "mocksamples" / "blind_search_mock"
     run_id = "dataset_50_20261015_150812"
     main(run_dir / run_id)

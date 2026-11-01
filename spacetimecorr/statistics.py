@@ -185,8 +185,12 @@ def lambda_marginal_pdf(x, mu):
     pdf = np.zeros_like(x, dtype=float)
     mask = x > 0
 
+    # I_2(z) overflows for z above ~700, where exp(-mu - x) underflows, so
+    # the scaled Bessel function ive(2, z) = iv(2, z) * exp(-z) is used:
+    # its exponent, z - mu - x = -(sqrt(mu) - sqrt(x))**2, is never positive.
     xm = x[mask]
-    pdf[mask] = np.exp(-mu - xm) * (mu / xm) * scs.iv(2, 2.0 * np.sqrt(mu * xm))
+    z = 2.0 * np.sqrt(mu * xm)
+    pdf[mask] = np.exp(z - mu - xm) * (mu / xm) * scs.ive(2, z)
 
     return pdf if pdf.ndim > 0 else float(pdf)
 
@@ -395,6 +399,48 @@ def lambda_estimator(sample: EventSample) -> float:
     lambda_stat = float(-np.sum(np.log(-np.expm1(-x))))
 
     return lambda_stat
+
+
+def lambda_estimator_suppressed_cdf(exposure: np.ndarray, rate: float, mu: float) -> float:
+    """
+    Lambda with the suppressed CDF of the gaps in place of the exponential
+    one of :func:`lambda_estimator`::
+
+        Lambda = -sum log F(x_i),    x_i = rate * gap_i
+
+        F(x) = int_0^x (mu + 1 - t) / mu * exp(-t) dt
+             = 1 - exp(-x) + x * exp(-x) / mu
+
+    The gaps are those between consecutive sorted exposure values. With
+    ``rate = mu / E_max`` every gap has ``x <= mu``, where ``F(mu) = 1``.
+
+    Parameters
+    ----------
+    exposure:
+        Directional exposure values of the events of one window.
+    rate:
+        Expected number of events per unit exposure.
+    mu:
+        Expected number of events in the window.
+
+    Returns
+    -------
+    lambda_stat:
+        Lambda estimator
+    """
+    gaps = np.diff(np.sort(np.asarray(exposure, dtype=float)))
+
+    # As in lambda_estimator: ties send log F to -inf.
+    if np.any(gaps <= 0.0):
+        raise ValueError(
+            "lambda_estimator_suppressed_cdf: duplicate (or non-increasing) "
+            "exposure values detected."
+        )
+
+    x = gaps * rate
+    # -expm1(-x) rather than 1 - exp(-x), as in lambda_estimator.
+    cdf = -np.expm1(-x) + x * np.exp(-x) / mu
+    return float(-np.sum(np.log(cdf)))
 
 # --------------------------------------------------------------------------------
 # Fisher's method 

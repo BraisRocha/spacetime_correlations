@@ -50,35 +50,21 @@ from pathlib import Path
 
 import numpy as np
 
-from astropy.time import Time
 from tqdm import tqdm
 
 import spacetimecorr as stc
 from spacetimecorr.io import (
-    setup_logger, make_run_dir, write_metadata, load_active_area,
+    setup_logger, make_run_dir, write_metadata, load_active_area, load_mock_sample,
 )
-
-
-def load_mock_sample(path: Path) -> tuple[Time, np.ndarray, np.ndarray]:
-    """Read a mock sample: arrival times, RA and Dec (deg).
-
-    Columns: Unix UTC seconds, nanoseconds, RA, Dec, angular resolution
-    (unused). Both time columns are integers below 2**53, so float64 holds
-    them exactly; they are then passed to ``Time`` as two numbers.
-    Nanosecond values outside ``[0, 1e9)`` are taken literally, as an offset
-    from the second.
-    """
-    seconds, nanoseconds, ra, dec = np.loadtxt(path, usecols=(0, 1, 2, 3), unpack=True)
-    times = Time(seconds, nanoseconds * 1e-9, format="unix", scale="utc")
-    return times, ra, dec
 
 
 def main(dataset: str, submission_id: str | None = None) -> None:
     """Run the blind search on one mock sample, e.g. ``dataset="dataset_0"``.
 
     With ``submission_id`` (an HTCondor batch), the run is written to
-    ``output/analysis/blind_search_mock/<submission_id>/<dataset>/``;
-    without it, to ``output/analysis/blind_search_mock/<dataset>_<timestamp>/``.
+    ``output/analysis/mocksamples/blind_search_mock/<submission_id>/<dataset>/``;
+    without it, to
+    ``output/analysis/mocksamples/blind_search_mock/<dataset>_<timestamp>/``.
     """
 
     start_time = time.time()
@@ -113,14 +99,14 @@ def main(dataset: str, submission_id: str | None = None) -> None:
     # ------------------------------------------------------------------
     if submission_id is None:
         outdir, _ = make_run_dir(
-            base_dir=project_root / "output" / "analysis",
+            base_dir=project_root / "output" / "analysis" / "mocksamples",
             run_code="blind_search_mock",
             seed=0,
             submission_id=f"{dataset}_{datetime.now():%Y%m%d_%H%M%S}",
         )
     else:
         outdir, _ = make_run_dir(
-            base_dir=project_root / "output" / "analysis" / "blind_search_mock",
+            base_dir=project_root / "output" / "analysis" / "mocksamples" / "blind_search_mock",
             run_code=submission_id,
             seed=0,
             submission_id=dataset,

@@ -11,7 +11,7 @@
 # is submitted.
 #
 # Each job writes its own complete run to
-# output/analysis/blind_search_mock/<submission_id>/<dataset>/, so there is
+# output/analysis/mocksamples/blind_search_mock/<submission_id>/<dataset>/, so there is
 # no merge step and no DAG. The HTCondor logs (.log, and one .out/.err per
 # dataset) go to scratch/mocksamples/<submission_id>/, together with the list
 # of datasets this batch was asked to run.
@@ -61,5 +61,5 @@ echo "Generated ${DATASETS} with $(wc -l < "${DATASETS}") jobs"
 # --- Submit ---
 echo "Submission ID: ${SUBMISSION_ID}"
 echo "Logs          : ${RUN_SCRATCH}"
-echo "Results       : ${REPO_DIR}/output/analysis/blind_search_mock/${SUBMISSION_ID}"
+echo "Results       : ${REPO_DIR}/output/analysis/mocksamples/blind_search_mock/${SUBMISSION_ID}"
 condor_submit "submission_id=${SUBMISSION_ID}" "${SCRIPT_DIR}/blind_search_mock.sub"

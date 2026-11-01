@@ -1,0 +1,25 @@
+# The prepare node: zenith angles of the sample and local-to-ICRS matrices,
+# saved to the scratch directory of the submission for the band jobs.
+# Submit with: bash condor/h0_mc_distribution/submit_h0_mc.sh
+#
+# Paths are absolute because the executable is copied to the worker node, so
+# nothing can be located relative to this file. Update them if the repository
+# moves. The Python environment is picked by run_h0_mc.sh, not here.
+#
+# submission_id and dataset are set by the submitting script. There is no
+# "log" command: the event log of the whole submission is one of the files
+# DAGMan keeps, next to the .dag.
+
+getenv     = PATH,HOME,LD_LIBRARY_PATH,CONDA_PREFIX,CONDA_DEFAULT_ENV
+executable = /lustre/Auger/brais.rocha/spacetime_correlations/condor/h0_mc_distribution/run_h0_mc.sh
+
+output = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)/prepare.out
+error  = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)/prepare.err
+
+should_transfer_files   = Yes
+when_to_transfer_output = ON_EXIT
++flavour                = "short"
+arguments               = prepare --dataset $(dataset) --scratch-dir /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)
+request_memory          = 2G
+
+queue
