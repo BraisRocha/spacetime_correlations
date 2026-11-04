@@ -18,7 +18,8 @@ the counts expected from the fitted ``f``, with the bins at the ends merged
 until every one expects at least ``MIN_EXPECTED`` values, and
 ``dof = n_bins - 1 - 2``.
 
-Output, in ``<run_dir>/fit/``: one plot per band (histogram, fitted ``f``
+Input, the ``band_ring*.npz`` of ``<run_dir>/bands/``. Output, in
+``<run_dir>/fits/``: one plot per band (histogram, fitted ``f``
 and residuals), ``fit_vs_dec.png`` (``a``, ``b`` and ``chi2 / dof`` against
 the declination of the band) and the fitted values in ``fits.npz`` and
 ``fits.json``.
@@ -41,7 +42,7 @@ RC_FILE = Path(__file__).resolve().parents[3] / "plots" / "matplotlibrc_test"
 if RC_FILE.exists():
     mpl.rc_file(RC_FILE, use_default_template=False)
 
-BINS_PER_STD = 5        # histogram bins per standard deviation of the values
+N_BINS = 60             # histogram bins over the range of the values, as in h0_pipeline.py
 MIN_EXPECTED = 5.0      # least expected count of a bin of the chi2
 
 
@@ -121,14 +122,13 @@ def fit_band(x: np.ndarray, k: float) -> dict:
 def chi2_test(x: np.ndarray, k: float, a: float, b: float) -> dict:
     """Pearson's chi2 of the histogram of ``x`` against the fitted ``f``.
 
-    The bins have width ``std(x) / BINS_PER_STD`` over the range of the
-    values; the two outer bins extend to the ends of the support, so that
-    the expected counts add up to ``x.size``. Bins expecting fewer than
+    The bins are ``N_BINS`` of equal width over the range of the values;
+    the two outer bins extend to the ends of the support, so that the
+    expected counts add up to ``x.size``. Bins expecting fewer than
     ``MIN_EXPECTED`` values are merged with their neighbours, from each end
     towards the centre.
     """
-    width = x.std() / BINS_PER_STD
-    edges = np.arange(x.min(), x.max() + width, width)
+    edges = np.linspace(x.min(), x.max(), N_BINS + 1)
     observed = np.histogram(x, bins=edges)[0].astype(float)
     cdf = scp.gamma.cdf(edges, k, loc=a, scale=b)
     cdf[0], cdf[-1] = 0.0, 1.0
@@ -174,8 +174,8 @@ def plot_band_fit(
     """Histogram of the values with the fitted ``f``, and the residuals
     ``(O - E)/sqrt(E)`` of the bins of the chi2 below."""
     a, b = fit["a"], fit["b"]
-    width = x.std() / BINS_PER_STD
-    bins = np.arange(x.min(), x.max() + width, width)
+    bins = np.linspace(x.min(), x.max(), N_BINS + 1)
+    width = bins[1] - bins[0]
     grid = np.linspace(bins[0], bins[-1], 1000)
 
     fig, (ax, ax_res) = plt.subplots(
@@ -184,9 +184,11 @@ def plot_band_fit(
     )
 
     counts = np.histogram(x, bins=bins)[0]
-    ax.hist(x, bins=bins, histtype="step", linewidth=1.2, label="isotropic skies")
+    ax.hist(x, bins=bins, histtype="step", linewidth=1.2, color="C0", label="suppressed CDF")
     curve = x.size * width * scp.gamma.pdf(grid, k, loc=a, scale=b)
-    ax.plot(grid, curve, color="black", linestyle="--", linewidth=0.8, label="fit")
+    ax.plot(grid, curve, color="black", linestyle="--", linewidth=0.8,
+            label=r"$f(x) = \frac{x^{\mu-2}\,e^{-x}}{b\,\Gamma(\mu-1)}$, "
+                  r"$x = \frac{\Lambda - a}{b}$")
     ax.text(
         0.04, 0.95,
         rf"$a = {a:.3f} \pm {fit['sigma_a']:.3f}$" "\n"
@@ -197,7 +199,7 @@ def plot_band_fit(
     )
     # Headroom above the data for the legend and the text.
     ax.set_ylim(0.0, 1.45 * max(counts.max(), curve.max()))
-    ax.set_ylabel("caps")
+    ax.set_ylabel("counts")
     ax.set_title(title)
     ax.legend(loc="upper right", fontsize=6)
 
@@ -209,7 +211,7 @@ def plot_band_fit(
                     elinewidth=0.6, capsize=0)
     ax_res.set_xlim(bins[0], bins[-1])
     ax_res.set_xlabel(r"$\Lambda$")
-    ax_res.set_ylabel(r"$(O - E)/\sqrt{E}$")
+    ax_res.set_ylabel(r"$(O - E)/\sqrt{E}$", fontsize=7)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
@@ -222,18 +224,22 @@ def plot_vs_dec(fits: dict, output_path: Path) -> None:
     fig, axes = plt.subplots(3, 1, figsize=(3.4, 4.6), sharex=True,
                              gridspec_kw={"hspace": 0.08})
 
-    axes[0].errorbar(dec, fits["a"], yerr=fits["sigma_a"], fmt="o", markersize=2.5,
-                     elinewidth=0.8, capsize=0)
+    axes[0].errorbar(dec, fits["a"], yerr=fits["sigma_a"], fmt="o-", markersize=1.2,
+                     linewidth=0.6, elinewidth=0.8, capsize=0)
     axes[0].set_ylabel(r"$a$")
+    axes[0].set_title(r"Fit of the $\Lambda$ distribution per declination band")
 
-    axes[1].errorbar(dec, fits["b"], yerr=fits["sigma_b"], fmt="o", markersize=2.5,
-                     elinewidth=0.8, capsize=0)
+    axes[1].errorbar(dec, fits["b"], yerr=fits["sigma_b"], fmt="o-", markersize=1.2,
+                     linewidth=0.6, elinewidth=0.8, capsize=0)
     axes[1].set_ylabel(r"$b$")
 
-    axes[2].plot(dec, fits["chi2"] / fits["dof"], "o", markersize=2.5)
+    axes[2].plot(dec, fits["chi2"] / fits["dof"], "o-", markersize=1.2, linewidth=0.6)
     axes[2].axhline(1.0, color="black", linestyle="--", linewidth=0.8)
     axes[2].set_ylabel(r"$\chi^2/\mathrm{dof}$")
     axes[2].set_xlabel(r"Dec [deg]")
+
+    for ax in axes:
+        ax.grid(True, linewidth=0.3, alpha=0.5)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
@@ -245,11 +251,11 @@ def plot_vs_dec(fits: dict, output_path: Path) -> None:
 # ----------------------------------------------------------------------
 
 def main(run_dir: Path) -> None:
-    """Fit every band of ``run_dir`` and save the plots and the values to
-    ``run_dir/fit/``."""
-    output_dir = run_dir / "fit"
+    """Fit every band of ``run_dir/bands/`` and save the plots and the
+    values to ``run_dir/fits/``."""
+    output_dir = run_dir / "fits"
     rows = []
-    for path in sorted(run_dir.glob("band_ring*.npz")):
+    for path in sorted((run_dir / "bands").glob("band_ring*.npz")):
         with np.load(path) as f:
             ring = int(f["ring"])
             dec = float(f["dec"])
@@ -272,7 +278,7 @@ def main(run_dir: Path) -> None:
 
         plot_band_fit(
             x, k, fit, test,
-            title=rf"ring {ring}, Dec $= {dec:.1f}^\circ$, $\mu = {mu_band:.2f}$, {x.size} values",
+            title=rf"ring {ring}, Dec $= {dec:.1f}^\circ$, $\mu = {mu_band:.2f}$",
             output_path=output_dir / f"band_ring{ring:03d}_fit.png",
         )
         rows.append({
@@ -299,7 +305,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "run_dir", type=Path,
-        help="Output folder of h0_pipeline.py merge, with the band_ring*.npz files.",
+        help="Output folder of h0_pipeline.py merge, with the band_ring*.npz files in bands/.",
     )
     return parser.parse_args()
 

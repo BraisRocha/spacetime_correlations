@@ -77,6 +77,7 @@ if RC_FILE.exists():
 # ----------------------------------------------------------------------
 NSIDE = 32                     # HEALPix resolution of the cap centres
 WINDOW_RADIUS_DEG = 1.05       # angular radius of every cap
+N_BINS = 60                # histogram bins over the range of Lambda of a band
 
 # Pierre Auger Observatory
 LATITUDE_PA = -35.15
@@ -364,8 +365,8 @@ def plot_band(
     ks = scp.kstest(lambdas, cdf)
     ks_exp = scp.kstest(lambdas_exp, cdf)
 
-    bin_width = 4.0
-    bins = np.arange(bin_width * np.floor(low / bin_width), high + bin_width, bin_width)
+    bins = np.linspace(low, high, N_BINS + 1)
+    bin_width = bins[1] - bins[0]
     bin_centres = 0.5 * (bins[1:] + bins[:-1])
 
     fig, ax = plt.subplots(figsize=(3.4, 2.5))
@@ -391,7 +392,7 @@ def plot_band(
     ax.set_xlim(bins[0], bins[-1])
     ax.set_ylim(0.0, 1.4 * peak)
     ax.set_xlabel(r"$\Lambda$")
-    ax.set_ylabel("caps")
+    ax.set_ylabel("counts")
     ax.set_title(title)
     ax.legend(loc="upper right", fontsize=6)
 
@@ -404,7 +405,9 @@ def plot_band(
 
 
 def merge(scratch_dir: Path, output_dir: Path, keep_scratch: bool) -> int:
-    """Merge the jobs of ``scratch_dir`` per band into ``output_dir``.
+    """Merge the jobs of ``scratch_dir`` per band into ``output_dir``: the
+    npz and the plot of every band in ``output_dir/bands/``, the summary and
+    the parameters in ``output_dir``.
 
     The jobs expected are those of ``scratch_dir/params.txt``. The scratch
     directory is removed only when all of them arrived, unless
@@ -421,7 +424,8 @@ def merge(scratch_dir: Path, output_dir: Path, keep_scratch: bool) -> int:
         else:
             missing.append(path.name)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    bands_dir = output_dir / "bands"
+    bands_dir.mkdir(parents=True, exist_ok=True)
     summary = []
     for ring, paths in tqdm(sorted(paths_by_ring.items()), desc="Bands", disable=None):
         # The file names carry k_start zero-padded, so they sort in sky order.
@@ -439,7 +443,7 @@ def merge(scratch_dir: Path, output_dir: Path, keep_scratch: bool) -> int:
         dec_ring = float(first["centres"][0, 1])
 
         np.savez_compressed(
-            output_dir / f"band_ring{ring:03d}.npz",
+            bands_dir / f"band_ring{ring:03d}.npz",
             ring=ring, dec=dec_ring, radius_deg=WINDOW_RADIUS_DEG, skies=skies,
             pixels=first["pixels"], centres=first["centres"],
             mu=first["mu"], eps_max=first["eps_max"], n_sample=n_sample,
@@ -458,11 +462,8 @@ def merge(scratch_dir: Path, output_dir: Path, keep_scratch: bool) -> int:
         if values.size > 0:
             ks, ks_exp = plot_band(
                 values, values_exp, np.broadcast_to(first["mu"], lambdas.shape)[tested],
-                title=(
-                    rf"ring {ring}, Dec $= {dec_ring:.1f}^\circ$, "
-                    rf"$N_{{\rm side}} = {NSIDE}$, {values.size} values"
-                ),
-                output_path=output_dir / f"band_ring{ring:03d}.png",
+                title=rf"ring {ring}, Dec $= {dec_ring:.1f}^\circ$",
+                output_path=bands_dir / f"band_ring{ring:03d}.png",
             )
             for suffix, v, k in (("", values, ks), ("_exp", values_exp, ks_exp)):
                 stats.update({
