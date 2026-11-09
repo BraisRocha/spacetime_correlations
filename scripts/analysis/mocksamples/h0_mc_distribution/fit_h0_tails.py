@@ -2,9 +2,8 @@
 Fit of the upper tail of the Lambda distribution of every declination band
 of an h0_mc_distribution run (the output of ``h0_pipeline.py merge``).
 
-For every band, the Lambda values (with the suppressed or the exponential
-CDF, see ``ESTIMATORS``) above the ``TAIL_QUANTILE`` quantile ``q`` of the
-band are fitted to the density::
+For every band, the suppressed Lambda values above the ``TAIL_QUANTILE``
+quantile ``q`` of the band are fitted to the density::
 
     g(Lambda) = exp(-(Lambda - q)^b / c) / I,    Lambda > q
 
@@ -25,8 +24,7 @@ until every one expects at least ``MIN_EXPECTED`` values, and
 ``dof = n_bins - 1 - 2``.
 
 Input, the ``band_ring*.npz`` of ``<run_dir>/bands/``. Output, in
-``<run_dir>/tail_fit/`` (suppressed) or ``<run_dir>/tail_fit_exp/``
-(exponential): one plot per band (histogram, fitted ``g`` and
+``<run_dir>/tail_fit/``: one plot per band (histogram, fitted ``g`` and
 residuals, log scale), ``tail_fit_vs_dec.png`` (``a = q``, ``b``, the
 width ``lambda = c^(1/b)`` and ``chi2 / dof`` against the declination of
 the band) and the fitted values
@@ -49,12 +47,6 @@ from fit_h0_bands import MIN_EXPECTED, N_BINS
 
 TAIL_QUANTILE = 0.90    # the tail is the values above this quantile of the band
 N_PARAMS = 2
-
-# Lambda estimator -> (key of the band npz, legend label, output folder).
-ESTIMATORS = {
-    "suppressed": ("lambdas", "suppressed CDF", "tail_fit"),
-    "exponential": ("lambdas_exp", "exponential CDF", "tail_fit_exp"),
-}
 
 
 # ----------------------------------------------------------------------
@@ -291,18 +283,17 @@ def plot_vs_dec(fits: dict, output_path: Path) -> None:
 # Main
 # ----------------------------------------------------------------------
 
-def main(run_dir: Path, estimator: str) -> None:
-    """Fit the tail of the ``estimator`` Lambda of every band of
-    ``run_dir/bands/`` and save the plots and the values to its output
-    folder in ``run_dir``."""
-    key, label, folder = ESTIMATORS[estimator]
-    output_dir = run_dir / folder
+def main(run_dir: Path) -> None:
+    """Fit the tail of the suppressed Lambda of every band of
+    ``run_dir/bands/`` and save the plots and the values to
+    ``run_dir/tail_fit/``."""
+    output_dir = run_dir / "tail_fit"
     rows = []
     for path in sorted((run_dir / "bands").glob("band_ring*.npz")):
         with np.load(path) as f:
             ring = int(f["ring"])
             dec = float(f["dec"])
-            lambdas = f[key]
+            lambdas = f["lambdas"]
             mu = f["mu"]
 
         tested = np.isfinite(lambdas)
@@ -315,7 +306,7 @@ def main(run_dir: Path, estimator: str) -> None:
             print(f"Ring {ring}: the fit did not converge")
 
         plot_tail_fit(
-            x, fit, test, label=label,
+            x, fit, test, label=r"suppressed $\Lambda$",
             title=rf"ring {ring}, Dec $= {dec:.1f}^\circ$, $\mu = {mu_band:.2f}$",
             output_path=output_dir / f"band_ring{ring:03d}_tail_fit.png",
         )
@@ -346,13 +337,9 @@ def parse_args() -> argparse.Namespace:
         "run_dir", type=Path,
         help="Output folder of h0_pipeline.py merge, with the band_ring*.npz files in bands/.",
     )
-    parser.add_argument(
-        "--estimator", choices=sorted(ESTIMATORS), default="suppressed",
-        help="Lambda whose tail is fitted (default: suppressed).",
-    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    main(args.run_dir, args.estimator)
+    main(args.run_dir)
