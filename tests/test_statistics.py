@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 import scipy.stats as scp
+from scipy.integrate import quad
 
 import spacetimecorr as stc
 from spacetimecorr.statistics import (
@@ -14,6 +15,7 @@ from spacetimecorr.statistics import (
     lambda_conditional_sf,
     lambda_conditional_sigma,
     lambda_estimator,
+    lambda_estimator_suppressed_cdf,
     lambda_marginal_isigma,
     lambda_marginal_logsf,
     lambda_marginal_pdf,
@@ -274,3 +276,41 @@ def test_lambda_estimator_raises_with_too_few_events(exposure_model, t0, tf, rng
     s.expected_exposure_rate = 1.0
     with pytest.raises(ValueError):
         lambda_estimator(s)
+
+
+# --------------------------------------------------------------------------------
+# lambda_estimator_suppressed_cdf
+# --------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("mu", [0.5, 3.6, 30.0])
+def test_suppressed_cdf_matches_integral_of_pdf(mu):
+    x = np.array([0.1, 0.5, 0.9]) * mu
+    numerator = [quad(lambda t: (mu - t) * np.exp(-t), 0.0, xi)[0] for xi in x]
+    expected = -np.sum(np.log(np.array(numerator) / (mu - 1.0 + np.exp(-mu))))
+    exposure = np.concatenate([[0.0], np.cumsum(x)]) / mu  # rate = mu with E_max = 1
+    assert lambda_estimator_suppressed_cdf(exposure, mu, mu) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("mu", [0.5, 3.6, 30.0])
+def test_suppressed_cdf_is_one_at_the_largest_gap(mu):
+    # A single gap spanning the whole window has x = mu and F = 1.
+    assert lambda_estimator_suppressed_cdf(np.array([0.0, 1.0]), mu, mu) == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("mu", [3.6, 30.0])
+def test_suppressed_cdf_of_poisson_gaps_is_uniform(mu):
+    # Single gaps pooled over Poisson windows: -log F is exponential with mean 1.
+    rng = np.random.default_rng(0)
+    values = []
+    for n in rng.poisson(mu, size=20_000):
+        if n >= 2:
+            gaps = np.diff(np.sort(rng.random(n)))
+            values += [
+                lambda_estimator_suppressed_cdf(np.array([0.0, g]), mu, mu) for g in gaps
+            ]
+    assert scp.kstest(values, "expon").statistic < 0.005
+
+
+def test_suppressed_cdf_raises_with_duplicate_exposure():
+    with pytest.raises(ValueError):
+        lambda_estimator_suppressed_cdf(np.array([0.0, 0.5, 0.5, 1.0]), 30.0, 30.0)

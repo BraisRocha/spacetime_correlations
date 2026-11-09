@@ -1,5 +1,5 @@
-# One job per line of params.txt (dataset, ring, k_start, k_stop, seed): the
-# Lambda values of one band in the skies k_start ... k_stop - 1.
+# One job per line of params.txt (dataset, k_start, k_stop, seed): the
+# Lambda values of every pixel in the skies k_start ... k_stop - 1.
 # Submit with: bash condor/h0_mc_distribution/submit_h0_mc.sh
 #
 # Paths are absolute because the executable is copied to the worker node, so
@@ -16,13 +16,13 @@
 getenv     = PATH,HOME,LD_LIBRARY_PATH,CONDA_PREFIX,CONDA_DEFAULT_ENV
 executable = /lustre/Auger/brais.rocha/spacetime_correlations/condor/h0_mc_distribution/run_h0_mc.sh
 
-output = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)/band_ring$(ring)_k$(k_start).out
-error  = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)/band_ring$(ring)_k$(k_start).err
+output = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)/skies_k$(k_start).out
+error  = /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)/skies_k$(k_start).err
 
 should_transfer_files   = Yes
 when_to_transfer_output = ON_EXIT
 +flavour                = "short"
-arguments               = band --dataset $(dataset) --ring $(ring) --k-start $(k_start) --k-stop $(k_stop) --seed $(seed) --scratch-dir /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)
-request_memory          = 2G
+arguments               = skies --dataset $(dataset) --k-start $(k_start) --k-stop $(k_stop) --seed $(seed) --scratch-dir /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)
+request_memory          = 2560M
 
-queue dataset, ring, k_start, k_stop, seed from /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)/params.txt
+queue dataset, k_start, k_stop, seed from /lustre/Auger/brais.rocha/spacetime_correlations/scratch/h0_mc_distribution/$(submission_id)/params.txt

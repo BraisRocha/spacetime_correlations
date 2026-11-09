@@ -403,13 +403,13 @@ def lambda_estimator(sample: EventSample) -> float:
 
 def lambda_estimator_suppressed_cdf(exposure: np.ndarray, rate: float, mu: float) -> float:
     """
-    Lambda with the suppressed CDF of the gaps in place of the exponential
-    one of :func:`lambda_estimator`::
+    Lambda with the exact CDF of the gaps between consecutive events of a
+    Poisson process observed in a window of ``mu`` expected events::
 
         Lambda = -sum log F(x_i),    x_i = rate * gap_i
 
-        F(x) = int_0^x (mu + 1 - t) / mu * exp(-t) dt
-             = 1 - exp(-x) + x * exp(-x) / mu
+        F(x) = int_0^x (mu - t) * exp(-t) dt / (mu - 1 + exp(-mu))
+             = [(mu - 1) * (1 - exp(-x)) + x * exp(-x)] / (mu - 1 + exp(-mu))
 
     The gaps are those between consecutive sorted exposure values. With
     ``rate = mu / E_max`` every gap has ``x <= mu``, where ``F(mu) = 1``.
@@ -439,11 +439,11 @@ def lambda_estimator_suppressed_cdf(exposure: np.ndarray, rate: float, mu: float
 
     x = gaps * rate
     # -expm1(-x) rather than 1 - exp(-x), as in lambda_estimator.
-    cdf = -np.expm1(-x) + x * np.exp(-x) / mu
+    cdf = ((mu - 1.0) * -np.expm1(-x) + x * np.exp(-x)) / (mu - 1.0 + np.exp(-mu))
     return float(-np.sum(np.log(cdf)))
 
 # --------------------------------------------------------------------------------
-# Fisher's method 
+# Fisher's method
 # --------------------------------------------------------------------------------
 
 def fisher_statistic(p_values: float | np.ndarray) -> float:

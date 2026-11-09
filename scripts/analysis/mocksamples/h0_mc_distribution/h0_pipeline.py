@@ -1,42 +1,37 @@
 """
-Monte Carlo distribution of Lambda under isotropy, per declination band.
+Monte Carlo distribution of Lambda under isotropy, per ring of HEALPix
+pixels.
 
-The windows are circular caps of radius ``WINDOW_RADIUS_DEG`` centred on
-the HEALPix pixels (RING ordering, ``NSIDE``), as in
-``run_blind_search_mock.py``. A band is the caps centred on one ring of
-pixels, numbered as in healpy from 1 at the north pole, for the rings whose
-caps lie entirely inside the field of view. Every band is filled with the
-Lambda values of its caps in isotropic skies scrambled from a mock sample
-(``isotropic_scrambling.scramble``), sky ``k`` from the generator of
-``SeedSequence(seed, spawn_key=(k,))``. Sky ``k`` is the same in every job,
-so the bands are those of one set of full skies.
+The windows are the HEALPix pixels (RING ordering, ``NSIDE``) lying
+entirely inside the field of view (:func:`fov_pixels`). A band is the
+pixels of one ring, numbered as in healpy from 1 at the north pole.
 
-Two Lambda are computed from the same gaps: with the suppressed CDF of the
-gaps (``stc.lambda_estimator_suppressed_cdf``), the one histogrammed, and
-with the exponential CDF (``stc.lambda_estimator``).
+The skies are drawn by ``isotropic_scrambling.isotropic_sky``: the whole sky
+as a Poisson process of ``lam = N - 1`` events per unit of whole-sky
+cumulative exposure, ``N`` the events of the sample, with the zenith angles
+of the sample. Sky ``k`` comes from the generator of
+``SeedSequence(seed, spawn_key=(k,))``, and every sky is drawn once, in one
+job. In every (sky, pixel) with at least 2 events, the suppressed Lambda
+(``stc.lambda_estimator_suppressed_cdf``) is computed with the expected
+count of that sky, ``mu = N_sky E(pixel) / E_sky``, and the rate
+``mu / eps(tf)`` of the pixel.
 
 One subcommand per node of the DAG in ``condor/h0_mc_distribution/``:
 
-    plan     Skies per band for at least ``n_min`` Lambda values::
-
-                 S_b = ceil(n_min / (n_caps_b * P(n >= 2 | mu_b)))
-
-             split into jobs of at most ``max_skies_per_job`` skies, one
-             line per job: ``dataset ring k_start k_stop seed``.
-    prepare  Zenith angle of every event of the sample and local-to-ICRS
-             matrix of every arrival time, computed once for all the jobs,
-             so that every job builds the same skies.
-    band     Skies ``k_start ... k_stop - 1`` of one band, in blocks. For
-             every sky of a block, keep every (event, cap) pair of the band
-             within the radius; for every cap, compute the normalised
-             cumulative exposure of its events in all the skies of the block
-             in one pass at the cap centre (``ExposureModel.norm_cumul_exposure``),
-             then both Lambda in every (sky, cap) with at least 2 events,
-             with the rate ``mu / eps(tf)`` of the cap.
-    merge    Per band, the jobs in sky order, histograms of both Lambda
-             against ``lambda_marginal_pdf(x, mu)`` for ``n >= 2`` with KS
-             tests, and a summary. The scratch directory is removed once every
-             job is in.
+    plan     Skies ``0 ... n_skies - 1`` split into jobs of at most
+             ``skies_per_job`` skies, one line per job:
+             ``dataset k_start k_stop seed``.
+    prepare  Zenith angle of every event of the sample, ``lam`` and the
+             pixels with their rings, computed once for all the jobs.
+    skies    Skies ``k_start ... k_stop - 1``. Every sky is drawn and its
+             events assigned to the pixels; for every pixel, the normalised
+             cumulative exposure of its events in all the skies of the job
+             is computed in one pass at the pixel centre
+             (``ExposureModel.norm_cumul_exposure``), then Lambda in every
+             sky.
+    merge    The jobs in sky order: the table of every (sky, pixel), and per
+             ring the band npz, the histogram of Lambda and a summary. The
+             scratch directory is removed once every job is in.
 
 The model, ``t0`` and ``tf`` are built as in ``run_blind_search_mock.py``.
 """
@@ -47,11 +42,11 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+import astropy.units as u
 import healpy as hp
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.stats as scp
 
 from astropy.utils import iers
 from tqdm import tqdm
@@ -59,7 +54,7 @@ from tqdm import tqdm
 import spacetimecorr as stc
 from spacetimecorr.io import load_active_area, load_mock_sample
 
-from isotropic_scrambling import zenith_angles, local_to_icrs_matrices, scramble
+from isotropic_scrambling import exposure_time_table, isotropic_sky, zenith_angles
 
 # The worker nodes have no network: astropy uses the IERS tables it ships
 # with instead of trying to download newer ones.
@@ -75,9 +70,9 @@ if RC_FILE.exists():
 # ----------------------------------------------------------------------
 # Analysis parameters
 # ----------------------------------------------------------------------
-NSIDE = 32                     # HEALPix resolution of the cap centres
-WINDOW_RADIUS_DEG = 1.05       # angular radius of every cap
-N_BINS = 60                # histogram bins over the range of Lambda of a band
+NSIDE = 32                     # HEALPix resolution of the pixels
+WINDOW_RADIUS_DEG = 1.05       # radius of the caps of fov_rings (band_sliding_window.py)
+N_BINS = 60                    # histogram bins over the range of Lambda of a band
 
 # Pierre Auger Observatory
 LATITUDE_PA = -35.15
@@ -110,7 +105,8 @@ def load_sample_and_model(dataset: str):
 def fov_rings() -> dict[int, np.ndarray]:
     """Pixels of every ring whose caps lie entirely inside the FoV, by ring
     number (1 at the north pole). As in ``run_blind_search_mock.py``, a cap
-    is inside when ``|dec - latitude| + radius < theta_max``.
+    is inside when ``|dec - latitude| + radius < theta_max``. Used by
+    ``band_sliding_window.py``; the pipeline uses :func:`fov_pixels`.
     """
     _, dec_centres = hp.pix2ang(NSIDE, np.arange(hp.nside2npix(NSIDE)), lonlat=True)
     dec_rings = np.unique(dec_centres)[::-1]      # north to south, as the ring numbers
@@ -121,37 +117,36 @@ def fov_rings() -> dict[int, np.ndarray]:
     }
 
 
-def band_file(scratch_dir: Path, ring: int, k_start: int) -> Path:
-    """Results of the job of ``ring`` starting at sky ``k_start``."""
-    return scratch_dir / f"band_ring{ring:03d}_k{k_start:07d}.npz"
+def fov_pixels() -> tuple[np.ndarray, np.ndarray]:
+    """RING indices of the pixels lying entirely inside the field of view,
+    with all four corners at ``|dec - latitude| < theta_max``, and the ring
+    of each, numbered from 1 at the north pole as in healpy."""
+    ipix = np.arange(hp.nside2npix(NSIDE))
+    _, dec_centres = hp.pix2ang(NSIDE, ipix, lonlat=True)
+    corners = hp.boundaries(NSIDE, ipix, step=1)           # (pixel, xyz, corner)
+    dec_corners = np.degrees(np.arcsin(corners[:, 2, :]))
+    inside = np.all(np.abs(dec_corners - LATITUDE_PA) < THETA_MAX_DEG, axis=1)
+
+    # The centres of a ring share their declination; counted from the north.
+    dec_rings = np.unique(dec_centres)
+    rings = dec_rings.size - np.searchsorted(dec_rings, dec_centres)
+    return ipix[inside], rings[inside]
 
 
 # ----------------------------------------------------------------------
 # plan
 # ----------------------------------------------------------------------
 
-def plan(dataset: str, n_min: int, max_skies_per_job: int, seed: int, output: Path) -> None:
-    """Write the job list, one line ``dataset ring k_start k_stop seed``
-    per job, to ``output``."""
-    times, _, _, _, exposure_model = load_sample_and_model(dataset)
-    n_total = times.size
-
-    lines = []
-    for ring, pixels in fov_rings().items():
-        # All the caps of a ring share their declination; the first one
-        # gives the expected count of the ring.
-        centre = np.array(hp.pix2ang(NSIDE, int(pixels[0]), lonlat=True))
-        mu = stc.SkyWindow(centre, WINDOW_RADIUS_DEG).expected_n_in_window(
-            n_total, exposure_model,
-        )
-        p_two = 1.0 - np.exp(-mu) * (1.0 + mu)
-        n_skies = int(np.ceil(n_min / (pixels.size * p_two)))
-        for k_start in range(0, n_skies, max_skies_per_job):
-            k_stop = min(k_start + max_skies_per_job, n_skies)
-            lines.append(f"{dataset} {ring} {k_start} {k_stop} {seed}")
-
+def plan(dataset: str, n_skies: int, skies_per_job: int, seed: int, output: Path) -> None:
+    """Write the job list for the skies ``0 ... n_skies - 1``, one line
+    ``dataset k_start k_stop seed`` per job of at most ``skies_per_job``
+    skies, to ``output``."""
+    lines = [
+        f"{dataset} {k_start} {min(k_start + skies_per_job, n_skies)} {seed}"
+        for k_start in range(0, n_skies, skies_per_job)
+    ]
     output.write_text("\n".join(lines) + "\n")
-    print(f"Wrote {len(lines)} jobs for {len(fov_rings())} bands to {output}")
+    print(f"Wrote {len(lines)} jobs for {n_skies} skies to {output}")
 
 
 # ----------------------------------------------------------------------
@@ -159,166 +154,130 @@ def plan(dataset: str, n_min: int, max_skies_per_job: int, seed: int, output: Pa
 # ----------------------------------------------------------------------
 
 def prepare(dataset: str, scratch_dir: Path) -> None:
-    """Save the zenith angles and the local-to-ICRS matrices of ``dataset``
-    to ``scratch_dir/prepare.npz``."""
+    """Save to ``scratch_dir/prepare.npz`` what every job shares: the zenith
+    angle of every event of ``dataset``, the whole-sky rate ``lam`` of the
+    skies, and the pixels of :func:`fov_pixels` with their rings.
+
+    The run starts and ends with an event, so its ``N`` events span ``N - 1``
+    gaps, and ``lam = N - 1`` events per unit of the whole-sky cumulative
+    exposure (``isotropic_scrambling.isotropic_sky``).
+    """
     times, ra, dec, observatory, _ = load_sample_and_model(dataset)
     theta = zenith_angles(times, ra, dec, observatory.location)
-    matrices = local_to_icrs_matrices(times, observatory.location)
-    np.savez(scratch_dir / "prepare.npz", theta=theta, matrices=matrices)
+    lam = times.size - 1.0
+    pixels, rings = fov_pixels()
+    np.savez(scratch_dir / "prepare.npz", theta=theta, lam=lam, pixels=pixels, rings=rings)
     print(
         f"Saved {scratch_dir / 'prepare.npz'}: {theta.size} events, "
-        f"largest zenith angle {theta.max():.2f} deg"
+        f"largest zenith angle {theta.max():.2f} deg, lambda = {lam:.0f}, "
+        f"{pixels.size} pixels in {np.unique(rings).size} rings"
     )
 
 
 # ----------------------------------------------------------------------
-# band
+# skies
 # ----------------------------------------------------------------------
 
-def band(
-    dataset: str, ring: int, k_start: int, k_stop: int, seed: int,
-    scratch_dir: Path, block_size: int,
-) -> None:
-    """Lambda in every cap of ``ring`` in the skies ``k_start ... k_stop - 1``,
-    saved to :func:`band_file`."""
-    times, _, _, _, exposure_model = load_sample_and_model(dataset)
-    n_total = times.size
-    t0, tf = exposure_model.t0, exposure_model.tf
+def job_file(scratch_dir: Path, k_start: int) -> Path:
+    """Results of the job starting at sky ``k_start``."""
+    return scratch_dir / f"skies_k{k_start:07d}.npz"
+
+
+def skies(dataset: str, k_start: int, k_stop: int, seed: int, scratch_dir: Path) -> None:
+    """Lambda in every pixel of :func:`fov_pixels` in the skies
+    ``k_start ... k_stop - 1``, saved to :func:`job_file`."""
+    _, _, _, observatory, exposure_model = load_sample_and_model(dataset)
+    t0 = exposure_model.t0
     with np.load(scratch_dir / "prepare.npz") as f:
-        theta, matrices = f["theta"], f["matrices"]
+        theta, lam, pixels, rings = f["theta"], float(f["lam"]), f["pixels"], f["rings"]
+    edges, cumul = exposure_time_table(exposure_model)
 
-    # The EventSample constructor requires a generator but draws nothing
-    # from it here; the skies draw from their own streams.
-    rng = np.random.default_rng(0)
+    windows = [stc.HealpixWindow(nside=NSIDE, ipix=int(p)) for p in pixels]
+    n_pixels = pixels.size
+    # Column of every pixel of the sphere in the arrays below, -1 for the
+    # pixels not in the field of view.
+    column = np.full(hp.nside2npix(NSIDE), -1)
+    column[pixels] = np.arange(n_pixels)
 
-    # The caps of the band, centred on the pixels of the ring.
-    pixels = fov_rings()[ring]
-    centres = np.column_stack(hp.pix2ang(NSIDE, pixels, lonlat=True))
-    windows = [stc.SkyWindow(c, WINDOW_RADIUS_DEG) for c in centres]
-    n_caps = pixels.size
-
-    # An event is in a cap when the dot product of their unit vectors is at
-    # least cos(radius), as in SkyWindow.contains.
-    ra_c, dec_c = np.radians(centres).T
-    centre_vecs = np.column_stack((
-        np.cos(dec_c) * np.cos(ra_c), np.cos(dec_c) * np.sin(ra_c), np.sin(dec_c),
-    ))
-    cos_radius = np.cos(np.radians(WINDOW_RADIUS_DEG))
-    dec_ring = centres[0, 1]
-    # Widened as in SkyWindow.contains, so that rounding never drops an
-    # event the exact test would keep.
-    dec_half_width = WINDOW_RADIUS_DEG + 1e-9
-
-    # Expected count and exposure over the whole run of every cap, filled
-    # after its first exposure pass (see below).
-    mu = np.full(n_caps, np.nan)
-    eps_max = np.full(n_caps, np.nan)
-
+    # --------------------------------------------------------------
+    # The events of every sky in the pixels: arrival time, column, sky
+    # (counted from k_start)
+    # --------------------------------------------------------------
     n_skies = k_stop - k_start
-    n_sample = np.zeros((n_skies, n_caps), dtype=int)
-    lambdas = np.full((n_skies, n_caps), np.nan)
-    lambdas_exp = np.full((n_skies, n_caps), np.nan)
-    n_failed = 0      # (sky, cap) with >= 2 events that still raised
-
+    n_total = np.zeros(n_skies, dtype=int)
+    seconds, col, sky = [], [], []
     # disable=None turns the bar off when not on a terminal (HTCondor jobs).
-    for block_start in tqdm(range(k_start, k_stop, block_size), desc="Blocks", disable=None):
-        block_stop = min(block_start + block_size, k_stop)
+    for s, k in enumerate(tqdm(range(k_start, k_stop), desc="Skies", disable=None)):
+        # The spawn key k gives every sky its own stream. RNGManager is not
+        # used: it hashes the stream names to 32 bits, and among ~1e5 names
+        # some would repeat, giving identical skies.
+        sky_rng = np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(k,)))
+        sky_seconds, sky_ra, sky_dec = isotropic_sky(
+            lam, theta, edges, cumul, t0, observatory.location, sky_rng,
+        )
+        n_total[s] = sky_seconds.size
+        sky_col = column[hp.ang2pix(NSIDE, sky_ra, sky_dec, lonlat=True)]
+        kept = sky_col >= 0
+        seconds.append(sky_seconds[kept])
+        col.append(sky_col[kept])
+        sky.append(np.full(np.count_nonzero(kept), s))
+    seconds, col, sky = (np.concatenate(a) for a in (seconds, col, sky))
 
-        # --------------------------------------------------------------
-        # The (event, cap) pairs of the band in every sky of the block:
-        # index of the arrival time, cap, sky (counted from k_start). Caps
-        # can overlap, so an event can be in more than one.
-        # --------------------------------------------------------------
-        time_index, cap, sky = [], [], []
-        for k in range(block_start, block_stop):
-            # The spawn key k gives every sky its own stream. RNGManager is
-            # not used: it hashes the stream names to 32 bits, and among
-            # ~1e5 names some would repeat, giving identical skies.
-            sky_rng = np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(k,)))
-            order, sky_ra, sky_dec = scramble(theta, matrices, sky_rng)
+    # Sorted by column, then by sky, so that every (sky, pixel) is one slice.
+    sort = np.lexsort((sky, col))
+    seconds, col, sky = seconds[sort], col[sort], sky[sort]
+    col_edges = np.searchsorted(col, np.arange(n_pixels + 1))
 
-            near = np.flatnonzero(np.abs(sky_dec - dec_ring) <= dec_half_width)
-            ra_n, dec_n = np.radians(sky_ra[near]), np.radians(sky_dec[near])
-            event_vecs = np.column_stack((
-                np.cos(dec_n) * np.cos(ra_n), np.cos(dec_n) * np.sin(ra_n), np.sin(dec_n),
-            ))
-            cap_of_pair, event_of_pair = np.nonzero(centre_vecs @ event_vecs.T >= cos_radius)
+    # --------------------------------------------------------------
+    # Exposure of the events of all the skies in every pixel, at its
+    # centre, then Lambda in every sky with mu from its own count
+    # --------------------------------------------------------------
+    mu_per_event = np.full(n_pixels, np.nan)     # mu = N * mu_per_event
+    eps_max = np.full(n_pixels, np.nan)
+    n_sample = np.zeros((n_skies, n_pixels), dtype=int)
+    lambdas = np.full((n_skies, n_pixels), np.nan)
+    n_failed = 0      # (sky, pixel) with >= 2 events that still raised
 
-            time_index.append(order[near[event_of_pair]])
-            cap.append(cap_of_pair)
-            sky.append(np.full(cap_of_pair.size, k - k_start))
-        time_index, cap, sky = (np.concatenate(a) for a in (time_index, cap, sky))
+    for j in tqdm(range(n_pixels), desc="Pixels", disable=None):
+        lo, hi = col_edges[j], col_edges[j + 1]
+        centre = windows[j].centre
+        if hi > lo:
+            eps = exposure_model.norm_cumul_exposure(t0 + seconds[lo:hi] * u.s, centre)
 
-        # Sorted by cap, then by sky, so that every (sky, cap) is one slice.
-        sort = np.lexsort((sky, cap))
-        time_index, cap, sky = time_index[sort], cap[sort], sky[sort]
-        cap_edges = np.searchsorted(cap, np.arange(n_caps + 1))
-        skies_in_block = np.arange(block_start - k_start, block_stop - k_start + 1)
+        # The exposure pass also stores the exposure over the whole run in
+        # the model's cache, which mu and eps(tf) then read with no second
+        # pass (one pass for a pixel with no event).
+        mu_per_event[j] = windows[j].expected_n_in_window(1.0, exposure_model)
+        eps_max[j] = exposure_model.max_norm_cumul_exposure(centre)
+        if hi == lo:
+            continue
 
-        # --------------------------------------------------------------
-        # Exposure of the events of all the skies of the block in every
-        # cap, at its centre, then both Lambda in every sky
-        # --------------------------------------------------------------
-        for j in range(n_caps):
-            lo, hi = cap_edges[j], cap_edges[j + 1]
-            if hi == lo:
-                continue
-            eps = exposure_model.norm_cumul_exposure(times[time_index[lo:hi]], centres[j])
-
-            # The exposure pass also stores the exposure over the whole run
-            # in the model's cache, which the expected count and eps(tf)
-            # then read with no second pass.
-            if np.isnan(mu[j]):
-                mu[j] = windows[j].expected_n_in_window(n_total, exposure_model)
-                eps_max[j] = exposure_model.max_norm_cumul_exposure(centres[j])
-            rate = mu[j] / eps_max[j]
-
-            sky_edges = np.searchsorted(sky[lo:hi], skies_in_block)
-
-            for s, a, b in zip(skies_in_block[:-1], sky_edges[:-1], sky_edges[1:]):
-                n_sample[s, j] = b - a
-                if b - a < 2:
-                    continue
-                # EventSample stores the coordinates but Lambda does not
-                # use them; the cap centre stands in for them.
-                subsample = stc.EventSample._from_arrays(
-                    ra=np.full(b - a, centres[j, 0]), dec=np.full(b - a, centres[j, 1]),
-                    n_total=n_total, t0=t0, tf=tf, rng=rng,
-                    spatial_type="data", expected_n=mu[j],
-                    window=windows[j], exposure_model=exposure_model,
-                    exposure=eps[a:b], expected_exposure_rate=rate,
+        sky_edges = np.searchsorted(sky[lo:hi], np.arange(n_skies + 1))
+        n_sample[:, j] = np.diff(sky_edges)
+        for s in np.flatnonzero(n_sample[:, j] >= 2):
+            mu = n_total[s] * mu_per_event[j]
+            try:
+                lambdas[s, j] = stc.lambda_estimator_suppressed_cdf(
+                    eps[sky_edges[s]:sky_edges[s + 1]], mu / eps_max[j], mu,
                 )
-                # Both raise on the same tied exposures, so a (sky, cap)
-                # gets either both values or neither.
-                try:
-                    value = stc.lambda_estimator_suppressed_cdf(eps[a:b], rate, mu[j])
-                    value_exp = stc.lambda_estimator(sample=subsample)
-                except ValueError:
-                    n_failed += 1
-                    continue
-                lambdas[s, j], lambdas_exp[s, j] = value, value_exp
+            except ValueError:
+                n_failed += 1
 
-    # Caps with no event in any sky of the job.
-    for j in np.flatnonzero(np.isnan(mu)):
-        mu[j] = windows[j].expected_n_in_window(n_total, exposure_model)
-        eps_max[j] = exposure_model.max_norm_cumul_exposure(centres[j])
-
-    path = band_file(scratch_dir, ring, k_start)
+    path = job_file(scratch_dir, k_start)
     np.savez_compressed(
         path,
-        ring=ring,
         skies=np.arange(k_start, k_stop),   # (S,)    sky index k of every row
-        pixels=pixels,                      # (C,)    HEALPix RING index of the pixel at the centre of every cap
-        centres=centres,                    # (C, 2)  cap centres [RA, Dec] (deg)
-        mu=mu,                              # (C,)    expected count
-        eps_max=eps_max,                    # (C,)    eps(tf)
-        n_sample=n_sample,                  # (S, C)  events per (sky, cap)
-        lambdas=lambdas,                    # (S, C)  Lambda with the suppressed CDF; NaN with n < 2 or failed
-        lambdas_exp=lambdas_exp,            # (S, C)  Lambda with the exponential CDF; NaN likewise
+        n_total=n_total,                    # (S,)    events of every sky
+        pixels=pixels,                      # (P,)    HEALPix RING index of every column
+        rings=rings,                        # (P,)    ring of every pixel
+        mu_per_event=mu_per_event,          # (P,)    E(pixel) / E_sky: mu = n_total * mu_per_event
+        eps_max=eps_max,                    # (P,)    eps(tf)
+        n_sample=n_sample,                  # (S, P)  events per (sky, pixel)
+        lambdas=lambdas,                    # (S, P)  suppressed Lambda; NaN with n < 2 or failed
         n_failed=n_failed,
     )
     print(
-        f"Ring {ring}, skies {k_start}-{k_stop - 1}: {n_caps} caps, "
+        f"Skies {k_start}-{k_stop - 1}: {n_pixels} pixels, "
         f"{np.count_nonzero(np.isfinite(lambdas))} Lambda values, {n_failed} failed. "
         f"Saved {path}"
     )
@@ -328,69 +287,22 @@ def band(
 # merge
 # ----------------------------------------------------------------------
 
-def plot_band(
-    lambdas: np.ndarray, lambdas_exp: np.ndarray, mu: np.ndarray, *,
-    title: str, output_path: Path,
-):
-    """Histograms of the Lambda values with the suppressed CDF and with the
-    exponential CDF, with Poisson errors, against the marginal density of
-    Lambda for ``n >= 2``, averaged over the values with the ``mu`` of each
-    and scaled to counts per bin. The two arrays come from the same
-    (sky, cap), so they share ``mu``. Returns a KS test of each against the
-    marginal.
-
-    The averaged density and CDF are evaluated on a grid of 4000 points
-    and interpolated, so that their cost does not grow with the number of
-    values.
-    """
-    # Caps with n < 2 have no Lambda, so every cap follows the marginal
-    # density divided by its P(n >= 2). The average runs over the distinct
-    # values of mu, each weighted by the number of Lambda values with it.
-    mu, n_mu = np.unique(mu, return_counts=True)
-    weight = n_mu / n_mu.sum()
-    p_two = 1.0 - np.exp(-mu) * (1.0 + mu)
-
-    low = min(lambdas.min(), lambdas_exp.min())
-    high = max(lambdas.max(), lambdas_exp.max())
-    grid = np.linspace(max(low, 1e-6), high, 4000)
-    pdf_grid = np.zeros_like(grid)
-    sf_grid = np.zeros_like(grid)
-    for m, p, w in zip(mu, p_two, weight):
-        pdf_grid += w * stc.lambda_marginal_pdf(grid, m) / p
-        sf_grid += w * stc.lambda_marginal_sf(grid, m) / p
-
-    def cdf(x):
-        return np.interp(x, grid, 1.0 - sf_grid)
-
-    ks = scp.kstest(lambdas, cdf)
-    ks_exp = scp.kstest(lambdas_exp, cdf)
-
-    bins = np.linspace(low, high, N_BINS + 1)
-    bin_width = bins[1] - bins[0]
+def plot_band(lambdas: np.ndarray, *, label: str, title: str, output_path: Path) -> None:
+    """Histogram of the suppressed Lambda values of a band, with Poisson
+    errors."""
+    bins = np.linspace(lambdas.min(), lambdas.max(), N_BINS + 1)
     bin_centres = 0.5 * (bins[1:] + bins[:-1])
+    counts, _ = np.histogram(lambdas, bins=bins)
+    filled = counts > 0
 
     fig, ax = plt.subplots(figsize=(3.4, 2.5))
-    for values, colour, label in (
-        (lambdas, "C0", rf"suppressed CDF, KS $p = {ks.pvalue:.2g}$"),
-        (lambdas_exp, "C1", rf"exponential CDF, KS $p = {ks_exp.pvalue:.2g}$"),
-    ):
-        counts, _ = np.histogram(values, bins=bins)
-        filled = counts > 0
-        ax.hist(values, bins=bins, histtype="step", linewidth=1.2, color=colour, label=label)
-        ax.errorbar(bin_centres[filled], counts[filled], yerr=np.sqrt(counts[filled]),
-                    fmt="none", ecolor=colour, elinewidth=0.8, capsize=1.5)
-    ax.plot(grid, lambdas.size * bin_width * pdf_grid,
-            color="black", linestyle="--", linewidth=0.8,
-            label=rf"marginal, $\bar\mu = {np.sum(weight * mu):.1f}$")
+    ax.hist(lambdas, bins=bins, histtype="step", linewidth=1.2, color="C0", label=label)
+    ax.errorbar(bin_centres[filled], counts[filled], yerr=np.sqrt(counts[filled]),
+                fmt="none", ecolor="C0", elinewidth=0.8, capsize=1.5)
 
     # Headroom above the data for the legend.
-    peak = max(
-        lambdas.size * bin_width * pdf_grid.max(),
-        np.histogram(lambdas, bins=bins)[0].max(),
-        np.histogram(lambdas_exp, bins=bins)[0].max(),
-    )
     ax.set_xlim(bins[0], bins[-1])
-    ax.set_ylim(0.0, 1.4 * peak)
+    ax.set_ylim(0.0, 1.4 * counts.max())
     ax.set_xlabel(r"$\Lambda$")
     ax.set_ylabel("counts")
     ax.set_title(title)
@@ -401,86 +313,110 @@ def plot_band(
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-    return ks, ks_exp
-
 
 def merge(scratch_dir: Path, output_dir: Path, keep_scratch: bool) -> int:
-    """Merge the jobs of ``scratch_dir`` per band into ``output_dir``: the
-    npz and the plot of every band in ``output_dir/bands/``, the summary and
-    the parameters in ``output_dir``.
+    """Merge the jobs of ``scratch_dir`` into ``output_dir``: the table of
+    every (sky, pixel) in ``skies.npz``, the npz and the plot of every ring
+    in ``bands/``, the summary and the parameters.
 
     The jobs expected are those of ``scratch_dir/params.txt``. The scratch
     directory is removed only when all of them arrived, unless
     ``keep_scratch``. Returns 0 then, and 1 when any is missing.
     """
     jobs = [line.split() for line in (scratch_dir / "params.txt").read_text().splitlines() if line]
-
-    paths_by_ring: dict[int, list[Path]] = {}
-    missing = []
-    for _, ring, k_start, _, _ in jobs:
-        path = band_file(scratch_dir, int(ring), int(k_start))
+    present, missing = [], []
+    for _, k_start, k_stop, _ in jobs:
+        path = job_file(scratch_dir, int(k_start))
         if path.exists():
-            paths_by_ring.setdefault(int(ring), []).append(path)
+            present.append((int(k_start), int(k_stop), path))
         else:
             missing.append(path.name)
+    present.sort()
 
+    # --------------------------------------------------------------
+    # The table of every (sky, pixel), in sky order. Lambda in float32
+    # (7 significant digits) and n in int16 keep it at ~1.3 GB for 25000
+    # skies.
+    # --------------------------------------------------------------
+    with np.load(present[0][2]) as f:
+        pixels, rings = f["pixels"], f["rings"]
+        mu_per_event, eps_max = f["mu_per_event"], f["eps_max"]
+    n_rows = sum(k_stop - k_start for k_start, k_stop, _ in present)
+    skies = np.empty(n_rows, dtype=int)
+    n_total = np.empty(n_rows, dtype=int)
+    n_sample = np.empty((n_rows, pixels.size), dtype=np.int16)
+    lambdas = np.empty((n_rows, pixels.size), dtype=np.float32)
+    row = 0
+    for k_start, k_stop, path in tqdm(present, desc="Jobs", disable=None):
+        rows = slice(row, row + k_stop - k_start)
+        with np.load(path) as f:
+            skies[rows], n_total[rows] = f["skies"], f["n_total"]
+            n_sample[rows], lambdas[rows] = f["n_sample"], f["lambdas"]
+        row += k_stop - k_start
+
+    np.savez(
+        output_dir / "skies.npz",
+        skies=skies,                # (S,)    sky index k of every row
+        n_total=n_total,            # (S,)    events of every sky
+        pixels=pixels,              # (P,)    HEALPix RING index of every column
+        rings=rings,                # (P,)    ring of every pixel
+        mu_per_event=mu_per_event,  # (P,)    mu = n_total * mu_per_event
+        eps_max=eps_max,            # (P,)    eps(tf)
+        n_sample=n_sample,          # (S, P)  events per (sky, pixel)
+        lambdas=lambdas,            # (S, P)  suppressed Lambda; NaN with n < 2 or failed
+    )
+
+    # --------------------------------------------------------------
+    # Every ring: its columns of the table and the histogram
+    # --------------------------------------------------------------
     bands_dir = output_dir / "bands"
     bands_dir.mkdir(parents=True, exist_ok=True)
     summary = []
-    for ring, paths in tqdm(sorted(paths_by_ring.items()), desc="Bands", disable=None):
-        # The file names carry k_start zero-padded, so they sort in sky order.
-        parts = []
-        for path in sorted(paths):
-            with np.load(path) as f:
-                parts.append({key: f[key] for key in f.files})
-        first = parts[0]
-
-        skies = np.concatenate([p["skies"] for p in parts])
-        n_sample = np.concatenate([p["n_sample"] for p in parts])
-        lambdas = np.concatenate([p["lambdas"] for p in parts])
-        lambdas_exp = np.concatenate([p["lambdas_exp"] for p in parts])
-        n_failed = int(sum(p["n_failed"] for p in parts))
-        dec_ring = float(first["centres"][0, 1])
+    for ring in tqdm(np.unique(rings), desc="Bands", disable=None):
+        cols = np.flatnonzero(rings == ring)
+        dec_ring = float(hp.pix2ang(NSIDE, int(pixels[cols[0]]), lonlat=True)[1])
+        mu = n_total[:, None] * mu_per_event[None, cols]
+        band_lambdas, band_n = lambdas[:, cols], n_sample[:, cols]
 
         np.savez_compressed(
             bands_dir / f"band_ring{ring:03d}.npz",
-            ring=ring, dec=dec_ring, radius_deg=WINDOW_RADIUS_DEG, skies=skies,
-            pixels=first["pixels"], centres=first["centres"],
-            mu=first["mu"], eps_max=first["eps_max"], n_sample=n_sample,
-            lambdas=lambdas, lambdas_exp=lambdas_exp, n_failed=n_failed,
+            ring=ring, dec=dec_ring, skies=skies, n_total=n_total,
+            pixels=pixels[cols],                 # (P,)    HEALPix RING index of every column
+            mu_per_event=mu_per_event[cols],     # (P,)
+            eps_max=eps_max[cols],               # (P,)
+            mu=mu,                               # (S, P)  expected count of every (sky, pixel)
+            n_sample=band_n,                     # (S, P)
+            lambdas=band_lambdas,                # (S, P)  suppressed Lambda; NaN with n < 2 or failed
         )
 
-        # (sky, cap) with >= 2 events whose Lambda raised are left out of
-        # the histograms; they are not a random subset, so they are reported.
+        # (sky, pixel) with >= 2 events whose Lambda raised are left out of
+        # the histogram; they are not a random subset, so they are reported.
+        tested = np.isfinite(band_lambdas)
+        n_failed = int(np.count_nonzero((band_n >= 2) & ~tested))
         if n_failed > 0:
-            print(f"Ring {ring}: {n_failed} (sky, cap) with n >= 2 failed and are left out")
+            print(f"Ring {ring}: {n_failed} (sky, pixel) with n >= 2 failed and are left out")
 
-        # Both Lambda are finite on the same (sky, cap).
-        tested = np.isfinite(lambdas)
-        values, values_exp = lambdas[tested], lambdas_exp[tested]
+        values = band_lambdas[tested]
         stats = {}
         if values.size > 0:
-            ks, ks_exp = plot_band(
-                values, values_exp, np.broadcast_to(first["mu"], lambdas.shape)[tested],
+            plot_band(
+                values,
+                label=rf"suppressed $\Lambda$, $\bar\mu = {mu[tested].mean():.1f}$",
                 title=rf"ring {ring}, Dec $= {dec_ring:.1f}^\circ$",
                 output_path=bands_dir / f"band_ring{ring:03d}.png",
             )
-            for suffix, v, k in (("", values, ks), ("_exp", values_exp, ks_exp)):
-                stats.update({
-                    f"lambda{suffix}_mean": float(v.mean()),
-                    f"lambda{suffix}_std": float(v.std()),
-                    f"ks{suffix}_statistic": float(k.statistic),
-                    f"ks{suffix}_pvalue": float(k.pvalue),
-                })
+            stats = {"lambda_mean": float(values.mean()), "lambda_std": float(values.std())}
         else:
             print(f"Ring {ring}: no Lambda values, no histogram")
 
         summary.append({
-            "ring": ring,
+            "ring": int(ring),
             "dec_deg": dec_ring,
-            "n_caps": int(first["pixels"].size),
+            "n_pixels": int(cols.size),
             "n_skies": int(skies.size),
-            "mu_mean": float(first["mu"].mean()),
+            "mu_mean": float(mu.mean()),
+            "mu_min": float(mu.min()),
+            "mu_max": float(mu.max()),
             "n_lambda": int(values.size),
             "n_failed": n_failed,
             **stats,
@@ -514,29 +450,27 @@ def merge(scratch_dir: Path, output_dir: Path, keep_scratch: bool) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Monte Carlo distribution of Lambda under isotropy, per declination band."
+        description="Monte Carlo distribution of Lambda under isotropy, per ring of HEALPix pixels."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("plan", help="Write the job list.")
     p.add_argument("--dataset", default="dataset_0")
-    p.add_argument("--n-min", type=int, required=True, help="Minimum Lambda values per band.")
-    p.add_argument("--max-skies-per-job", type=int, default=30000)
+    p.add_argument("--n-skies", type=int, required=True)
+    p.add_argument("--skies-per-job", type=int, default=50)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--output", type=Path, required=True)
 
-    p = sub.add_parser("prepare", help="Zenith angles and local-to-ICRS matrices.")
+    p = sub.add_parser("prepare", help="Zenith angles, whole-sky rate and pixels.")
     p.add_argument("--dataset", default="dataset_0")
     p.add_argument("--scratch-dir", type=Path, required=True)
 
-    p = sub.add_parser("band", help="Lambda in one band for a range of skies.")
+    p = sub.add_parser("skies", help="Lambda in every pixel for a range of skies.")
     p.add_argument("--dataset", default="dataset_0")
-    p.add_argument("--ring", type=int, required=True)
     p.add_argument("--k-start", type=int, required=True)
     p.add_argument("--k-stop", type=int, required=True)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--scratch-dir", type=Path, required=True)
-    p.add_argument("--block-size", type=int, default=1000, help="Skies per block.")
 
     p = sub.add_parser("merge", help="Merge the jobs per band into output/.")
     p.add_argument("--scratch-dir", type=Path, required=True)
@@ -549,11 +483,10 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     if args.command == "plan":
-        plan(args.dataset, args.n_min, args.max_skies_per_job, args.seed, args.output)
+        plan(args.dataset, args.n_skies, args.skies_per_job, args.seed, args.output)
     elif args.command == "prepare":
         prepare(args.dataset, args.scratch_dir)
-    elif args.command == "band":
-        band(args.dataset, args.ring, args.k_start, args.k_stop, args.seed,
-             args.scratch_dir, args.block_size)
+    elif args.command == "skies":
+        skies(args.dataset, args.k_start, args.k_stop, args.seed, args.scratch_dir)
     elif args.command == "merge":
         raise SystemExit(merge(args.scratch_dir, args.output_dir, args.keep_scratch))

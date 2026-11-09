@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 # Merge one h0_mc_distribution submission from scratch/ into output/.
 #
-# DAGMan runs this on the submit host once every band job of the submission
+# DAGMan runs this on the submit host once every skies job of the submission
 # has finished (the SCRIPT POST line of the .dag). It reads only the
 # filesystem, so it is also the way to redo the merge by hand:
 #

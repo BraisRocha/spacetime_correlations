@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 # Runs ONE node of the h0_mc_distribution DAG: h0_pipeline.py with the
-# subcommand and the arguments given (see prepare.sub and band.sub).
+# subcommand and the arguments given (see prepare.sub and skies.sub).
 #
 # The per-job files go to the scratch tree, not to output/: output/ is
 # written once, by finalize_h0_mc.sh, when the whole submission is done.

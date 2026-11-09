@@ -1,5 +1,5 @@
-# The prepare node: zenith angles of the sample and local-to-ICRS matrices,
-# saved to the scratch directory of the submission for the band jobs.
+# The prepare node: zenith angles of the sample, whole-sky rate and pixels,
+# saved to the scratch directory of the submission for the skies jobs.
 # Submit with: bash condor/h0_mc_distribution/submit_h0_mc.sh
 #
 # Paths are absolute because the executable is copied to the worker node, so

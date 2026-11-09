@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Plan the Monte Carlo distribution of Lambda per declination band and
-# submit it to HTCondor as a DAG.
+# Plan the Monte Carlo distribution of Lambda under isotropy, per ring of
+# HEALPix pixels, and submit it to HTCondor as a DAG.
 #
 # Usage:
 #   bash condor/h0_mc_distribution/submit_h0_mc.sh                 submit
@@ -10,13 +10,13 @@
 #
 # The DAG holds two nodes and a POST script:
 #
-#   prepare  one job (prepare.sub): zenith angles of the sample and the
-#            local-to-ICRS matrix of every arrival time, shared by all the
-#            band jobs so that they all build the same skies.
-#   bands    one job per line of params.txt (band.sub): a range of skies of
-#            one band.
-#   POST     finalize_h0_mc.sh, run on this host once every band job has
-#            finished: merges the bands into output/ and then removes the
+#   prepare  one job (prepare.sub): zenith angles of the sample, whole-sky
+#            rate and pixels inside the field of view, shared by all the
+#            skies jobs.
+#   skies    one job per line of params.txt (skies.sub): Lambda in every
+#            pixel for a range of skies.
+#   POST     finalize_h0_mc.sh, run on this host once every skies job has
+#            finished: merges the jobs into output/ and then removes the
 #            scratch directory.
 #
 # Everything the submission produces on the way lives in
@@ -50,8 +50,8 @@ RUN_SCRATCH="${SCRATCH_DIR}/${SUBMISSION_ID}"
 DAG="${SCRATCH_DIR}/${SUBMISSION_ID}.dag"
 
 dataset="dataset_0"
-n_min=100000              # minimum number of Lambda values per band
-max_skies_per_job=30000   # ~30 min for the 4-pixel ring
+n_skies=25000         # 1e5 Lambda values in the 4-pixel ring at the south pole
+skies_per_job=50      # 500 jobs of ~1.2 h and ~1.5 GB
 seed=0
 
 mkdir -p "${RUN_SCRATCH}"
@@ -69,24 +69,24 @@ for dag_file in "${SCRATCH_DIR}"/*.dag; do
     fi
 done
 
-# --- Plan: one job per line, "dataset ring k_start k_stop seed" ---
-# Written to the submission's own scratch directory, where band.sub queues
+# --- Plan: one job per line, "dataset k_start k_stop seed" ---
+# Written to the submission's own scratch directory, where skies.sub queues
 # the jobs from and merge reads them back.
 "${PYTHON}" "${PIPELINE}" plan \
     --dataset "${dataset}" \
-    --n-min "${n_min}" \
-    --max-skies-per-job "${max_skies_per_job}" \
+    --n-skies "${n_skies}" \
+    --skies-per-job "${skies_per_job}" \
     --seed "${seed}" \
     --output "${RUN_SCRATCH}/params.txt"
 
-# --- The DAG: prepare, then all the band jobs, then the merge ---
+# --- The DAG: prepare, then all the skies jobs, then the merge ---
 cat > "${DAG}" <<EOF
 JOB         prepare ${SCRIPT_DIR}/prepare.sub
 VARS        prepare submission_id="${SUBMISSION_ID}" dataset="${dataset}"
-JOB         bands   ${SCRIPT_DIR}/band.sub
-VARS        bands   submission_id="${SUBMISSION_ID}"
-PARENT      prepare CHILD bands
-SCRIPT POST bands   ${SCRIPT_DIR}/finalize_h0_mc.sh ${SUBMISSION_ID} ${KEEP_SCRATCH}
+JOB         skies   ${SCRIPT_DIR}/skies.sub
+VARS        skies   submission_id="${SUBMISSION_ID}"
+PARENT      prepare CHILD skies
+SCRIPT POST skies   ${SCRIPT_DIR}/finalize_h0_mc.sh ${SUBMISSION_ID} ${KEEP_SCRATCH}
 EOF
 
 # --- Submit ---
