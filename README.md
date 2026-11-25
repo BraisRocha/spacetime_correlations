@@ -18,45 +18,35 @@ master seed.
 
 ## Installation
 
-### Requirements
-- Python `>=3.10`
-- Core dependencies (declared in `pyproject.toml`):
-  - `numpy`
-  - `astropy`
-  - `scipy`
-  - `matplotlib`
-- Optional extras:
-  - `skymap` — installs `healpy`, required only for HEALPix sky-map generation/plotting APIs.
-  - `scripts` — installs `tqdm`, used by the helper scripts under `scripts/`.
+The project runs in the conda environment `stc_env`, built from
+`environment.yml` (conda-forge only). conda installs every dependency,
+including the compiled libraries healpy needs; pip only installs this
+package itself, in editable mode.
 
-### Install (editable)
+### Create the environment
+
+From the repository root:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e .
+conda env create -f environment.yml
+conda activate stc_env
 ```
 
-### Install with sky-map support
+### Update it after editing `environment.yml`
 
 ```bash
-pip install -e ".[skymap]"
+conda env update -f environment.yml --prune
 ```
 
-### Install with the script helpers
+`--prune` also removes packages no longer listed in the file.
 
-```bash
-pip install -e ".[scripts]"
-```
+### Dependencies
 
-You can combine extras: `pip install -e ".[skymap,scripts]"`.
-
-### Keeping dependencies updated
-
-```bash
-pip list --outdated
-```
+Declared in `pyproject.toml` and all installed by `environment.yml`:
+- Core: `numpy`, `astropy`, `scipy`, `matplotlib`
+- `skymap`: `healpy` (HEALPix sky maps)
+- `scripts`: `tqdm`, `pillow` (helper scripts under `scripts/`)
+- `dev`: `pytest`
 
 ## Repository layout
 
