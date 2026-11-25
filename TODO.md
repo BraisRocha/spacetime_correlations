@@ -150,6 +150,38 @@ fix right now, but which should be revisited.
   step integral as `A(t)` does; if it depends on the direction (`theta`) it
   breaks the closed form.
 
+- **H0 MC: the `mu` passed to the suppressed Lambda is not the skies' true
+  expected count** (physicist review, 2026-11-25)
+  `lambda_estimator_suppressed_cdf` is exact only if the events of a pixel
+  are a Poisson process of mean `mu`, uniform in exposure on `[0, eps_max]`.
+  In the H0 MC (`h0_pipeline.py:250`, `:258-262`), `mu` comes from the
+  analytic model at the pixel centre, while the skies take their zenith
+  angles from the sample (`isotropic_scrambling.py:126-133`). Two
+  mismatches:
+  - the sample's zenith distribution differs from the model's (e.g.
+    +7.7 ± 1.6% events at theta 58-59 deg, about -2% at 50-56 deg);
+  - the exposure at the pixel centre differs from the pixel average by up
+    to ~2% near the FoV edge (see the HEALPix item above).
+
+  Measured on run `20261111_004947`: per ring, `<n>/<mu> - 1` reaches +4.9%
+  (ring 45) and -1.3% (ring 127), and the MC mean of Lambda departs from the
+  exact `(mu - 1 + e^-mu) / (1 - e^-mu (1 + mu))` by 0.05-0.12 standard
+  deviations. The empirical null stays self-consistent as long as the data
+  are analysed the same way. Decision pending: should the H0 MC reproduce
+  the data's acceptance (current choice, the scrambling logic) or the
+  idealised model? If kept, the "exact" properties of the suppressed Lambda
+  hold only approximately in the MC.
+
+- **Docstring of `lambda_estimator_suppressed_cdf`: say which CDF it is**
+  (physicist review, 2026-11-25)
+  `F(x)` is the CDF of one gap pooled over many windows, not of the gaps
+  inside a window with `n` events (that one is `1 - (1 - x/mu)^(n-1)`). The
+  gaps in one window are not independent either, so Lambda given `n` is not
+  Gamma(n - 1), and the `lambda_marginal_*` formulas don't apply to it (ideal
+  MC at `mu = 50`: standard deviation 12.7, against ~7 for Gamma(49)). One
+  sentence in the docstring would prevent attaching Gamma p-values to this
+  Lambda.
+
 ## Ideas for the future
 
 - **Particle-nature weighting in the estimator**

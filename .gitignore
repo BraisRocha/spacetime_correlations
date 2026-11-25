@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
 .vscode/
+# Claude Code setup (personal working environment, not part of the project)
+CLAUDE.md
+.claude/
+reviews/
 output/
 spacetimecorr.egg-info/
 notebook.txt
