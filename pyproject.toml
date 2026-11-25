@@ -23,6 +23,7 @@ skymap = [
 # Dependencies needed only by the helper scripts in `scripts/`
 scripts = [
   "tqdm>=4.65",
+  "pillow",
 ]
 # Test dependencies
 dev = [
@@ -31,7 +32,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["spacetimecorr*"]
-exclude = ["scripts*", "stc_venv*", "output*", "tests*"]
+exclude = ["scripts*", "output*", "tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
