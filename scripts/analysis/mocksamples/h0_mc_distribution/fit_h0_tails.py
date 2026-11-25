@@ -25,9 +25,9 @@ until every one expects at least ``MIN_EXPECTED`` values, and
 
 Input, the ``band_ring*.npz`` of ``<run_dir>/bands/``. Output, in
 ``<run_dir>/tail_fit/``: one plot per band (histogram, fitted ``g`` and
-residuals, log scale), ``tail_fit_vs_dec.png`` (``a = q``, ``b``, the
-width ``lambda = c^(1/b)`` and ``chi2 / dof`` against the declination of
-the band) and the fitted values
+residuals, log scale), ``tail_fit_vs_mu.png`` (``a = q``, ``b`` and the
+width ``lambda = c^(1/b)`` against the mean expected count ``mu`` of the
+band, with polynomial fits, and ``chi2 / dof``) and the fitted values
 in ``tail_fits.npz`` and ``tail_fits.json``.
 """
 
@@ -47,6 +47,7 @@ from fit_h0_bands import MIN_EXPECTED, N_BINS
 
 TAIL_QUANTILE = 0.90    # the tail is the values above this quantile of the band
 N_PARAMS = 2
+POLY_DEGREES = {"q": 3, "b": 2, "lambda": 3}   # polynomials in mu of tail_fit_vs_mu.png
 
 
 # ----------------------------------------------------------------------
@@ -249,29 +250,54 @@ def plot_tail_fit(
     plt.close(fig)
 
 
-def plot_vs_dec(fits: dict, output_path: Path) -> None:
-    """``a = q``, ``b``, ``lambda = c^(1/b)`` and ``chi2 / dof`` of every
-    band against its declination."""
-    dec = fits["dec"]
-    fig, axes = plt.subplots(4, 1, figsize=(3.4, 6.0), sharex=True,
-                             gridspec_kw={"hspace": 0.08})
+def poly_fit(x: np.ndarray, y: np.ndarray, sigma: np.ndarray, degree: int) -> tuple[np.ndarray, float]:
+    """Weighted least-squares polynomial of ``degree`` through ``(x, y)``
+    with errors ``sigma``: its coefficients and ``chi2 / dof``."""
+    coef = np.polyfit(x, y, degree, w=1.0 / sigma)
+    chi2 = float(np.sum(((y - np.polyval(coef, x)) / sigma) ** 2))
+    return coef, chi2 / (x.size - degree - 1)
 
-    # a is not fitted: it is the quantile q where the tail starts.
-    axes[0].plot(dec, fits["q"], "o-", markersize=1.2, linewidth=0.6)
-    axes[0].set_ylabel(rf"$a = \Lambda_{{{100 * TAIL_QUANTILE:.0f}}}$")
-    axes[0].set_title(r"Fit of the upper tail of the $\Lambda$ distribution per declination band")
 
-    for ax, name, label in zip(axes[1:3], ("b", "lambda"), (r"$b$", r"$\lambda = c^{1/b}$")):
-        ax.errorbar(dec, fits[name], yerr=fits[f"sigma_{name}"], fmt="o-", markersize=1.2,
-                    linewidth=0.6, elinewidth=0.8, capsize=0)
+def plot_vs_mu(fits: dict, output_path: Path) -> None:
+    """``a = q``, ``b`` and ``lambda = c^(1/b)`` of every band against its
+    mean expected count ``mu``, each with a weighted polynomial fit
+    (``POLY_DEGREES``), and the ``chi2 / dof`` of the tail fits.
+
+    The error of ``a`` is that of the quantile ``q`` of ``n`` values,
+    ``sqrt(p (1 - p) / n) / f(q)``, with ``p = TAIL_QUANTILE`` and the
+    density just above ``q`` from the fitted tail, ``f(q) = (1 - p) / I``.
+    """
+    order = np.argsort(fits["mu"])
+    mu = fits["mu"][order]
+    density_q = (1.0 - TAIL_QUANTILE) * np.exp(-log_norm(fits["b"], fits["c"]))
+    sigma_q = np.sqrt(TAIL_QUANTILE * (1.0 - TAIL_QUANTILE) / fits["n_lambda"]) / density_q
+    panels = (
+        ("q", sigma_q, r"$a$"),
+        ("b", fits["sigma_b"], r"$b$"),
+        ("lambda", fits["sigma_lambda"], r"$\lambda$"),
+    )
+
+    fig, axes = plt.subplots(2, 2, figsize=(6.8, 4.8), sharex=True,
+                             gridspec_kw={"hspace": 0.1, "wspace": 0.25})
+    grid = np.linspace(mu.min(), mu.max(), 300)
+    for ax, (name, sigma, label) in zip((axes[0, 0], axes[0, 1], axes[1, 0]), panels):
+        y, s = fits[name][order], sigma[order]
+        degree = POLY_DEGREES[name]
+        coef, chi2_dof = poly_fit(mu, y, s, degree)
+        ax.errorbar(mu, y, yerr=s, fmt="o", markersize=1.5, elinewidth=0.8, capsize=0, color="C1")
+        ax.plot(grid, np.polyval(coef, grid), color="black", linestyle="--", linewidth=0.8,
+                label=rf"$\chi^2/\mathrm{{dof}} = {chi2_dof:.2f}$")
         ax.set_ylabel(label)
+        ax.legend(loc="upper left", fontsize=6)
 
-    axes[3].plot(dec, fits["chi2"] / fits["dof"], "o-", markersize=1.2, linewidth=0.6)
-    axes[3].axhline(1.0, color="black", linestyle="--", linewidth=0.8)
-    axes[3].set_ylabel(r"$\chi^2/\mathrm{dof}$")
-    axes[3].set_xlabel(r"Dec [deg]")
+    ax = axes[1, 1]
+    ax.plot(mu, (fits["chi2"] / fits["dof"])[order], "o-", markersize=1.5, linewidth=0.6, color="C1")
+    ax.axhline(1.0, color="black", linestyle="--", linewidth=0.8)
+    ax.set_ylabel(r"$\chi^2/\mathrm{dof}$")
 
-    for ax in axes:
+    for ax in axes[1]:
+        ax.set_xlabel(r"expected number of events $\mu$")
+    for ax in axes.flat:
         ax.grid(True, linewidth=0.3, alpha=0.5)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -324,7 +350,7 @@ def main(run_dir: Path) -> None:
     np.savez(output_dir / "tail_fits.npz", **fits)
     with open(output_dir / "tail_fits.json", "w") as f:
         json.dump(rows, f, indent=2)
-    plot_vs_dec(fits, output_dir / "tail_fit_vs_dec.png")
+    plot_vs_mu(fits, output_dir / "tail_fit_vs_mu.png")
     print(f"Saved the tail fits of {len(rows)} bands to {output_dir}")
 
 

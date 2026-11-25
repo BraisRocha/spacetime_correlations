@@ -290,7 +290,7 @@ def main(run_dirs: list[str | Path], output_dir: str | Path) -> None:
         top=0.85,
         wspace=0.05
     )
-    fig.savefig(output_dir / "LambdaDist_IntensityScan_FixedDur_2Cases.pdf",
+    fig.savefig(output_dir / "LambdaDist_IntensityScan_FixedDur_2Cases.png",
                 dpi=300, bbox_inches="tight")
     plt.close(fig)
 

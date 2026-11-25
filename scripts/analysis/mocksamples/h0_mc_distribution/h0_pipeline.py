@@ -323,6 +323,7 @@ def merge(scratch_dir: Path, output_dir: Path, keep_scratch: bool) -> int:
     directory is removed only when all of them arrived, unless
     ``keep_scratch``. Returns 0 then, and 1 when any is missing.
     """
+    output_dir.mkdir(parents=True, exist_ok=True)
     jobs = [line.split() for line in (scratch_dir / "params.txt").read_text().splitlines() if line]
     present, missing = [], []
     for _, k_start, k_stop, _ in jobs:
